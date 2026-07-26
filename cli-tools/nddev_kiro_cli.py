@@ -277,10 +277,10 @@ def expected_permissions_for(setup_id: str) -> bytes:
             "  - capability: fs_read\n"
             "    effect: deny\n"
             "    match:\n"
-            "      - \"**/.env\"\n"
-            "      - \"**/.env.*\"\n"
-            "      - \"**/*.pem\"\n"
-            "      - \"secrets/**\"\n"
+            '      - "**/.env"\n'
+            '      - "**/.env.*"\n'
+            '      - "**/*.pem"\n'
+            '      - "secrets/**"\n'
             "  - capability: shell\n"
             "    effect: ask\n"
             "  - capability: fs_write\n"
@@ -306,23 +306,23 @@ def expected_permissions_for(setup_id: str) -> bytes:
             "  - capability: fs_read\n"
             "    effect: deny\n"
             "    match:\n"
-            "      - \"**/.env\"\n"
-            "      - \"**/.env.*\"\n"
-            "      - \"**/*.pem\"\n"
-            "      - \"secrets/**\"\n"
+            '      - "**/.env"\n'
+            '      - "**/.env.*"\n'
+            '      - "**/*.pem"\n'
+            '      - "secrets/**"\n'
             "  - capability: fs_read\n"
             "    effect: allow\n"
             "  - capability: shell\n"
             "    effect: allow\n"
             "    match:\n"
-            "      - \"git status*\"\n"
-            "      - \"git diff*\"\n"
-            "      - \"git log*\"\n"
-            "      - \"git branch*\"\n"
-            "      - \"python3 -m unittest*\"\n"
-            "      - \"python3 -m pytest*\"\n"
-            "      - \"npm test*\"\n"
-            "      - \"npm run test*\"\n"
+            '      - "git status*"\n'
+            '      - "git diff*"\n'
+            '      - "git log*"\n'
+            '      - "git branch*"\n'
+            '      - "python3 -m unittest*"\n'
+            '      - "python3 -m pytest*"\n'
+            '      - "npm test*"\n'
+            '      - "npm run test*"\n'
             "  - capability: fs_write\n"
             "    effect: ask\n"
             "  - capability: web_fetch\n"
@@ -665,9 +665,7 @@ def preflight_unmanaged_target(target: Path) -> None:
         settings = read_target_settings_if_present(target)
         managed = set(SETTINGS_MANAGED_KEYS) & set(settings)
         if managed:
-            fail(
-                f"unmanaged target already has managed Kiro settings keys: {sorted(managed)}"
-            )
+            fail(f"unmanaged target already has managed Kiro settings keys: {sorted(managed)}")
 
 
 def make_parent_directories(path: Path) -> None:
@@ -1024,7 +1022,11 @@ def launch(target: Path, child_args: list[str]) -> int:
     executable = shutil.which("kiro-cli")
     if executable is None:
         fail("kiro-cli executable was not found on PATH")
-    launch_args = child_args if child_args and child_args[0] in {"--v3", "--classic"} else ["--v3", *child_args]
+    launch_args = (
+        child_args
+        if child_args and child_args[0] in {"--v3", "--classic"}
+        else ["--v3", *child_args]
+    )
     return subprocess.call([executable, *launch_args], env=build_launch_env(target))
 
 
