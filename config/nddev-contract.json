@@ -16,6 +16,7 @@
     "status_command": "python3 cli-tools/nddev_kiro_cli.py status --target /absolute/kiro-home --json",
     "plan_command": "python3 cli-tools/nddev_kiro_cli.py plan --setup safe --target /absolute/kiro-home --json",
     "install_command": "python3 cli-tools/nddev_kiro_cli.py install --setup safe --target /absolute/kiro-home --json",
+    "update_command": "python3 cli-tools/nddev_kiro_cli.py update --target /absolute/kiro-home --json",
     "switch_command": "python3 cli-tools/nddev_kiro_cli.py switch --setup balanced --target /absolute/kiro-home --json",
     "restore_command": "python3 cli-tools/nddev_kiro_cli.py restore --backup 0 --target /absolute/kiro-home --json",
     "remove_command": "python3 cli-tools/nddev_kiro_cli.py remove --target /absolute/kiro-home --json",
@@ -121,8 +122,45 @@
     }
   },
   "software_distribution": {
-    "manager_installs_software": false,
-    "official_update_command": "kiro-cli update",
+    "manager_installs_software": true,
+    "install_mode": "harness-owned-official-artifact",
+    "status_command": "python3 cli-tools/nddev_kiro_cli.py software-status --target /absolute/kiro-home --json",
+    "probe_command": "python3 cli-tools/nddev_kiro_cli.py software-probe --target /absolute/kiro-home --json",
+    "install_command": "python3 cli-tools/nddev_kiro_cli.py software-install --target /absolute/kiro-home --json",
+    "update_command": "python3 cli-tools/nddev_kiro_cli.py software-update --target /absolute/kiro-home --json",
+    "remove_command": "python3 cli-tools/nddev_kiro_cli.py software-remove --target /absolute/kiro-home --json",
+    "target_software_root": "target/.nddev-runtime/software/kiro-cli",
+    "stamp_file": "target/.nddev-runtime/software/kiro-cli/NDDEV-KIRO-CLI-SOFTWARE.json",
+    "official_manifest": {
+      "url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
+      "version": "2.14.2",
+      "sha256": "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe",
+      "size": 9313
+    },
+    "supported_platforms": [
+      "macos-universal-dmg",
+      "linux-x86_64-glibc-zip",
+      "linux-aarch64-glibc-zip",
+      "linux-x86_64-musl-zip",
+      "linux-aarch64-musl-zip"
+    ],
+    "install_only_absent": true,
+    "update_repairs_safe_partial": true,
+    "update_installs_absent": false,
+    "absent_update_behavior": "domain-error-install-first",
+    "stage_only_probe": true,
+    "official_update_command": null,
+    "official_vendor_installer": {
+      "url": "https://cli.kiro.dev/install",
+      "sha256": "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908",
+      "target_owned": false,
+      "used_by_manager": false,
+      "limitations": [
+        "macOS branch writes /Applications",
+        "macOS branch launches the app after install",
+        "Linux branch installs into HOME/.local/bin and is only usable inside isolated staging"
+      ]
+    },
     "current_artifacts_ref": "references/kiro-cli-baseline.json:install_manifest.packages",
     "integrity_pinned": true
   },

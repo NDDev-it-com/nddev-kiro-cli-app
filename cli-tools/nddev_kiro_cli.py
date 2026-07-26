@@ -15,12 +15,16 @@ import contextlib
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
+import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +53,16 @@ BUILDER_STEERING = "steering/nddev-builder.md"
 BUILDER_HOOK = "hooks/nddev-builder.json"
 BUILDER_FILES = (BUILDER_AGENT, BUILDER_SKILL, BUILDER_STEERING, BUILDER_HOOK)
 MANAGED_FILES = (SETTINGS, PERMISSIONS, *BUILDER_FILES)
+BASELINE_PATH = ROOT / "references" / "kiro-cli-baseline.json"
+OFFICIAL_INSTALL_MANIFEST_URL = "https://prod.download.cli.kiro.dev/stable/latest/manifest.json"
+SOFTWARE_RUNTIME_DIR = ".nddev-runtime/software"
+SOFTWARE_DIR_NAME = "kiro-cli"
+SOFTWARE_STAMP_NAME = "NDDEV-KIRO-CLI-SOFTWARE.json"
+SOFTWARE_STAMP_SCHEMA = 1
+SOFTWARE_TREE_MAX_FILES = 20000
+SOFTWARE_TREE_MAX_BYTES = 3 * 1024 * 1024 * 1024
+SOFTWARE_METADATA_MAX_BYTES = 1024 * 1024
+DOWNLOAD_METADATA_MAX_BYTES = 4 * 1024 * 1024
 SETTINGS_MANAGED_KEYS = (
     "chat.defaultAgent",
     "chat.disableInheritingDefaultResources",
@@ -74,6 +88,19 @@ BACKUP_KEYS = {
     "source_setup_id",
     "managed_files",
     "stamp_sha256",
+}
+SOFTWARE_STAMP_KEYS = {
+    "schema_version",
+    "product_name",
+    "build_version",
+    "runtime_product",
+    "version",
+    "canonical_target",
+    "install_mode",
+    "package",
+    "executable",
+    "tree",
+    "official_vendor_installer",
 }
 SECRET_ENV_PREFIXES = (
     "AWS_",
@@ -122,6 +149,27 @@ class Setup:
 class FileSnapshot:
     content: bytes | None
     digest: str | None
+
+
+@dataclass(frozen=True)
+class SoftwarePackage:
+    os_name: str
+    architecture: str
+    libc: str | None
+    file_type: str
+    variant: str
+    download: str
+    sha256: str
+    size: int
+    cli_path: str | None
+
+
+@dataclass(frozen=True)
+class SoftwareTree:
+    digest: str
+    file_count: int
+    byte_count: int
+    executable_sha256: str
 
 
 def fail(message: str) -> NoReturn:
@@ -254,6 +302,1139 @@ def read_json_file(path: Path, label: str, *, owner_only: bool = False) -> dict[
         max_bytes=METADATA_MAX_BYTES,
     )
     return parse_json_object(content, label)
+
+
+def lstat_optional(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def load_baseline() -> dict[str, Any]:
+    return read_json_file(BASELINE_PATH, "Kiro CLI runtime baseline")
+
+
+def expected_runtime_version() -> str:
+    baseline = load_baseline()
+    version = baseline.get("release", {}).get("version")
+    if not isinstance(version, str) or not version.strip():
+        fail("Kiro CLI baseline release.version is missing")
+    return version
+
+
+def official_vendor_installer_record() -> dict[str, Any]:
+    baseline = load_baseline()
+    script = baseline.get("release", {})
+    limitations = baseline.get("software_installation", {}).get(
+        "official_vendor_installer_limitations",
+        [],
+    )
+    return {
+        "url": script.get("install_script_url"),
+        "sha256": script.get("install_script_sha256"),
+        "target_owned": False,
+        "limitations": limitations,
+        "used_by_manager": False,
+    }
+
+
+def normalize_platform_name(value: str | None) -> str:
+    raw = value or platform.system().lower()
+    normalized = raw.lower()
+    if normalized in {"darwin", "mac", "macos"}:
+        return "macos"
+    if normalized in {"linux", "ubuntu"}:
+        return "linux"
+    fail(f"unsupported software platform: {raw}")
+
+
+def normalize_architecture(value: str | None, os_name: str) -> str:
+    if os_name == "macos":
+        if value in {None, "", "universal"}:
+            return "universal"
+        if value in {"x86_64", "amd64", "arm64", "aarch64"}:
+            return "universal"
+        fail(f"unsupported macOS architecture: {value}")
+    raw = value or platform.machine().lower()
+    if raw in {"x86_64", "amd64"}:
+        return "x86_64"
+    if raw in {"arm64", "aarch64"}:
+        return "aarch64"
+    fail(f"unsupported Linux architecture: {raw}")
+
+
+def detect_linux_libc() -> str:
+    if platform.system().lower() != "linux":
+        return "glibc"
+    libc_name, libc_version = platform.libc_ver()
+    if libc_name == "glibc" and libc_version:
+        major_text, _, minor_text = libc_version.partition(".")
+        try:
+            major = int(major_text)
+            minor = int(minor_text or "0")
+        except ValueError:
+            return "musl"
+        minimum_minor = 39 if normalize_architecture(None, "linux") == "aarch64" else 34
+        if major > 2 or (major == 2 and minor >= minimum_minor):
+            return "glibc"
+        return "musl"
+    return "musl"
+
+
+def normalize_libc(value: str | None, os_name: str) -> str | None:
+    if os_name != "linux":
+        if value not in {None, ""}:
+            fail("--libc is only valid for Linux software installs")
+        return None
+    if value in {None, ""}:
+        return detect_linux_libc()
+    if value in {"glibc", "gnu"}:
+        return "glibc"
+    if value == "musl":
+        return "musl"
+    fail(f"unsupported Linux libc variant: {value}")
+
+
+def baseline_packages() -> list[dict[str, Any]]:
+    baseline = load_baseline()
+    packages = baseline.get("install_manifest", {}).get("packages")
+    if not isinstance(packages, list) or not packages:
+        fail("Kiro CLI baseline packages are missing")
+    result: list[dict[str, Any]] = []
+    for package in packages:
+        if not isinstance(package, dict):
+            fail("Kiro CLI baseline package entry must be an object")
+        result.append(package)
+    return result
+
+
+def package_matches(package: dict[str, Any], os_name: str, architecture: str, libc: str | None) -> bool:
+    if package.get("os") != os_name or package.get("architecture") != architecture:
+        return False
+    if os_name == "macos":
+        return package.get("fileType") == "dmg" and package.get("variant") == "full"
+    if package.get("fileType") != "zip" or package.get("variant") != "headless":
+        return False
+    download = str(package.get("download", ""))
+    is_musl = "-musl." in download
+    return is_musl if libc == "musl" else not is_musl
+
+
+def select_baseline_package(os_name: str, architecture: str, libc: str | None) -> SoftwarePackage:
+    matches = [
+        package
+        for package in baseline_packages()
+        if package_matches(package, os_name, architecture, libc)
+    ]
+    if len(matches) != 1:
+        fail(f"cannot select exact Kiro CLI package for {os_name}/{architecture}/{libc}")
+    package = matches[0]
+    sha256 = package.get("sha256")
+    download = package.get("download")
+    size = package.get("size")
+    if (
+        not isinstance(sha256, str)
+        or not SHA256_PATTERN.fullmatch(sha256)
+        or not isinstance(download, str)
+        or not isinstance(size, int)
+        or size <= 0
+    ):
+        fail("selected Kiro CLI package is missing download, size, or sha256")
+    return SoftwarePackage(
+        os_name=os_name,
+        architecture=architecture,
+        libc=libc,
+        file_type=str(package.get("fileType")),
+        variant=str(package.get("variant")),
+        download=download,
+        sha256=sha256,
+        size=size,
+        cli_path=package.get("cliPath") if isinstance(package.get("cliPath"), str) else None,
+    )
+
+
+def package_from_manifest_for_tests(
+    manifest: dict[str, Any],
+    os_name: str,
+    architecture: str,
+    libc: str | None,
+) -> SoftwarePackage:
+    if not test_sources_enabled():
+        fail("manifest-selected software packages are private-test only")
+    if manifest.get("version") != expected_runtime_version():
+        fail("test Kiro CLI manifest must use the exact current runtime version")
+    packages = manifest.get("packages")
+    if not isinstance(packages, list):
+        fail("test Kiro CLI manifest packages must be a list")
+    matches = [
+        item
+        for item in packages
+        if isinstance(item, dict) and package_matches(item, os_name, architecture, libc)
+    ]
+    if len(matches) != 1:
+        fail(f"cannot select test Kiro CLI package for {os_name}/{architecture}/{libc}")
+    package = matches[0]
+    sha256 = package.get("sha256")
+    download = package.get("download")
+    size = package.get("size")
+    if (
+        not isinstance(sha256, str)
+        or not SHA256_PATTERN.fullmatch(sha256)
+        or not isinstance(download, str)
+        or not isinstance(size, int)
+        or size <= 0
+    ):
+        fail("test Kiro CLI package is missing download, size, or sha256")
+    return SoftwarePackage(
+        os_name=os_name,
+        architecture=architecture,
+        libc=libc,
+        file_type=str(package.get("fileType")),
+        variant=str(package.get("variant")),
+        download=download,
+        sha256=sha256,
+        size=size,
+        cli_path=package.get("cliPath") if isinstance(package.get("cliPath"), str) else None,
+    )
+
+
+def read_bounded_url(url: str, max_bytes: int, label: str) -> bytes:
+    if not url.startswith("https://"):
+        fail(f"{label} must use https")
+    request = urllib.request.Request(url, headers={"User-Agent": f"{PRODUCT_NAME}/{VERSION}"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None and int(content_length) > max_bytes:
+                fail(f"{label} exceeds the {max_bytes}-byte size limit")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    fail(f"{label} exceeds the {max_bytes}-byte size limit")
+                chunks.append(chunk)
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        fail(f"failed to download {label}: {exc}")
+    return b"".join(chunks)
+
+
+def download_bounded_url(url: str, destination: Path, max_bytes: int, label: str) -> str:
+    if not url.startswith("https://"):
+        fail(f"{label} must use https")
+    make_parent_directories(destination)
+    request = urllib.request.Request(url, headers={"User-Agent": f"{PRODUCT_NAME}/{VERSION}"})
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None and int(content_length) > max_bytes:
+                fail(f"{label} exceeds the {max_bytes}-byte size limit")
+            with destination.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        fail(f"{label} exceeds the {max_bytes}-byte size limit")
+                    digest.update(chunk)
+                    handle.write(chunk)
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        destination.unlink(missing_ok=True)
+        fail(f"failed to download {label}: {exc}")
+    return digest.hexdigest()
+
+
+def test_sources_enabled() -> bool:
+    return os.environ.get("NDDEV_KIRO_CLI_ALLOW_TEST_SOURCES") == "1"
+
+
+def read_manifest_source(path: str | None, url: str | None) -> dict[str, Any]:
+    if path:
+        if not test_sources_enabled():
+            fail("local software manifest sources are private-test only")
+        content, _ = read_regular_file(
+            Path(path),
+            "local Kiro CLI software manifest",
+            owner_only=False,
+            max_bytes=DOWNLOAD_METADATA_MAX_BYTES,
+        )
+    else:
+        if url and url != OFFICIAL_INSTALL_MANIFEST_URL and not test_sources_enabled():
+            fail("non-official software manifest URLs are private-test only")
+        content = read_bounded_url(
+            url or OFFICIAL_INSTALL_MANIFEST_URL,
+            DOWNLOAD_METADATA_MAX_BYTES,
+            "Kiro CLI install manifest",
+        )
+        if not test_sources_enabled():
+            baseline = load_baseline()
+            release = baseline.get("release", {})
+            expected_digest = release.get("install_manifest_sha256")
+            expected_size = release.get("install_manifest_size")
+            if (
+                not isinstance(expected_digest, str)
+                or not SHA256_PATTERN.fullmatch(expected_digest)
+                or not isinstance(expected_size, int)
+                or expected_size <= 0
+            ):
+                fail("Kiro CLI baseline install manifest pin is missing")
+            if len(content) != expected_size:
+                fail("Kiro CLI install manifest size changed")
+            if sha256_bytes(content) != expected_digest:
+                fail("Kiro CLI install manifest digest changed")
+    return parse_json_object(content, "Kiro CLI install manifest")
+
+
+def verify_manifest_package(manifest: dict[str, Any], package: SoftwarePackage) -> None:
+    version = manifest.get("version")
+    expected = expected_runtime_version()
+    if version != expected:
+        fail(f"Kiro CLI install manifest version must be {expected}, got {version!r}")
+    packages = manifest.get("packages")
+    if not isinstance(packages, list):
+        fail("Kiro CLI install manifest packages must be a list")
+    matches = [
+        item
+        for item in packages
+        if isinstance(item, dict) and item.get("download") == package.download
+    ]
+    if len(matches) != 1:
+        fail(f"Kiro CLI install manifest is missing {package.download}")
+    actual = matches[0]
+    if actual.get("sha256") != package.sha256 or actual.get("size") != package.size:
+        fail(f"Kiro CLI install manifest package identity changed for {package.download}")
+
+
+def stage_artifact(
+    stage: Path,
+    package: SoftwarePackage,
+    *,
+    artifact_path: str | None,
+    artifact_base_url: str | None,
+) -> Path:
+    artifact = stage / "download" / Path(package.download).name
+    if artifact_path:
+        if not test_sources_enabled():
+            fail("local software artifact sources are private-test only")
+        source = Path(artifact_path)
+        content, _ = read_regular_file(
+            source,
+            "local Kiro CLI software artifact",
+            owner_only=False,
+            max_bytes=package.size,
+        )
+        if len(content) != package.size:
+            fail("local Kiro CLI software artifact size mismatch")
+        if sha256_bytes(content) != package.sha256:
+            fail("local Kiro CLI software artifact digest mismatch")
+        atomic_write(artifact, content)
+        return artifact
+    base_url = artifact_base_url or "https://prod.download.cli.kiro.dev/stable"
+    if artifact_base_url and base_url != "https://prod.download.cli.kiro.dev/stable" and not test_sources_enabled():
+        fail("non-official software artifact URLs are private-test only")
+    if not base_url.startswith("https://"):
+        fail("Kiro CLI artifact base URL must use https")
+    url = f"{base_url.rstrip('/')}/{package.download}"
+    digest = download_bounded_url(
+        url,
+        artifact,
+        package.size,
+        "Kiro CLI software artifact",
+    )
+    if artifact.stat().st_size != package.size:
+        artifact.unlink(missing_ok=True)
+        fail("Kiro CLI software artifact size mismatch")
+    if digest != package.sha256:
+        artifact.unlink(missing_ok=True)
+        fail("Kiro CLI software artifact digest mismatch")
+    return artifact
+
+
+def software_root(target: Path) -> Path:
+    return target / SOFTWARE_RUNTIME_DIR / SOFTWARE_DIR_NAME
+
+
+def software_stamp_path(target: Path) -> Path:
+    return software_root(target) / SOFTWARE_STAMP_NAME
+
+
+def software_executable_from_stamp(target: Path, stamp: dict[str, Any]) -> Path:
+    executable = stamp.get("executable")
+    if not isinstance(executable, dict):
+        fail("software stamp executable is invalid")
+    relative = executable.get("relative_path")
+    if not isinstance(relative, str):
+        fail("software stamp executable relative_path is invalid")
+    return software_root(target) / safe_relative_path(relative)
+
+
+def ensure_not_group_world_writable(info: os.stat_result, label: str) -> None:
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        fail(f"{label} must not be group/world writable")
+    if hasattr(os, "geteuid") and owner_of(info) != os.geteuid():
+        fail(f"{label} must be owned by the current user")
+
+
+def require_private_directory(path: Path, label: str) -> os.stat_result:
+    info = require_directory(path, label)
+    ensure_not_group_world_writable(info, label)
+    return info
+
+
+def optional_private_directory(path: Path, label: str) -> os.stat_result | None:
+    info = lstat_optional(path)
+    if info is None:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail(f"{label} must be a real directory")
+    ensure_not_group_world_writable(info, label)
+    return info
+
+
+def require_regular_stamp_if_present(path: Path, label: str) -> os.stat_result | None:
+    info = lstat_optional(path)
+    if info is None:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        fail(f"{label} must be a regular non-symlink file")
+    if info.st_nlink != 1:
+        fail(f"{label} must not have hard-link aliases")
+    return info
+
+
+def software_ancestor_paths(target: Path) -> tuple[tuple[Path, str], ...]:
+    return (
+        (target / ".nddev-runtime", "software runtime directory"),
+        (target / SOFTWARE_RUNTIME_DIR, "software parent"),
+    )
+
+
+def software_root_presence(target: Path) -> str:
+    if optional_private_directory(target, "--target") is None:
+        return "missing"
+    for path, label in software_ancestor_paths(target):
+        if optional_private_directory(path, label) is None:
+            return "absent"
+    if optional_private_directory(software_root(target), "software root") is None:
+        return "absent"
+    return "present"
+
+
+def scan_software_tree(root: Path, executable_relative: str) -> SoftwareTree:
+    require_private_directory(root, "software root")
+    executable_path = root / safe_relative_path(executable_relative)
+    files: list[Path] = []
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if relative == SOFTWARE_STAMP_NAME:
+            continue
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"software tree must not contain symlinks: {relative}")
+        ensure_not_group_world_writable(info, f"software path {relative}")
+        if stat.S_ISREG(info.st_mode):
+            files.append(path)
+        elif not stat.S_ISDIR(info.st_mode):
+            fail(f"software tree path must be regular file or directory: {relative}")
+        if len(files) > SOFTWARE_TREE_MAX_FILES:
+            fail(f"software tree exceeds the {SOFTWARE_TREE_MAX_FILES}-file limit")
+    tree_hash = hashlib.sha256()
+    byte_count = 0
+    executable_digest: str | None = None
+    for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix()
+        content, _ = read_regular_file(
+            path,
+            f"software file {relative}",
+            owner_only=False,
+            max_bytes=SOFTWARE_TREE_MAX_BYTES,
+        )
+        byte_count += len(content)
+        if byte_count > SOFTWARE_TREE_MAX_BYTES:
+            fail(f"software tree exceeds the {SOFTWARE_TREE_MAX_BYTES}-byte limit")
+        digest = sha256_bytes(content)
+        tree_hash.update(relative.encode("utf-8") + b"\0" + digest.encode("ascii") + b"\0")
+        if path == executable_path:
+            executable_digest = digest
+    if executable_digest is None:
+        fail("software executable is missing from tree")
+    executable_info = require_regular_file(
+        executable_path,
+        f"software executable {executable_path}",
+        owner_only=False,
+    )
+    if not stat.S_IMODE(executable_info.st_mode) & stat.S_IXUSR:
+        fail("software executable must be owner-executable")
+    return SoftwareTree(
+        digest=tree_hash.hexdigest(),
+        file_count=len(files),
+        byte_count=byte_count,
+        executable_sha256=executable_digest,
+    )
+
+
+def software_stamp_payload(
+    target: Path,
+    package: SoftwarePackage,
+    executable_relative: str,
+    tree: SoftwareTree,
+) -> dict[str, Any]:
+    return {
+        "schema_version": SOFTWARE_STAMP_SCHEMA,
+        "product_name": PRODUCT_NAME,
+        "build_version": VERSION,
+        "runtime_product": "Kiro CLI",
+        "version": expected_runtime_version(),
+        "canonical_target": str(target),
+        "install_mode": "harness-owned-official-artifact",
+        "package": {
+            "os": package.os_name,
+            "architecture": package.architecture,
+            "libc": package.libc,
+            "fileType": package.file_type,
+            "variant": package.variant,
+            "download": package.download,
+            "sha256": package.sha256,
+            "size": package.size,
+        },
+        "executable": {
+            "relative_path": executable_relative,
+            "sha256": tree.executable_sha256,
+        },
+        "tree": {
+            "sha256": tree.digest,
+            "file_count": tree.file_count,
+            "byte_count": tree.byte_count,
+            "max_files": SOFTWARE_TREE_MAX_FILES,
+            "max_bytes": SOFTWARE_TREE_MAX_BYTES,
+        },
+        "official_vendor_installer": official_vendor_installer_record(),
+    }
+
+
+def validate_software_stamp(stamp: dict[str, Any], target: Path) -> None:
+    if set(stamp) != SOFTWARE_STAMP_KEYS:
+        fail("software stamp has invalid keys")
+    if stamp["schema_version"] != SOFTWARE_STAMP_SCHEMA or stamp["product_name"] != PRODUCT_NAME:
+        fail("software stamp identity or schema is invalid")
+    if stamp["build_version"] != VERSION:
+        fail("software stamp build version is invalid")
+    if stamp["runtime_product"] != "Kiro CLI" or stamp["version"] != expected_runtime_version():
+        fail("software stamp runtime identity is invalid")
+    if stamp["canonical_target"] != str(target):
+        fail("software stamp is bound to a different canonical target")
+    if stamp["install_mode"] != "harness-owned-official-artifact":
+        fail("software stamp install mode is invalid")
+    package = stamp["package"]
+    if not isinstance(package, dict):
+        fail("software stamp package is invalid")
+    for key in ("os", "architecture", "fileType", "variant", "download", "sha256", "size"):
+        if key not in package:
+            fail(f"software stamp package.{key} is missing")
+    if not isinstance(package["sha256"], str) or not SHA256_PATTERN.fullmatch(package["sha256"]):
+        fail("software stamp package.sha256 is invalid")
+    if not isinstance(package["size"], int) or package["size"] <= 0:
+        fail("software stamp package.size is invalid")
+    executable = stamp["executable"]
+    if (
+        not isinstance(executable, dict)
+        or not isinstance(executable.get("relative_path"), str)
+        or not isinstance(executable.get("sha256"), str)
+        or not SHA256_PATTERN.fullmatch(executable["sha256"])
+    ):
+        fail("software stamp executable is invalid")
+    tree = stamp["tree"]
+    if (
+        not isinstance(tree, dict)
+        or not isinstance(tree.get("sha256"), str)
+        or not SHA256_PATTERN.fullmatch(tree["sha256"])
+        or not isinstance(tree.get("file_count"), int)
+        or not isinstance(tree.get("byte_count"), int)
+        or tree.get("max_files") != SOFTWARE_TREE_MAX_FILES
+        or tree.get("max_bytes") != SOFTWARE_TREE_MAX_BYTES
+    ):
+        fail("software stamp tree is invalid")
+    installer = stamp["official_vendor_installer"]
+    if not isinstance(installer, dict) or installer.get("used_by_manager") is not False:
+        fail("software stamp official vendor installer record is invalid")
+
+
+def load_software_stamp(target: Path) -> dict[str, Any] | None:
+    if software_root_presence(target) != "present":
+        return None
+    stamp_path = software_stamp_path(target)
+    if require_regular_stamp_if_present(stamp_path, "software stamp") is None:
+        return None
+    stamp = read_json_file(stamp_path, "software stamp", owner_only=False)
+    validate_software_stamp(stamp, target)
+    return stamp
+
+
+def software_status(target: Path) -> dict[str, Any]:
+    presence = software_root_presence(target)
+    if presence == "missing":
+        return {
+            "state": "missing",
+            "target": str(target),
+            "version": expected_runtime_version(),
+            "executable": None,
+            "drift": [],
+            "executes_binary": False,
+        }
+    if presence == "absent":
+        return {
+            "state": "absent",
+            "target": str(target),
+            "version": expected_runtime_version(),
+            "executable": None,
+            "drift": [],
+            "executes_binary": False,
+        }
+    root = software_root(target)
+    stamp = load_software_stamp(target)
+    if stamp is None:
+        return {
+            "state": "partial",
+            "target": str(target),
+            "version": expected_runtime_version(),
+            "executable": None,
+            "drift": ["software stamp missing"],
+            "executes_binary": False,
+        }
+    executable_relative = stamp["executable"]["relative_path"]
+    tree = scan_software_tree(root, executable_relative)
+    drift = []
+    if tree.digest != stamp["tree"]["sha256"]:
+        drift.append("software tree digest")
+    if tree.executable_sha256 != stamp["executable"]["sha256"]:
+        drift.append("software executable digest")
+    return {
+        "state": "installed" if not drift else "drift",
+        "target": str(target),
+        "version": stamp["version"],
+        "package": stamp["package"],
+        "executable": str(software_executable_from_stamp(target, stamp)),
+        "drift": drift,
+        "executes_binary": False,
+    }
+
+
+def preflight_software_target(target: Path, *, allow_partial: bool) -> dict[str, Any]:
+    validated_transaction_parent(target)
+    status = software_status(target)
+    if status["state"] in {"partial", "drift"} and not allow_partial:
+        fail("software target is partial; run software-update to repair it")
+    return status
+
+
+def validated_transaction_parent(target: Path) -> Path:
+    parent = target.parent
+    require_private_directory(parent, "software transaction parent")
+    return parent
+
+
+def create_transaction_dir(target: Path, label: str) -> Path:
+    directory = Path(
+        tempfile.mkdtemp(
+            prefix=f".{target.name}.nddev-kiro-cli-{label}-",
+            dir=str(validated_transaction_parent(target)),
+        )
+    )
+    os.chmod(directory, OWNER_DIR_MODE)
+    return directory
+
+
+@contextlib.contextmanager
+def software_stage(target: Path) -> Iterator[Path]:
+    stage = create_transaction_dir(target, "software-stage")
+    try:
+        yield stage
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def safe_extract_zip(archive_path: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    os.chmod(destination, OWNER_DIR_MODE)
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            infos = archive.infolist()
+            if len(infos) > SOFTWARE_TREE_MAX_FILES:
+                fail("Kiro CLI zip archive has too many entries")
+            total = 0
+            for info in infos:
+                relative = Path(info.filename)
+                if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+                    fail(f"Kiro CLI zip archive has unsafe path: {info.filename}")
+                mode = info.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    fail(f"Kiro CLI zip archive has symlink path: {info.filename}")
+                total += info.file_size
+                if total > SOFTWARE_TREE_MAX_BYTES:
+                    fail("Kiro CLI zip archive exceeds the software tree size limit")
+            archive.extractall(destination)
+    except zipfile.BadZipFile as exc:
+        fail(f"Kiro CLI zip archive is invalid: {exc}")
+    for path in destination.rglob("*"):
+        relative = path.relative_to(destination).as_posix()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"Kiro CLI zip archive extracted symlink path: {relative}")
+        if stat.S_ISDIR(info.st_mode):
+            os.chmod(path, OWNER_DIR_MODE)
+            continue
+        if stat.S_ISREG(info.st_mode):
+            if info.st_nlink != 1:
+                fail(f"Kiro CLI zip archive extracted hard-link alias: {relative}")
+            ensure_not_group_world_writable(info, f"Kiro CLI zip archive path {relative}")
+            continue
+        fail(f"Kiro CLI zip archive extracted unsupported path: {relative}")
+
+
+def installer_environment(stage: Path) -> dict[str, str]:
+    home = stage / "installer-home"
+    temp = stage / "tmp"
+    kiro_home = stage / "kiro-home"
+    for directory in (home, temp, kiro_home):
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, OWNER_DIR_MODE)
+    env = {
+        "HOME": str(home),
+        "KIRO_HOME": str(kiro_home),
+        "TMPDIR": str(temp),
+        "PATH": os.environ.get("PATH", ""),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "KIRO_CLI_SKIP_SETUP": "1",
+    }
+    for key in tuple(env):
+        if key in SECRET_ENV_NAMES or key.startswith(SECRET_ENV_PREFIXES):
+            env.pop(key, None)
+    return env
+
+
+def copy_regular_executable(source: Path, destination: Path) -> None:
+    content, info = read_regular_file(
+        source,
+        f"Kiro CLI installed executable {source}",
+        owner_only=False,
+        max_bytes=SOFTWARE_TREE_MAX_BYTES,
+    )
+    if not stat.S_IMODE(info.st_mode) & stat.S_IXUSR:
+        fail(f"Kiro CLI installed executable is not executable: {source}")
+    atomic_write(destination, content)
+    os.chmod(destination, 0o700)
+
+
+def prepare_linux_software_root(stage: Path, artifact: Path) -> tuple[Path, str]:
+    extract_dir = stage / "extract"
+    safe_extract_zip(artifact, extract_dir)
+    install_script = extract_dir / "kirocli" / "install.sh"
+    require_regular_file(install_script, "Kiro CLI archive install script", owner_only=False)
+    result = subprocess.run(
+        ["bash", str(install_script)],
+        cwd=str(install_script.parent),
+        env=installer_environment(stage),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=180,
+    )
+    if result.returncode != 0:
+        fail(
+            "Kiro CLI archive install script failed inside isolated staging: "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+    prepared = stage / "prepared" / SOFTWARE_DIR_NAME
+    binary = stage / "installer-home" / ".local" / "bin" / "kiro-cli"
+    chat_binary = stage / "installer-home" / ".local" / "bin" / "kiro-cli-chat"
+    copy_regular_executable(binary, prepared / "bin" / "kiro-cli")
+    if chat_binary.exists():
+        copy_regular_executable(chat_binary, prepared / "bin" / "kiro-cli-chat")
+    return prepared, "bin/kiro-cli"
+
+
+def prepare_macos_software_root(stage: Path, artifact: Path, package: SoftwarePackage) -> tuple[Path, str]:
+    if platform.system().lower() != "darwin":
+        fail("macOS Kiro CLI DMG extraction requires macOS")
+    mount = stage / "mount"
+    mount.mkdir(mode=OWNER_DIR_MODE)
+    attached = False
+    try:
+        result = subprocess.run(
+            [
+                "hdiutil",
+                "attach",
+                str(artifact),
+                "-nobrowse",
+                "-readonly",
+                "-mountpoint",
+                str(mount),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            fail(f"Kiro CLI DMG mount failed: {result.stderr.strip() or result.stdout.strip()}")
+        attached = True
+        apps = [path for path in mount.iterdir() if path.suffix == ".app" and path.is_dir()]
+        if len(apps) != 1:
+            fail("Kiro CLI DMG must contain exactly one .app bundle")
+        prepared = stage / "prepared" / SOFTWARE_DIR_NAME
+        app_target = prepared / apps[0].name
+        shutil.copytree(apps[0], app_target, symlinks=False)
+        cli_path = package.cli_path or "Contents/MacOS/kiro-cli"
+        source_cli = app_target / safe_relative_path(cli_path)
+        require_regular_file(source_cli, "Kiro CLI app executable", owner_only=False)
+        wrapper = prepared / "bin" / "kiro-cli"
+        wrapper_content = (
+            "#!/bin/sh\n"
+            "set -eu\n"
+            f'exec "$(dirname "$0")/../{apps[0].name}/{cli_path}" "$@"\n'
+        ).encode("utf-8")
+        atomic_write(wrapper, wrapper_content)
+        os.chmod(wrapper, 0o700)
+        return prepared, "bin/kiro-cli"
+    finally:
+        if attached:
+            subprocess.run(
+                ["hdiutil", "detach", str(mount), "-quiet"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+
+
+def prepare_software_root(stage: Path, artifact: Path, package: SoftwarePackage) -> tuple[Path, str]:
+    if package.os_name == "linux":
+        return prepare_linux_software_root(stage, artifact)
+    if package.os_name == "macos":
+        return prepare_macos_software_root(stage, artifact, package)
+    fail(f"unsupported Kiro CLI software package OS: {package.os_name}")
+
+
+def finalize_prepared_software(
+    prepared: Path,
+    target: Path,
+    package: SoftwarePackage,
+    executable_relative: str,
+) -> None:
+    tree = scan_software_tree(prepared, executable_relative)
+    stamp = software_stamp_payload(target, package, executable_relative, tree)
+    atomic_write(prepared / SOFTWARE_STAMP_NAME, canonical_json(stamp))
+
+
+def ensure_directory_chain(path: Path, created_dirs: list[str], label: str) -> None:
+    missing: list[Path] = []
+    current = path
+    while lstat_optional(current) is None:
+        missing.append(current)
+        current = current.parent
+    require_private_directory(current, f"{label} existing parent")
+    for directory in reversed(missing):
+        directory.mkdir(mode=OWNER_DIR_MODE)
+        os.chmod(directory, OWNER_DIR_MODE)
+        created_dirs.append(str(directory))
+
+
+def install_prepared_software_root(
+    target: Path,
+    prepared: Path,
+    *,
+    allow_existing: bool,
+) -> dict[str, Any]:
+    created_dirs: list[str] = []
+    rollback_parent: Path | None = None
+    rollback_root: Path | None = None
+    installed_new_root = False
+    final_root = software_root(target)
+    try:
+        target_info = lstat_optional(target)
+        if target_info is None:
+            target.mkdir(mode=OWNER_DIR_MODE)
+            os.chmod(target, OWNER_DIR_MODE)
+            created_dirs.append(str(target))
+        else:
+            if stat.S_ISLNK(target_info.st_mode) or not stat.S_ISDIR(target_info.st_mode):
+                fail("--target must be a real directory")
+            ensure_not_group_world_writable(target_info, "--target")
+        for path, label in software_ancestor_paths(target):
+            if lstat_optional(path) is not None:
+                require_private_directory(path, label)
+        software_parent = final_root.parent
+        if lstat_optional(software_parent) is None:
+            ensure_directory_chain(software_parent, created_dirs, "software parent")
+        else:
+            require_private_directory(software_parent, "software parent")
+        final_root_info = lstat_optional(final_root)
+        if final_root_info is not None:
+            if not allow_existing:
+                fail("Kiro CLI software is already installed")
+            if stat.S_ISLNK(final_root_info.st_mode) or not stat.S_ISDIR(final_root_info.st_mode):
+                fail("existing software root must be a real directory")
+            ensure_not_group_world_writable(final_root_info, "existing software root")
+            rollback_parent = create_transaction_dir(target, "software-rollback")
+            rollback_root = rollback_parent / "previous"
+            os.replace(final_root, rollback_root)
+        os.replace(prepared, final_root)
+        installed_new_root = True
+        stamp = load_software_stamp(target)
+        assert stamp is not None
+        if rollback_parent is not None:
+            shutil.rmtree(rollback_parent)
+            rollback_parent = None
+        return {
+            "target": str(target),
+            "version": stamp["version"],
+            "package": stamp["package"],
+            "executable": str(software_executable_from_stamp(target, stamp)),
+            "rollback": {
+                "mode": "rename-restore",
+                "created_dirs": created_dirs,
+            },
+        }
+    except BaseException:
+        if installed_new_root:
+            final_info = lstat_optional(final_root)
+            if final_info is not None and stat.S_ISDIR(final_info.st_mode) and not stat.S_ISLNK(
+                final_info.st_mode
+            ):
+                shutil.rmtree(final_root, ignore_errors=True)
+        if rollback_root is not None and lstat_optional(rollback_root) is not None:
+            os.replace(rollback_root, final_root)
+        if rollback_parent is not None:
+            shutil.rmtree(rollback_parent, ignore_errors=True)
+        for directory in reversed(created_dirs):
+            with contextlib.suppress(OSError):
+                Path(directory).rmdir()
+        raise
+
+
+def select_software_package(
+    platform_arg: str | None,
+    architecture_arg: str | None,
+    libc_arg: str | None,
+    manifest_path: str | None,
+    manifest_url: str | None,
+) -> SoftwarePackage:
+    os_name = normalize_platform_name(platform_arg)
+    architecture = normalize_architecture(architecture_arg, os_name)
+    libc = normalize_libc(libc_arg, os_name)
+    manifest = read_manifest_source(manifest_path, manifest_url)
+    if manifest_path and test_sources_enabled():
+        return package_from_manifest_for_tests(manifest, os_name, architecture, libc)
+    package = select_baseline_package(os_name, architecture, libc)
+    verify_manifest_package(manifest, package)
+    return package
+
+
+def prepare_software_from_package(
+    target: Path,
+    package: SoftwarePackage,
+    *,
+    artifact_path: str | None,
+    artifact_base_url: str | None,
+) -> tuple[Path, Path]:
+    stage = create_transaction_dir(target, "software-stage")
+    try:
+        artifact = stage_artifact(
+            stage,
+            package,
+            artifact_path=artifact_path,
+            artifact_base_url=artifact_base_url,
+        )
+        prepared, executable_relative = prepare_software_root(stage, artifact, package)
+        finalize_prepared_software(prepared, target, package, executable_relative)
+        return prepared, stage
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+
+
+def software_probe(
+    target: Path,
+    *,
+    platform_arg: str | None,
+    architecture_arg: str | None,
+    libc_arg: str | None,
+    manifest_path: str | None,
+    manifest_url: str | None,
+    artifact_path: str | None,
+    artifact_base_url: str | None,
+) -> dict[str, Any]:
+    preflight_software_target(target, allow_partial=True)
+    package = select_software_package(
+        platform_arg,
+        architecture_arg,
+        libc_arg,
+        manifest_path,
+        manifest_url,
+    )
+    with software_stage(target) as stage:
+        artifact = stage_artifact(
+            stage,
+            package,
+            artifact_path=artifact_path,
+            artifact_base_url=artifact_base_url,
+        )
+        prepared, executable_relative = prepare_software_root(stage, artifact, package)
+        finalize_prepared_software(prepared, target, package, executable_relative)
+        stamp = parse_json_object(
+            (prepared / SOFTWARE_STAMP_NAME).read_bytes(),
+            "prepared software stamp",
+        )
+        return {
+            "operation": "software-probe",
+            "target": str(target),
+            "mutates": False,
+            "stage_only": True,
+            "version": stamp["version"],
+            "package": stamp["package"],
+            "executable": stamp["executable"],
+            "tree": stamp["tree"],
+            "official_vendor_installer": official_vendor_installer_record(),
+        }
+
+
+def software_install(
+    target: Path,
+    *,
+    platform_arg: str | None,
+    architecture_arg: str | None,
+    libc_arg: str | None,
+    manifest_path: str | None,
+    manifest_url: str | None,
+    artifact_path: str | None,
+    artifact_base_url: str | None,
+) -> dict[str, Any]:
+    status = preflight_software_target(target, allow_partial=False)
+    if status["state"] == "installed":
+        fail("Kiro CLI software is already installed")
+    package = select_software_package(
+        platform_arg,
+        architecture_arg,
+        libc_arg,
+        manifest_path,
+        manifest_url,
+    )
+    prepared, stage = prepare_software_from_package(
+        target,
+        package,
+        artifact_path=artifact_path,
+        artifact_base_url=artifact_base_url,
+    )
+    try:
+        with target_lock(target):
+            race_status = preflight_software_target(target, allow_partial=False)
+            if race_status["state"] == "installed":
+                fail("Kiro CLI software is already installed")
+            result = install_prepared_software_root(target, prepared, allow_existing=False)
+    finally:
+        shutil.rmtree(prepared, ignore_errors=True)
+        shutil.rmtree(stage, ignore_errors=True)
+    return {
+        "operation": "software-install",
+        "changed": True,
+        **result,
+        "official_vendor_installer": official_vendor_installer_record(),
+    }
+
+
+def software_update(
+    target: Path,
+    *,
+    platform_arg: str | None,
+    architecture_arg: str | None,
+    libc_arg: str | None,
+    manifest_path: str | None,
+    manifest_url: str | None,
+    artifact_path: str | None,
+    artifact_base_url: str | None,
+) -> dict[str, Any]:
+    status = preflight_software_target(target, allow_partial=True)
+    if status["state"] in {"missing", "absent"}:
+        fail("Kiro CLI software is absent; run software-install first")
+    if status["state"] == "installed":
+        return {
+            "operation": "software-update",
+            "target": str(target),
+            "changed": False,
+            "version": status["version"],
+            "package": status["package"],
+            "executable": status["executable"],
+            "rollback": {"mode": "none", "created_dirs": []},
+            "official_vendor_installer": official_vendor_installer_record(),
+        }
+    package = select_software_package(
+        platform_arg,
+        architecture_arg,
+        libc_arg,
+        manifest_path,
+        manifest_url,
+    )
+    prepared, stage = prepare_software_from_package(
+        target,
+        package,
+        artifact_path=artifact_path,
+        artifact_base_url=artifact_base_url,
+    )
+    try:
+        with target_lock(target):
+            race_status = preflight_software_target(target, allow_partial=True)
+            if race_status["state"] == "installed":
+                return {
+                    "operation": "software-update",
+                    "target": str(target),
+                    "changed": False,
+                    "version": race_status["version"],
+                    "package": race_status["package"],
+                    "executable": race_status["executable"],
+                    "rollback": {"mode": "none", "created_dirs": []},
+                    "official_vendor_installer": official_vendor_installer_record(),
+                }
+            result = install_prepared_software_root(target, prepared, allow_existing=True)
+    finally:
+        shutil.rmtree(prepared, ignore_errors=True)
+        shutil.rmtree(stage, ignore_errors=True)
+    return {
+        "operation": "software-update",
+        "changed": True,
+        **result,
+        "official_vendor_installer": official_vendor_installer_record(),
+    }
+
+
+def software_remove(target: Path) -> dict[str, Any]:
+    with target_lock(target):
+        status = software_status(target)
+        root = software_root(target)
+        if status["state"] in {"missing", "absent"}:
+            return {
+                "operation": "software-remove",
+                "target": str(target),
+                "changed": False,
+                "removed_state": status["state"],
+            }
+        require_directory(root, "software root")
+        shutil.rmtree(root)
+        with contextlib.suppress(OSError):
+            root.parent.rmdir()
+        return {
+            "operation": "software-remove",
+            "target": str(target),
+            "changed": True,
+            "removed_state": status["state"],
+        }
 
 
 def validate_setup_id(setup_id: str) -> None:
@@ -836,6 +2017,7 @@ def current_status(target: Path) -> dict[str, Any]:
             "setup_id": None,
             "drift": [],
             "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
+            "software": software_status(target),
         }
     stamp = load_stamp(target)
     if stamp is None:
@@ -845,6 +2027,7 @@ def current_status(target: Path) -> dict[str, Any]:
             "setup_id": None,
             "drift": [],
             "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
+            "software": software_status(target),
         }
     drift = detect_drift(target, stamp)
     return {
@@ -857,6 +2040,7 @@ def current_status(target: Path) -> dict[str, Any]:
             "projection": BUILDER_PROJECTION,
             "enabled": not any(item in drift for item in BUILDER_FILES),
         },
+        "software": software_status(target),
     }
 
 
@@ -907,6 +2091,8 @@ def mutate_setup(target: Path, setup_id: str, action: str) -> dict[str, Any]:
                 fail("switch requires a managed target")
             preflight_unmanaged_target(target)
         else:
+            if action == "install":
+                fail("install requires an absent managed target; use update or switch")
             drift = detect_drift(target, existing_stamp)
             if drift:
                 fail(f"managed target has drift: {drift}")
@@ -932,6 +2118,35 @@ def mutate_setup(target: Path, setup_id: str, action: str) -> dict[str, Any]:
             "setup_id": setup_id,
             "changed": changed,
             "backup_slot": backup_slot,
+            "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
+        }
+
+
+def update_setup(target: Path) -> dict[str, Any]:
+    with target_lock(target):
+        stamp = load_stamp(target)
+        if stamp is None:
+            fail("update requires a managed target")
+        setup = render_setup(stamp["setup_id"])
+        before = snapshot_managed_files(target)
+        desired = desired_for_setup(target, setup)
+        desired[STAMP_NAME] = canonical_json(stamp_payload(target, setup.setup_id, desired))
+        try:
+            replace_managed_state(target, desired, before)
+        except BaseException:
+            restore_snapshot(target, before)
+            raise
+        changed = [
+            relative
+            for relative in MANAGED_FILES
+            if before[relative].digest != sha256_bytes(desired[relative] or b"")
+        ]
+        return {
+            "operation": "update",
+            "target": str(target),
+            "setup_id": setup.setup_id,
+            "changed": changed,
+            "backup_slot": None,
             "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
         }
 
@@ -1017,17 +2232,29 @@ def build_launch_env(target: Path) -> dict[str, str]:
     return env
 
 
+def require_clean_software(target: Path) -> Path:
+    status = software_status(target)
+    if status["state"] != "installed":
+        fail(f"Kiro CLI software is not installed cleanly in target: {status['state']}")
+    stamp = load_software_stamp(target)
+    if stamp is None:
+        fail("Kiro CLI software stamp is missing")
+    executable = software_executable_from_stamp(target, stamp)
+    require_regular_file(executable, f"Kiro CLI executable {executable}", owner_only=False)
+    return executable
+
+
 def launch(target: Path, child_args: list[str]) -> int:
-    require_clean_managed(target)
-    executable = shutil.which("kiro-cli")
-    if executable is None:
-        fail("kiro-cli executable was not found on PATH")
+    with target_lock(target):
+        require_clean_managed(target)
+        executable = require_clean_software(target)
+        env = build_launch_env(target)
     launch_args = (
         child_args
         if child_args and child_args[0] in {"--v3", "--classic"}
         else ["--v3", *child_args]
     )
-    return subprocess.call([executable, *launch_args], env=build_launch_env(target))
+    return subprocess.call([str(executable), *launch_args], env=env)
 
 
 def emit(payload: dict[str, Any] | list[Any], *, as_json: bool) -> None:
@@ -1044,7 +2271,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     list_parser = subparsers.add_parser("list", help="list available setups")
     list_parser.add_argument("--json", action="store_true")
 
-    for name in ("status", "remove"):
+    for name in ("status", "remove", "update", "software-status", "software-remove"):
         command = subparsers.add_parser(name)
         command.add_argument("--target")
         command.add_argument("--json", action="store_true")
@@ -1059,6 +2286,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     restore_parser.add_argument("--backup", required=True, type=int)
     restore_parser.add_argument("--target")
     restore_parser.add_argument("--json", action="store_true")
+
+    for name in ("software-probe", "software-install", "software-update"):
+        command = subparsers.add_parser(name)
+        command.add_argument("--target")
+        command.add_argument("--platform")
+        command.add_argument("--architecture")
+        command.add_argument("--libc")
+        command.add_argument("--manifest-url")
+        command.add_argument("--manifest-path")
+        command.add_argument("--artifact-base-url")
+        command.add_argument("--artifact-path")
+        command.add_argument("--json", action="store_true")
 
     launch_parser = subparsers.add_parser("launch")
     launch_parser.add_argument("--target")
@@ -1080,6 +2319,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             emit(current_status(resolve_target(args.target)), as_json=args.json)
             return 0
+        if args.command == "software-status":
+            emit(software_status(resolve_target(args.target)), as_json=args.json)
+            return 0
         if args.command == "plan":
             emit(plan_setup(resolve_target(args.target), args.setup), as_json=args.json)
             return 0
@@ -1087,11 +2329,62 @@ def main(argv: list[str] | None = None) -> int:
             action = "install" if args.command == "apply" else args.command
             emit(mutate_setup(resolve_target(args.target), args.setup, action), as_json=args.json)
             return 0
+        if args.command == "update":
+            emit(update_setup(resolve_target(args.target)), as_json=args.json)
+            return 0
         if args.command == "restore":
             emit(restore_backup(resolve_target(args.target), args.backup), as_json=args.json)
             return 0
         if args.command == "remove":
             emit(remove_setup(resolve_target(args.target)), as_json=args.json)
+            return 0
+        if args.command == "software-probe":
+            emit(
+                software_probe(
+                    resolve_target(args.target),
+                    platform_arg=args.platform,
+                    architecture_arg=args.architecture,
+                    libc_arg=args.libc,
+                    manifest_path=args.manifest_path,
+                    manifest_url=args.manifest_url,
+                    artifact_path=args.artifact_path,
+                    artifact_base_url=args.artifact_base_url,
+                ),
+                as_json=args.json,
+            )
+            return 0
+        if args.command == "software-install":
+            emit(
+                software_install(
+                    resolve_target(args.target),
+                    platform_arg=args.platform,
+                    architecture_arg=args.architecture,
+                    libc_arg=args.libc,
+                    manifest_path=args.manifest_path,
+                    manifest_url=args.manifest_url,
+                    artifact_path=args.artifact_path,
+                    artifact_base_url=args.artifact_base_url,
+                ),
+                as_json=args.json,
+            )
+            return 0
+        if args.command == "software-update":
+            emit(
+                software_update(
+                    resolve_target(args.target),
+                    platform_arg=args.platform,
+                    architecture_arg=args.architecture,
+                    libc_arg=args.libc,
+                    manifest_path=args.manifest_path,
+                    manifest_url=args.manifest_url,
+                    artifact_path=args.artifact_path,
+                    artifact_base_url=args.artifact_base_url,
+                ),
+                as_json=args.json,
+            )
+            return 0
+        if args.command == "software-remove":
+            emit(software_remove(resolve_target(args.target)), as_json=args.json)
             return 0
         if args.command == "launch":
             child_args = list(args.child_args)

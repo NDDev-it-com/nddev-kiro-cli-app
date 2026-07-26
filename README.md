@@ -44,9 +44,27 @@ python3 cli-tools/nddev_kiro_cli.py switch --setup balanced --target /absolute/k
 Restore or remove managed state:
 
 ```bash
+python3 cli-tools/nddev_kiro_cli.py update --target /absolute/kiro-home --json
 python3 cli-tools/nddev_kiro_cli.py restore --backup 0 --target /absolute/kiro-home --json
 python3 cli-tools/nddev_kiro_cli.py remove --target /absolute/kiro-home --json
 ```
+
+Inspect, stage-probe, install, update, or remove the target-owned Kiro CLI
+software tree:
+
+```bash
+python3 cli-tools/nddev_kiro_cli.py software-status --target /absolute/kiro-home --json
+python3 cli-tools/nddev_kiro_cli.py software-probe --target /absolute/kiro-home --json
+python3 cli-tools/nddev_kiro_cli.py software-install --target /absolute/kiro-home --json
+python3 cli-tools/nddev_kiro_cli.py software-update --target /absolute/kiro-home --json
+python3 cli-tools/nddev_kiro_cli.py software-remove --target /absolute/kiro-home --json
+```
+
+`software-install` only installs into an absent software tree. Use
+`software-update` to repair safe partial installs or refresh drift; missing or
+absent updates fail with an "install first" domain error. Both mutating paths
+verify the official Kiro manifest SHA-256/size and the exact pinned artifact
+SHA-256/size before writing the target.
 
 Launch Kiro with the isolated target:
 
@@ -54,9 +72,11 @@ Launch Kiro with the isolated target:
 python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --
 ```
 
-`launch` sets `KIRO_HOME` to the target, places child `HOME`, XDG directories,
-and logs under the target runtime directory, strips provider credential
-environment variables, and invokes `kiro-cli --v3`.
+`launch` requires both clean managed setup state and clean target-owned
+software. It sets `KIRO_HOME` to the target, places child `HOME`, XDG
+directories, and logs under the target runtime directory, strips provider
+credential environment variables, and invokes the target-installed
+`kiro-cli --v3`.
 
 ## Setup Variants
 
@@ -82,3 +102,11 @@ managed symlinks, managed hard links, oversized metadata, malformed JSON, drift
 from the target-bound stamp, and backups copied from another target. Mutations
 use target-bound backups and rollback on failure. It preserves unmanaged files
 and unowned settings keys.
+
+The public Kiro shell installer at `https://cli.kiro.dev/install` is tracked as
+official evidence, but the manager does not execute it as the runtime install
+primitive: its macOS branch writes `/Applications` and launches the app. The
+manager instead uses a harness-owned official-artifact installer path that
+downloads the official manifest/artifact, verifies the pinned SHA-256 and byte
+sizes, extracts in staging, and atomically moves only the bounded software tree
+into the explicit target.

@@ -15,8 +15,11 @@
     "install_manifest_url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
     "install_manifest_last_modified": "Fri, 24 Jul 2026 23:18:19 GMT",
     "install_manifest_etag": "693de427dd7e307c662580da13913b27",
+    "install_manifest_sha256": "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe",
+    "install_manifest_size": 9313,
     "install_script_url": "https://cli.kiro.dev/install",
-    "install_script_last_modified": "Fri, 03 Jul 2026 01:34:06 GMT"
+    "install_script_last_modified": "Fri, 03 Jul 2026 01:34:06 GMT",
+    "install_script_sha256": "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
   },
   "configuration": {
     "kiro_home": "~/.kiro",
@@ -101,6 +104,22 @@
   "official_source": {
     "repository": "https://github.com/kirodotdev/Kiro",
     "releases": "https://github.com/kirodotdev/Kiro/releases"
+  },
+  "software_installation": {
+    "manager_install_mode": "harness-owned-official-artifact",
+    "target_software_root": "target/.nddev-runtime/software/kiro-cli",
+    "software_stamp_file": "target/.nddev-runtime/software/kiro-cli/NDDEV-KIRO-CLI-SOFTWARE.json",
+    "official_vendor_installer_supported": false,
+    "official_vendor_installer_limitations": [
+      "macOS branch writes /Applications",
+      "macOS branch launches the app after install",
+      "Linux branch installs into HOME/.local/bin and is only usable inside isolated staging"
+    ],
+    "install_only_absent": true,
+    "update_repairs_safe_partial": true,
+    "update_installs_absent": false,
+    "absent_update_behavior": "domain-error-install-first",
+    "stage_only_probe": true
   },
   "migration": {
     "amazon_q": "Kiro documentation describes Amazon Q migration and backward compatibility; this module exposes only Kiro CLI and kiro-cli.",

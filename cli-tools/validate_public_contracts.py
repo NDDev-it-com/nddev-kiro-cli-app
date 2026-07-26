@@ -152,6 +152,9 @@ def main() -> int:
             errors.append("config/nddev-contract.json: isolated-kiro-home target required")
         if contract.get("managed_state", {}).get("managed_files") != MANAGED_FILES:
             errors.append("config/nddev-contract.json: managed_files mismatch")
+        setup_system = contract.get("setup_system", {})
+        if "update_command" not in setup_system:
+            errors.append("config/nddev-contract.json: setup update_command required")
         builder = contract.get("builder")
         if (
             not isinstance(builder, dict)
@@ -162,6 +165,52 @@ def main() -> int:
             errors.append("config/nddev-contract.json: marketplace must be null")
         elif builder.get("managed_files") != BUILDER_FILES:
             errors.append("config/nddev-contract.json: builder managed_files mismatch")
+        software = contract.get("software_distribution")
+        if not isinstance(software, dict):
+            errors.append("config/nddev-contract.json: software_distribution required")
+        else:
+            if software.get("manager_installs_software") is not True:
+                errors.append("config/nddev-contract.json: manager must install software")
+            if software.get("install_mode") != "harness-owned-official-artifact":
+                errors.append("config/nddev-contract.json: software install mode mismatch")
+            if software.get("install_only_absent") is not True:
+                errors.append("config/nddev-contract.json: install_only_absent required")
+            if software.get("update_repairs_safe_partial") is not True:
+                errors.append("config/nddev-contract.json: update repair contract required")
+            if software.get("update_installs_absent") is not False:
+                errors.append("config/nddev-contract.json: absent update must be disabled")
+            if software.get("absent_update_behavior") != "domain-error-install-first":
+                errors.append("config/nddev-contract.json: absent update behavior mismatch")
+            manifest_pin = software.get("official_manifest")
+            if not isinstance(manifest_pin, dict):
+                errors.append("config/nddev-contract.json: official manifest pin required")
+            else:
+                if manifest_pin.get("sha256") != (
+                    "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
+                ):
+                    errors.append("config/nddev-contract.json: manifest sha256 mismatch")
+                if manifest_pin.get("size") != 9313:
+                    errors.append("config/nddev-contract.json: manifest size mismatch")
+            if software.get("supported_platforms") != [
+                "macos-universal-dmg",
+                "linux-x86_64-glibc-zip",
+                "linux-aarch64-glibc-zip",
+                "linux-x86_64-musl-zip",
+                "linux-aarch64-musl-zip",
+            ]:
+                errors.append("config/nddev-contract.json: supported platforms mismatch")
+            installer = software.get("official_vendor_installer")
+            if not isinstance(installer, dict):
+                errors.append("config/nddev-contract.json: official installer record required")
+            else:
+                if installer.get("sha256") != (
+                    "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
+                ):
+                    errors.append("config/nddev-contract.json: installer sha256 mismatch")
+                if installer.get("target_owned") is not False or installer.get(
+                    "used_by_manager"
+                ) is not False:
+                    errors.append("config/nddev-contract.json: installer limitation mismatch")
     if baseline is not None:
         if version is not None and baseline.get("release", {}).get("version") != version.get(
             "kiro_cli_current"
@@ -174,6 +223,25 @@ def main() -> int:
             errors.append("references/kiro-cli-baseline.json: settings path mismatch")
         if baseline.get("runtime", {}).get("executable") != "kiro-cli":
             errors.append("references/kiro-cli-baseline.json: executable must be kiro-cli")
+        if baseline.get("release", {}).get("install_script_sha256") != (
+            "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
+        ):
+            errors.append("references/kiro-cli-baseline.json: install script sha256 mismatch")
+        if baseline.get("release", {}).get("install_manifest_sha256") != (
+            "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
+        ):
+            errors.append("references/kiro-cli-baseline.json: install manifest sha256 mismatch")
+        if baseline.get("release", {}).get("install_manifest_size") != 9313:
+            errors.append("references/kiro-cli-baseline.json: install manifest size mismatch")
+        software = baseline.get("software_installation")
+        if not isinstance(software, dict):
+            errors.append("references/kiro-cli-baseline.json: software installation missing")
+        elif software.get("official_vendor_installer_supported") is not False:
+            errors.append("references/kiro-cli-baseline.json: installer limitation missing")
+        elif software.get("update_installs_absent") is not False:
+            errors.append("references/kiro-cli-baseline.json: absent update must be disabled")
+        elif software.get("absent_update_behavior") != "domain-error-install-first":
+            errors.append("references/kiro-cli-baseline.json: absent update behavior mismatch")
         packages = baseline.get("install_manifest", {}).get("packages")
         if not isinstance(packages, list) or not packages:
             errors.append("references/kiro-cli-baseline.json: install packages missing")
