@@ -7,6 +7,27 @@
     "executable": "kiro-cli",
     "current_version": "2.14.2",
     "engine_argument": "--v3",
+    "managed_launch_blocked_commands": [
+      "agent",
+      "diagnostic",
+      "integrations",
+      "launch",
+      "login",
+      "logout",
+      "mcp",
+      "settings",
+      "update",
+      "whoami"
+    ],
+    "managed_launch_blocked_options": [
+      "--agent",
+      "--classic",
+      "--no-interactive",
+      "--require-mcp-startup",
+      "--trust-all-tools",
+      "--trust-tools",
+      "--v3"
+    ],
     "baseline": "references/kiro-cli-baseline.json"
   },
   "setup_ids": [

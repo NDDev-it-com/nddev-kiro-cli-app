@@ -39,6 +39,27 @@ EXPECTED_SETTINGS = {
     "chat.ui": "terminal",
     "telemetry.enabled": False,
 }
+MANAGED_LAUNCH_BLOCKED_COMMANDS = [
+    "agent",
+    "diagnostic",
+    "integrations",
+    "launch",
+    "login",
+    "logout",
+    "mcp",
+    "settings",
+    "update",
+    "whoami",
+]
+MANAGED_LAUNCH_BLOCKED_OPTIONS = [
+    "--agent",
+    "--classic",
+    "--no-interactive",
+    "--require-mcp-startup",
+    "--trust-all-tools",
+    "--trust-tools",
+    "--v3",
+]
 
 
 def load_json(relative: str, errors: list[str]) -> dict[str, Any] | None:
@@ -135,6 +156,14 @@ def main() -> int:
             errors.append("build/manifest.json: build_version mismatch")
         if manifest.get("setup_ids") != SETUP_IDS:
             errors.append("build/manifest.json: setup_ids mismatch")
+        runtime = manifest.get("runtime")
+        if not isinstance(runtime, dict):
+            errors.append("build/manifest.json: runtime required")
+        else:
+            if runtime.get("managed_launch_blocked_commands") != MANAGED_LAUNCH_BLOCKED_COMMANDS:
+                errors.append("build/manifest.json: managed launch command guard mismatch")
+            if runtime.get("managed_launch_blocked_options") != MANAGED_LAUNCH_BLOCKED_OPTIONS:
+                errors.append("build/manifest.json: managed launch option guard mismatch")
         builder = manifest.get("builder")
         if (
             not isinstance(builder, dict)
@@ -152,6 +181,22 @@ def main() -> int:
             errors.append("config/nddev-contract.json: isolated-kiro-home target required")
         if contract.get("managed_state", {}).get("managed_files") != MANAGED_FILES:
             errors.append("config/nddev-contract.json: managed_files mismatch")
+        runtime_launch = contract.get("runtime_launch")
+        if not isinstance(runtime_launch, dict):
+            errors.append("config/nddev-contract.json: runtime_launch required")
+        else:
+            if runtime_launch.get("engine_argument") != "--v3":
+                errors.append("config/nddev-contract.json: launch must force --v3")
+            if (
+                runtime_launch.get("managed_launch_blocked_commands")
+                != MANAGED_LAUNCH_BLOCKED_COMMANDS
+            ):
+                errors.append("config/nddev-contract.json: managed launch command guard mismatch")
+            if (
+                runtime_launch.get("managed_launch_blocked_options")
+                != MANAGED_LAUNCH_BLOCKED_OPTIONS
+            ):
+                errors.append("config/nddev-contract.json: managed launch option guard mismatch")
         setup_system = contract.get("setup_system", {})
         if "update_command" not in setup_system:
             errors.append("config/nddev-contract.json: setup update_command required")

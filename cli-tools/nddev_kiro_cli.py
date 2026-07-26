@@ -63,6 +63,28 @@ SOFTWARE_TREE_MAX_FILES = 20000
 SOFTWARE_TREE_MAX_BYTES = 3 * 1024 * 1024 * 1024
 SOFTWARE_METADATA_MAX_BYTES = 1024 * 1024
 DOWNLOAD_METADATA_MAX_BYTES = 4 * 1024 * 1024
+MANAGED_LAUNCH_ENGINE_ARGUMENT = "--v3"
+MANAGED_LAUNCH_BLOCKED_OPTIONS = (
+    "--agent",
+    "--classic",
+    "--no-interactive",
+    "--require-mcp-startup",
+    "--trust-all-tools",
+    "--trust-tools",
+    "--v3",
+)
+MANAGED_LAUNCH_BLOCKED_COMMANDS = (
+    "agent",
+    "diagnostic",
+    "integrations",
+    "launch",
+    "login",
+    "logout",
+    "mcp",
+    "settings",
+    "update",
+    "whoami",
+)
 SETTINGS_MANAGED_KEYS = (
     "chat.defaultAgent",
     "chat.disableInheritingDefaultResources",
@@ -499,15 +521,37 @@ def package_from_manifest_for_tests(
     )
 
 
+def parse_content_length(value: str | None, max_bytes: int, label: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        expected = int(value)
+    except ValueError:
+        fail(f"{label} Content-Length is not an integer")
+    if expected < 0:
+        fail(f"{label} Content-Length is negative")
+    if expected > max_bytes:
+        fail(f"{label} exceeds the {max_bytes}-byte size limit")
+    return expected
+
+
+def verify_content_length(expected: int | None, actual: int, label: str) -> None:
+    if expected is not None and actual != expected:
+        fail(f"{label} Content-Length mismatch")
+
+
 def read_bounded_url(url: str, max_bytes: int, label: str) -> bytes:
     if not url.startswith("https://"):
         fail(f"{label} must use https")
     request = urllib.request.Request(url, headers={"User-Agent": f"{PRODUCT_NAME}/{VERSION}"})
+    expected_length: int | None = None
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            content_length = response.headers.get("Content-Length")
-            if content_length is not None and int(content_length) > max_bytes:
-                fail(f"{label} exceeds the {max_bytes}-byte size limit")
+            expected_length = parse_content_length(
+                response.headers.get("Content-Length"),
+                max_bytes,
+                label,
+            )
             chunks: list[bytes] = []
             total = 0
             while True:
@@ -520,7 +564,9 @@ def read_bounded_url(url: str, max_bytes: int, label: str) -> bytes:
                 chunks.append(chunk)
     except (OSError, urllib.error.URLError, ValueError) as exc:
         fail(f"failed to download {label}: {exc}")
-    return b"".join(chunks)
+    content = b"".join(chunks)
+    verify_content_length(expected_length, len(content), label)
+    return content
 
 
 def download_bounded_url(url: str, destination: Path, max_bytes: int, label: str) -> str:
@@ -530,11 +576,14 @@ def download_bounded_url(url: str, destination: Path, max_bytes: int, label: str
     request = urllib.request.Request(url, headers={"User-Agent": f"{PRODUCT_NAME}/{VERSION}"})
     digest = hashlib.sha256()
     total = 0
+    expected_length: int | None = None
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
-            content_length = response.headers.get("Content-Length")
-            if content_length is not None and int(content_length) > max_bytes:
-                fail(f"{label} exceeds the {max_bytes}-byte size limit")
+            expected_length = parse_content_length(
+                response.headers.get("Content-Length"),
+                max_bytes,
+                label,
+            )
             with destination.open("wb") as handle:
                 while True:
                     chunk = response.read(1024 * 1024)
@@ -548,6 +597,11 @@ def download_bounded_url(url: str, destination: Path, max_bytes: int, label: str
     except (OSError, urllib.error.URLError, ValueError) as exc:
         destination.unlink(missing_ok=True)
         fail(f"failed to download {label}: {exc}")
+    try:
+        verify_content_length(expected_length, total, label)
+    except ManagerError:
+        destination.unlink(missing_ok=True)
+        raise
     return digest.hexdigest()
 
 
@@ -2244,16 +2298,28 @@ def require_clean_software(target: Path) -> Path:
     return executable
 
 
+def reject_managed_launch_overrides(child_args: list[str]) -> None:
+    if child_args:
+        first = child_args[0]
+        if first in MANAGED_LAUNCH_BLOCKED_COMMANDS:
+            fail(f"launch refuses managed-scope Kiro CLI command: {first}")
+    blocked_options = set(MANAGED_LAUNCH_BLOCKED_OPTIONS)
+    for argument in child_args:
+        if argument == "--":
+            continue
+        if argument.startswith("--"):
+            option = argument.split("=", 1)[0]
+            if option in blocked_options:
+                fail(f"launch refuses managed-scope Kiro CLI option: {option}")
+
+
 def launch(target: Path, child_args: list[str]) -> int:
+    reject_managed_launch_overrides(child_args)
     with target_lock(target):
         require_clean_managed(target)
         executable = require_clean_software(target)
         env = build_launch_env(target)
-    launch_args = (
-        child_args
-        if child_args and child_args[0] in {"--v3", "--classic"}
-        else ["--v3", *child_args]
-    )
+    launch_args = [MANAGED_LAUNCH_ENGINE_ARGUMENT, *child_args]
     return subprocess.call([str(executable), *launch_args], env=env)
 
 

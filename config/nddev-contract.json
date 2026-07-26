@@ -89,6 +89,27 @@
       "XDG_CACHE_HOME": "target/.nddev-runtime/xdg/cache",
       "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log"
     },
+    "managed_launch_blocked_commands": [
+      "agent",
+      "diagnostic",
+      "integrations",
+      "launch",
+      "login",
+      "logout",
+      "mcp",
+      "settings",
+      "update",
+      "whoami"
+    ],
+    "managed_launch_blocked_options": [
+      "--agent",
+      "--classic",
+      "--no-interactive",
+      "--require-mcp-startup",
+      "--trust-all-tools",
+      "--trust-tools",
+      "--v3"
+    ],
     "credential_env_inherited": false,
     "forwards_arguments": true,
     "forwards_child_exit_code": true,

@@ -76,7 +76,9 @@ python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --
 software. It sets `KIRO_HOME` to the target, places child `HOME`, XDG
 directories, and logs under the target runtime directory, strips provider
 credential environment variables, and invokes the target-installed
-`kiro-cli --v3`.
+`kiro-cli --v3`. Arguments that would override the managed Kiro v3 engine,
+agent, trust, auth, settings, integrations, MCP, or update scope are rejected
+before the target lock is taken.
 
 ## Setup Variants
 
