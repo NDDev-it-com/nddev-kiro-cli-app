@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "safe",
+  "description": "Prompt-first Kiro CLI profile with explicit approvals for writes, shell, web, MCP, and subagents.",
+  "managed_files": [
+    "settings/cli.json",
+    "settings/permissions.yaml",
+    "agents/nddev-builder.md",
+    "skills/nddev-builder/SKILL.md",
+    "steering/nddev-builder.md",
+    "hooks/nddev-builder.json"
+  ],
+  "managed_settings": {
+    "chat.defaultAgent": "nddev-builder",
+    "chat.disableInheritingDefaultResources": false,
+    "chat.ui": "terminal",
+    "telemetry.enabled": false
+  },
+  "permission_profile": "safe",
+  "builder_enabled": true
+}

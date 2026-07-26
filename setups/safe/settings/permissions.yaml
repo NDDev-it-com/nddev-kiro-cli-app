@@ -1,0 +1,26 @@
+rules:
+  - capability: fs_read
+    effect: deny
+    match:
+      - "**/.env"
+      - "**/.env.*"
+      - "**/*.pem"
+      - "secrets/**"
+  - capability: shell
+    effect: ask
+  - capability: fs_write
+    effect: ask
+  - capability: web_fetch
+    effect: ask
+  - capability: web_search
+    effect: ask
+  - capability: mcp
+    effect: ask
+  - capability: subagent
+    effect: ask
+  - capability: skill
+    effect: allow
+  - capability: diagnostics
+    effect: allow
+  - capability: context
+    effect: allow

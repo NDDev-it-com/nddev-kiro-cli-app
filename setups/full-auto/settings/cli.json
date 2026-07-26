@@ -1,0 +1,6 @@
+{
+  "chat.defaultAgent": "nddev-builder",
+  "chat.disableInheritingDefaultResources": false,
+  "chat.ui": "terminal",
+  "telemetry.enabled": false
+}

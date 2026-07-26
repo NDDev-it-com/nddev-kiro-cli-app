@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-07-26",
+  "verified_version_ref": "build/version.json:kiro_cli_current",
+  "runtime": {
+    "product": "Kiro CLI",
+    "executable": "kiro-cli",
+    "engine_argument": "--v3",
+    "kiro_home_env": "KIRO_HOME"
+  },
+  "release": {
+    "channel": "stable",
+    "version": "2.14.2",
+    "changelog": "https://kiro.dev/changelog/cli/",
+    "install_manifest_url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
+    "install_manifest_last_modified": "Fri, 24 Jul 2026 23:18:19 GMT",
+    "install_manifest_etag": "693de427dd7e307c662580da13913b27",
+    "install_script_url": "https://cli.kiro.dev/install",
+    "install_script_last_modified": "Fri, 03 Jul 2026 01:34:06 GMT"
+  },
+  "configuration": {
+    "kiro_home": "~/.kiro",
+    "settings_file": "~/.kiro/settings/cli.json",
+    "permissions_file": "~/.kiro/settings/permissions.yaml",
+    "global_agents": "~/.kiro/agents/",
+    "global_skills": "~/.kiro/skills/",
+    "global_steering": "~/.kiro/steering/",
+    "global_hooks": "~/.kiro/hooks/",
+    "mcp_file": "~/.kiro/settings/mcp.json",
+    "marketplace": null,
+    "sandbox": null
+  },
+  "install_manifest": {
+    "url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
+    "version": "2.14.2",
+    "packages": [
+      {
+        "os": "macos",
+        "architecture": "universal",
+        "variant": "full",
+        "fileType": "dmg",
+        "download": "2.14.2/Kiro CLI.dmg",
+        "sha256": "114d860ce88ae6244de82c6b7fd7bbf411a85665489184d9c9fc7cb9a3a8a81b",
+        "size": 681865214,
+        "cliPath": "Contents/MacOS/kiro-cli"
+      },
+      {
+        "os": "linux",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.14.2/kirocli-x86_64-linux.zip",
+        "sha256": "b144d4b1f8ca0083967fe13a5c35db18bd9543ecede6f1eec166f3b0a04f876a",
+        "size": 553914026
+      },
+      {
+        "os": "linux",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.14.2/kirocli-aarch64-linux.zip",
+        "sha256": "c6a090372664db8a103b5de1addcf6322a845be853d8e8f38aab9c28a6de6866",
+        "size": 509046194
+      },
+      {
+        "os": "linux",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.14.2/kirocli-x86_64-linux-musl.zip",
+        "sha256": "591df5d6f974c1b9c1c324a54b88f7e708f255f8cffdc6e8c61cbfa003ece832",
+        "size": 510905059
+      },
+      {
+        "os": "linux",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.14.2/kirocli-aarch64-linux-musl.zip",
+        "sha256": "b7deac65336778a4edd656cc6fc4b5518372937d8e439df284f136a814c09b57",
+        "size": 507785106
+      }
+    ]
+  },
+  "official_docs": {
+    "overview": "https://kiro.dev/docs/cli/",
+    "installation": "https://kiro.dev/docs/cli/installation/",
+    "settings": "https://kiro.dev/docs/cli/reference/settings/",
+    "commands": "https://kiro.dev/docs/cli/reference/cli-commands/",
+    "configuration": "https://kiro.dev/docs/cli/chat/configuration/",
+    "permissions": "https://kiro.dev/docs/cli/v3/permissions/",
+    "v3": "https://kiro.dev/docs/cli/v3/",
+    "agents": "https://kiro.dev/docs/cli/v3/agent-config/",
+    "skills": "https://kiro.dev/docs/cli/skills/",
+    "steering": "https://kiro.dev/docs/cli/steering/",
+    "hooks": "https://kiro.dev/docs/cli/v3/hooks/",
+    "mcp": "https://kiro.dev/docs/cli/mcp/configuration/",
+    "privacy_security": "https://kiro.dev/docs/cli/privacy-and-security/",
+    "migration": "https://kiro.dev/docs/cli/migrating-from-q/"
+  },
+  "official_source": {
+    "repository": "https://github.com/kirodotdev/Kiro",
+    "releases": "https://github.com/kirodotdev/Kiro/releases"
+  },
+  "migration": {
+    "amazon_q": "Kiro documentation describes Amazon Q migration and backward compatibility; this module exposes only Kiro CLI and kiro-cli.",
+    "codewhisperer": null
+  }
+}

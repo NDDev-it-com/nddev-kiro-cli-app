@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "product_name": "nddev-kiro-cli-app",
+  "build_version": "0.1.0",
+  "runtime": {
+    "product": "Kiro CLI",
+    "executable": "kiro-cli",
+    "current_version": "2.14.2",
+    "engine_argument": "--v3",
+    "baseline": "references/kiro-cli-baseline.json"
+  },
+  "setup_ids": [
+    "safe",
+    "balanced",
+    "full-auto"
+  ],
+  "catalog_root": "setups",
+  "manager": {
+    "path": "cli-tools/nddev_kiro_cli.py",
+    "commands": [
+      "list",
+      "status",
+      "plan",
+      "install",
+      "apply",
+      "switch",
+      "restore",
+      "remove",
+      "launch"
+    ],
+    "explicit_target": true,
+    "target_environment_variable": "KIRO_HOME"
+  },
+  "builder": {
+    "id": "nddev-builder",
+    "status": "default-on",
+    "projection": "native-agent-skill-steering-hook",
+    "marketplace": null,
+    "native_surfaces": [
+      "agents",
+      "skills",
+      "steering",
+      "hooks",
+      "permissions"
+    ],
+    "managed_files": [
+      "agents/nddev-builder.md",
+      "skills/nddev-builder/SKILL.md",
+      "steering/nddev-builder.md",
+      "hooks/nddev-builder.json"
+    ]
+  },
+  "public_validator": "cli-tools/validate_public_contracts.py"
+}

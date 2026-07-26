@@ -3,8 +3,147 @@
   "product_name": "nddev-kiro-cli-app",
   "github_repository": "NDDev-it-com/nddev-kiro-cli-app",
   "license": "AGPL-3.0-or-later",
-  "skeleton": {
-    "status": "skeleton",
-    "harness_id": "kiro-cli"
+  "manifest_ref": "build/manifest.json",
+  "version_ref": "build/version.json",
+  "setup_system": {
+    "catalog_root": "setups",
+    "setup_ids": [
+      "safe",
+      "balanced",
+      "full-auto"
+    ],
+    "list_command": "python3 cli-tools/nddev_kiro_cli.py list --json",
+    "status_command": "python3 cli-tools/nddev_kiro_cli.py status --target /absolute/kiro-home --json",
+    "plan_command": "python3 cli-tools/nddev_kiro_cli.py plan --setup safe --target /absolute/kiro-home --json",
+    "install_command": "python3 cli-tools/nddev_kiro_cli.py install --setup safe --target /absolute/kiro-home --json",
+    "switch_command": "python3 cli-tools/nddev_kiro_cli.py switch --setup balanced --target /absolute/kiro-home --json",
+    "restore_command": "python3 cli-tools/nddev_kiro_cli.py restore --backup 0 --target /absolute/kiro-home --json",
+    "remove_command": "python3 cli-tools/nddev_kiro_cli.py remove --target /absolute/kiro-home --json",
+    "launch_command": "python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --",
+    "selection_option": "--setup",
+    "plan_mutates": false
+  },
+  "managed_state": {
+    "target_model": "isolated-kiro-home",
+    "target_environment_variable": "KIRO_HOME",
+    "settings_file": "settings/cli.json",
+    "permissions_file": "settings/permissions.yaml",
+    "stamp_file": "NDDEV-KIRO-CLI-SETUP.json",
+    "stamp_schema": 1,
+    "backup_slots": 10,
+    "new_target_mode": "0700",
+    "managed_file_mode": "0600",
+    "managed_settings_keys": [
+      "chat.defaultAgent",
+      "chat.disableInheritingDefaultResources",
+      "chat.ui",
+      "telemetry.enabled"
+    ],
+    "managed_files": [
+      "settings/cli.json",
+      "settings/permissions.yaml",
+      "agents/nddev-builder.md",
+      "skills/nddev-builder/SKILL.md",
+      "steering/nddev-builder.md",
+      "hooks/nddev-builder.json"
+    ],
+    "preserve_other_state": true
+  },
+  "builder": {
+    "id": "nddev-builder",
+    "status": "default-on",
+    "projection": "native-agent-skill-steering-hook",
+    "marketplace": null,
+    "native_surfaces": {
+      "agents": "Kiro v3 Markdown agent profile under KIRO_HOME/agents",
+      "skills": "Agent Skills SKILL.md under KIRO_HOME/skills",
+      "steering": "global steering Markdown under KIRO_HOME/steering",
+      "hooks": "Kiro v3 standalone hook JSON under KIRO_HOME/hooks",
+      "mcp": null
+    },
+    "managed_files": [
+      "agents/nddev-builder.md",
+      "skills/nddev-builder/SKILL.md",
+      "steering/nddev-builder.md",
+      "hooks/nddev-builder.json"
+    ],
+    "enabled_in_setups": [
+      "safe",
+      "balanced",
+      "full-auto"
+    ]
+  },
+  "runtime_launch": {
+    "executable": "kiro-cli",
+    "engine_argument": "--v3",
+    "direct_command": false,
+    "manager_command": "python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --",
+    "requires_clean_managed_target": true,
+    "target_environment_scope": {
+      "KIRO_HOME": "target",
+      "HOME": "target/.nddev-runtime/home",
+      "XDG_CONFIG_HOME": "target/.nddev-runtime/xdg/config",
+      "XDG_DATA_HOME": "target/.nddev-runtime/xdg/data",
+      "XDG_STATE_HOME": "target/.nddev-runtime/xdg/state",
+      "XDG_CACHE_HOME": "target/.nddev-runtime/xdg/cache",
+      "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log"
+    },
+    "credential_env_inherited": false,
+    "forwards_arguments": true,
+    "forwards_child_exit_code": true,
+    "successful_child_output_wrapped": false
+  },
+  "runtime_compatibility": {
+    "product": "Kiro CLI",
+    "version_ref": "build/version.json:kiro_cli_current",
+    "baseline_ref": "references/kiro-cli-baseline.json",
+    "official_docs": {
+      "overview": "https://kiro.dev/docs/cli/",
+      "installation": "https://kiro.dev/docs/cli/installation/",
+      "settings": "https://kiro.dev/docs/cli/reference/settings/",
+      "commands": "https://kiro.dev/docs/cli/reference/cli-commands/",
+      "configuration": "https://kiro.dev/docs/cli/chat/configuration/",
+      "permissions": "https://kiro.dev/docs/cli/v3/permissions/",
+      "v3": "https://kiro.dev/docs/cli/v3/",
+      "agents": "https://kiro.dev/docs/cli/v3/agent-config/",
+      "skills": "https://kiro.dev/docs/cli/skills/",
+      "steering": "https://kiro.dev/docs/cli/steering/",
+      "hooks": "https://kiro.dev/docs/cli/v3/hooks/",
+      "mcp": "https://kiro.dev/docs/cli/mcp/configuration/",
+      "privacy_security": "https://kiro.dev/docs/cli/privacy-and-security/",
+      "migration": "https://kiro.dev/docs/cli/migrating-from-q/"
+    },
+    "official_source": {
+      "repository": "https://github.com/kirodotdev/Kiro",
+      "releases": "https://github.com/kirodotdev/Kiro/releases",
+      "install_script": "https://cli.kiro.dev/install",
+      "install_manifest": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json"
+    }
+  },
+  "software_distribution": {
+    "manager_installs_software": false,
+    "official_update_command": "kiro-cli update",
+    "current_artifacts_ref": "references/kiro-cli-baseline.json:install_manifest.packages",
+    "integrity_pinned": true
+  },
+  "migration": {
+    "legacy_amazon_q": "documented migration source only; q and q chat are not product aliases for this module",
+    "codewhisperer": null
+  },
+  "safety": {
+    "absolute_target_required": true,
+    "relative_target_rejected": true,
+    "default_target": null,
+    "canonical_target_binding": true,
+    "max_backups": 10,
+    "bounded_reads": true,
+    "target_symlinks_rejected": true,
+    "reject_symlink_managed_files": true,
+    "reject_hardlinked_managed_files": true,
+    "rollback_on_failure": true,
+    "preserve_unmanaged_settings_keys": true,
+    "preserve_unmanaged_files": true,
+    "sandbox_native_surface": null,
+    "sandbox_note": "Kiro privacy documentation states Kiro is not a sandbox; this module uses isolated HOME/KIRO_HOME plus permissions.yaml instead of claiming sandboxing."
   }
 }
