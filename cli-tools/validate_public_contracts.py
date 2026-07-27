@@ -128,6 +128,7 @@ SUPPORTED_PLATFORMS = [
     "linux-x86_64-musl-zip",
     "linux-aarch64-musl-zip",
 ]
+TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
 
@@ -263,6 +264,8 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
         errors.append(f"{label}: managed launch command guard mismatch")
     if runtime.get("managed_launch_blocked_options") != MANAGED_LAUNCH_BLOCKED_OPTIONS:
         errors.append(f"{label}: managed launch option guard mismatch")
+    if runtime.get("trusted_system_path") not in (None, TRUSTED_SYSTEM_PATH):
+        errors.append(f"{label}: trusted system PATH mismatch")
 
 
 def check_builder(builder: Any, label: str, errors: list[str]) -> None:
@@ -322,6 +325,15 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: supported platforms mismatch")
     if software.get("unsupported_platforms") != ["windows"]:
         errors.append(f"{label}: unsupported platforms mismatch")
+    if software.get("trusted_bash") not in (None, "/bin/bash"):
+        errors.append(f"{label}: trusted bash mismatch")
+    if software.get("trusted_system_path") not in (None, TRUSTED_SYSTEM_PATH):
+        errors.append(f"{label}: trusted system PATH mismatch")
+    if software.get("transaction_parent_policy") not in (
+        None,
+        "owner-private-or-sticky-same-filesystem",
+    ):
+        errors.append(f"{label}: transaction parent policy mismatch")
     manifest_pin = software.get("official_manifest")
     if not isinstance(manifest_pin, dict):
         errors.append(f"{label}: official manifest pin required")
@@ -354,6 +366,14 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         errors.append("config/nddev-contract.json: stamp_schema mismatch")
     if managed_state.get("legacy_stamp_schema") != 1:
         errors.append("config/nddev-contract.json: legacy stamp schema mismatch")
+    if managed_state.get("existing_target_mode") != "0700":
+        errors.append("config/nddev-contract.json: existing target mode mismatch")
+    if managed_state.get("runtime_state_root") != ".nddev-runtime":
+        errors.append("config/nddev-contract.json: runtime state root mismatch")
+    if managed_state.get("lock_root") != "target/.nddev-runtime/locks/setup-manager.lock":
+        errors.append("config/nddev-contract.json: lock root mismatch")
+    if managed_state.get("backup_root") != "target/.nddev-runtime/backups/setup":
+        errors.append("config/nddev-contract.json: backup root mismatch")
     if managed_state.get("managed_files") != MANAGED_FILES:
         errors.append("config/nddev-contract.json: managed_files mismatch")
     if managed_state.get("managed_content_files") != BUILDER_FILES:
@@ -387,6 +407,13 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         check_runtime(runtime_launch, "config/nddev-contract.json", errors)
         if runtime_launch.get("credential_env_inherited") is not False:
             errors.append("config/nddev-contract.json: credential env boundary mismatch")
+        if runtime_launch.get("ambient_path_inherited") is not False:
+            errors.append("config/nddev-contract.json: ambient PATH boundary mismatch")
+        if runtime_launch.get("trusted_system_path") != TRUSTED_SYSTEM_PATH:
+            errors.append("config/nddev-contract.json: trusted system PATH mismatch")
+        target_env = runtime_launch.get("target_environment_scope", {})
+        if target_env.get("PATH") != TRUSTED_SYSTEM_PATH:
+            errors.append("config/nddev-contract.json: launch PATH mismatch")
         if runtime_launch.get("denies_legacy_managed_target") is not True:
             errors.append("config/nddev-contract.json: legacy launch denial required")
     check_builder(contract.get("builder"), "config/nddev-contract.json", errors)
@@ -409,6 +436,16 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         elif "workspace .kiro/hooks/<name>.json" not in native_surfaces.get("hooks", ""):
             errors.append("config/nddev-contract.json: workspace hook discovery mismatch")
     check_software(contract.get("software_distribution"), "config/nddev-contract.json", errors)
+    safety = contract.get("safety", {})
+    for key in (
+        "existing_target_owner_private_mode_required",
+        "nddev_runtime_state_owner_private",
+        "lock_state_under_target",
+        "backup_state_under_target",
+        "attacker_sibling_lock_backup_ignored",
+    ):
+        if safety.get(key) is not True:
+            errors.append(f"config/nddev-contract.json: safety.{key} required")
 
 
 def check_baseline(
@@ -427,6 +464,8 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: engine argument mismatch")
     if runtime.get("engine_status") != "early-access-required":
         errors.append("references/kiro-cli-baseline.json: engine status mismatch")
+    if runtime.get("trusted_system_path") != TRUSTED_SYSTEM_PATH:
+        errors.append("references/kiro-cli-baseline.json: trusted system PATH mismatch")
     configuration = baseline.get("configuration", {})
     if configuration.get("marketplace") is not None:
         errors.append("references/kiro-cli-baseline.json: marketplace must be null")
@@ -445,6 +484,9 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: agent tools mismatch")
     if baseline.get("runtime", {}).get("executable") != "kiro-cli":
         errors.append("references/kiro-cli-baseline.json: executable must be kiro-cli")
+    authentication = baseline.get("authentication", {})
+    if authentication.get("manager_launch_inherits_path") is not False:
+        errors.append("references/kiro-cli-baseline.json: launch PATH boundary mismatch")
     release = baseline.get("release", {})
     if release.get("install_script_sha256") != INSTALLER_SHA256:
         errors.append("references/kiro-cli-baseline.json: install script sha256 mismatch")
@@ -458,6 +500,14 @@ def check_baseline(
     else:
         if software.get("manager_install_mode") != "target-owned-official-artifact":
             errors.append("references/kiro-cli-baseline.json: install mode mismatch")
+        if software.get("lock_root") != "target/.nddev-runtime/locks/setup-manager.lock":
+            errors.append("references/kiro-cli-baseline.json: lock root mismatch")
+        if software.get("backup_root") != "target/.nddev-runtime/backups/setup":
+            errors.append("references/kiro-cli-baseline.json: backup root mismatch")
+        if software.get("trusted_bash") != "/bin/bash":
+            errors.append("references/kiro-cli-baseline.json: trusted bash mismatch")
+        if software.get("trusted_system_path") != TRUSTED_SYSTEM_PATH:
+            errors.append("references/kiro-cli-baseline.json: trusted system PATH mismatch")
         if software.get("official_vendor_installer_supported") is not False:
             errors.append("references/kiro-cli-baseline.json: installer limitation missing")
         if software.get("supported_platforms") != SUPPORTED_PLATFORMS:

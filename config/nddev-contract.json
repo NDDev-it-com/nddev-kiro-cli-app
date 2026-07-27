@@ -49,7 +49,11 @@
     "legacy_backup_schema": 1,
     "backup_slots": 10,
     "new_target_mode": "0700",
+    "existing_target_mode": "0700",
     "managed_file_mode": "0600",
+    "runtime_state_root": ".nddev-runtime",
+    "lock_root": "target/.nddev-runtime/locks/setup-manager.lock",
+    "backup_root": "target/.nddev-runtime/backups/setup",
     "managed_settings_keys": [
       "app.disableAutoupdates",
       "chat.defaultAgent",
@@ -187,7 +191,8 @@
       "XDG_DATA_HOME": "target/.nddev-runtime/xdg/data",
       "XDG_STATE_HOME": "target/.nddev-runtime/xdg/state",
       "XDG_CACHE_HOME": "target/.nddev-runtime/xdg/cache",
-      "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log"
+      "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log",
+      "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
     },
     "managed_launch_blocked_commands": [
       "agent",
@@ -211,6 +216,8 @@
       "--v3"
     ],
     "credential_env_inherited": false,
+    "ambient_path_inherited": false,
+    "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
     "pre_login_auth_boundary": "login, logout, whoami, KIRO_API_KEY, and provider credential environment are outside managed launch",
     "forwards_arguments": true,
     "forwards_child_exit_code": true,
@@ -255,6 +262,9 @@
     "remove_command": "python3 cli-tools/nddev_kiro_cli.py software-remove --target /absolute/kiro-home --json",
     "target_software_root": "target/.nddev-runtime/software/kiro-cli",
     "stamp_file": "target/.nddev-runtime/software/kiro-cli/NDDEV-KIRO-CLI-SOFTWARE.json",
+    "trusted_bash": "/bin/bash",
+    "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "transaction_parent_policy": "owner-private-or-sticky-same-filesystem",
     "official_manifest": {
       "url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
       "version": "2.14.2",
@@ -310,6 +320,11 @@
     "max_backups": 10,
     "bounded_reads": true,
     "target_symlinks_rejected": true,
+    "existing_target_owner_private_mode_required": true,
+    "nddev_runtime_state_owner_private": true,
+    "lock_state_under_target": true,
+    "backup_state_under_target": true,
+    "attacker_sibling_lock_backup_ignored": true,
     "reject_symlink_managed_files": true,
     "reject_hardlinked_managed_files": true,
     "rollback_on_failure": true,

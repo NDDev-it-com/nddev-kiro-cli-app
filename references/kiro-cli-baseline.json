@@ -7,7 +7,8 @@
     "executable": "kiro-cli",
     "engine_argument": "--v3",
     "engine_status": "early-access-required",
-    "kiro_home_env": "KIRO_HOME"
+    "kiro_home_env": "KIRO_HOME",
+    "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin"
   },
   "release": {
     "channel": "stable",
@@ -171,12 +172,18 @@
     ],
     "native_headless_api_key": "KIRO_API_KEY",
     "manager_launch_inherits_provider_credentials": false,
-    "manager_launch_blocks_login_scope_commands": true
+    "manager_launch_blocks_login_scope_commands": true,
+    "manager_launch_inherits_path": false
   },
   "software_installation": {
     "manager_install_mode": "target-owned-official-artifact",
     "target_software_root": "target/.nddev-runtime/software/kiro-cli",
     "software_stamp_file": "target/.nddev-runtime/software/kiro-cli/NDDEV-KIRO-CLI-SOFTWARE.json",
+    "lock_root": "target/.nddev-runtime/locks/setup-manager.lock",
+    "backup_root": "target/.nddev-runtime/backups/setup",
+    "trusted_bash": "/bin/bash",
+    "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "transaction_parent_policy": "owner-private-or-sticky-same-filesystem",
     "official_vendor_installer_supported": false,
     "official_vendor_installer_limitations": [
       "macOS branch writes /Applications",

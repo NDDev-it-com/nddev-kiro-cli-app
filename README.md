@@ -75,10 +75,10 @@ python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --
 `launch` requires clean current managed setup state and clean target-owned
 software. It sets `KIRO_HOME` to the target, places child `HOME`, XDG
 directories, and logs under the target runtime directory, strips provider
-credential environment variables, and invokes the target-installed
-`kiro-cli --v3`. Arguments that would override managed engine, agent, trust,
-auth, settings, integrations, MCP, or update scope are rejected before the
-target lock is taken.
+credential environment variables, uses a deterministic system `PATH`, and
+invokes the target-installed `kiro-cli --v3`. Arguments that would override
+managed engine, agent, trust, auth, settings, integrations, MCP, or update scope
+are rejected before the target lock is taken.
 
 ## Builder Content
 
@@ -100,10 +100,12 @@ this target-owned setup does not synthesize or manage them.
 ## Safety Model
 
 The manager requires an explicit absolute target. It rejects target symlinks,
-managed symlinks, managed hard links, oversized metadata, malformed JSON, drift
-from the target-bound stamp, and backups copied from another target. Mutations
-use target-bound backups and rollback on failure. It preserves unmanaged files
-and unowned settings keys.
+targets not owned by the current user with mode `0700`, managed symlinks,
+managed hard links, oversized metadata, malformed JSON, drift from the
+target-bound stamp, and backups copied from another target. Lock and backup
+state lives under the owner-private target runtime directory. Mutations use
+target-bound backups and rollback on failure. It preserves unmanaged files and
+unowned settings keys.
 
 The public Kiro shell installer at `https://cli.kiro.dev/install` is tracked as
 official evidence, but the manager does not execute it as the runtime install

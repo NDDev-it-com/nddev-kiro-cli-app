@@ -81,14 +81,22 @@ MANAGED_FILES = (SETTINGS, PERMISSIONS, *BUILDER_FILES)
 LEGACY_MANAGED_FILES = (SETTINGS, PERMISSIONS, *LEGACY_BUILDER_FILES)
 BASELINE_PATH = ROOT / "references" / "kiro-cli-baseline.json"
 OFFICIAL_INSTALL_MANIFEST_URL = "https://prod.download.cli.kiro.dev/stable/latest/manifest.json"
+NDDEV_RUNTIME_DIR = ".nddev-runtime"
 SOFTWARE_RUNTIME_DIR = ".nddev-runtime/software"
 SOFTWARE_DIR_NAME = "kiro-cli"
 SOFTWARE_STAMP_NAME = "NDDEV-KIRO-CLI-SOFTWARE.json"
 SOFTWARE_STAMP_SCHEMA = 1
+LOCK_RUNTIME_DIR = ".nddev-runtime/locks"
+LOCK_DIR_NAME = "setup-manager.lock"
+BACKUP_RUNTIME_DIR = ".nddev-runtime/backups/setup"
+TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+TRUSTED_BASH = "/bin/bash"
+TRUSTED_HDIUTIL = "/usr/bin/hdiutil"
 SOFTWARE_TREE_MAX_FILES = 20000
 SOFTWARE_TREE_MAX_BYTES = 3 * 1024 * 1024 * 1024
 SOFTWARE_METADATA_MAX_BYTES = 1024 * 1024
 DOWNLOAD_METADATA_MAX_BYTES = 4 * 1024 * 1024
+BACKUP_TREE_MAX_FILES = 256
 MANAGED_LAUNCH_ENGINE_ARGUMENT = "--v3"
 MANAGED_LAUNCH_ENGINE_STATUS = "early-access-required"
 MANAGED_LAUNCH_BLOCKED_OPTIONS = (
@@ -272,12 +280,40 @@ def owner_of(info: os.stat_result) -> int | None:
     return info.st_uid if hasattr(info, "st_uid") else None
 
 
+def current_user_owns(info: os.stat_result) -> bool:
+    return not hasattr(os, "geteuid") or owner_of(info) == os.geteuid()
+
+
 def is_owner_only_file(info: os.stat_result) -> bool:
     if stat.S_IMODE(info.st_mode) != OWNER_FILE_MODE:
         return False
-    if hasattr(os, "geteuid") and owner_of(info) != os.geteuid():
+    if not current_user_owns(info):
         return False
     return True
+
+
+def require_current_user_owned(info: os.stat_result, label: str) -> None:
+    if not current_user_owns(info):
+        fail(f"{label} must be owned by the current user")
+
+
+def require_exact_mode(info: os.stat_result, label: str, expected: int) -> None:
+    actual = stat.S_IMODE(info.st_mode)
+    if actual != expected:
+        fail(f"{label} must have mode {expected:04o}, got {actual:04o}")
+
+
+def require_owner_private_directory(path: Path, label: str) -> os.stat_result:
+    info = require_directory(path, label)
+    require_current_user_owned(info, label)
+    require_exact_mode(info, label, OWNER_DIR_MODE)
+    return info
+
+
+def require_owner_private_file(path: Path, label: str) -> os.stat_result:
+    info = require_regular_file(path, label, owner_only=True)
+    require_exact_mode(info, label, OWNER_FILE_MODE)
+    return info
 
 
 def safe_relative_path(relative: str) -> Path:
@@ -297,6 +333,7 @@ def reject_symlink_ancestors(root: Path, relative: str) -> None:
             return
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             fail(f"managed parent must be a real directory: {current}")
+        ensure_not_group_world_writable(info, f"managed parent {current}")
 
 
 def require_directory(path: Path, label: str) -> os.stat_result:
@@ -800,8 +837,7 @@ def software_executable_from_stamp(target: Path, stamp: dict[str, Any]) -> Path:
 def ensure_not_group_world_writable(info: os.stat_result, label: str) -> None:
     if stat.S_IMODE(info.st_mode) & 0o022:
         fail(f"{label} must not be group/world writable")
-    if hasattr(os, "geteuid") and owner_of(info) != os.geteuid():
-        fail(f"{label} must be owned by the current user")
+    require_current_user_owned(info, label)
 
 
 def require_private_directory(path: Path, label: str) -> os.stat_result:
@@ -817,6 +853,17 @@ def optional_private_directory(path: Path, label: str) -> os.stat_result | None:
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         fail(f"{label} must be a real directory")
     ensure_not_group_world_writable(info, label)
+    return info
+
+
+def optional_owner_private_directory(path: Path, label: str) -> os.stat_result | None:
+    info = lstat_optional(path)
+    if info is None:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail(f"{label} must be a real directory")
+    require_current_user_owned(info, label)
+    require_exact_mode(info, label, OWNER_DIR_MODE)
     return info
 
 
@@ -839,12 +886,12 @@ def software_ancestor_paths(target: Path) -> tuple[tuple[Path, str], ...]:
 
 
 def software_root_presence(target: Path) -> str:
-    if optional_private_directory(target, "--target") is None:
+    if optional_owner_private_directory(target, "--target") is None:
         return "missing"
     for path, label in software_ancestor_paths(target):
-        if optional_private_directory(path, label) is None:
+        if optional_owner_private_directory(path, label) is None:
             return "absent"
-    if optional_private_directory(software_root(target), "software root") is None:
+    if optional_owner_private_directory(software_root(target), "software root") is None:
         return "absent"
     return "present"
 
@@ -1058,7 +1105,13 @@ def preflight_software_target(target: Path, *, allow_partial: bool) -> dict[str,
 
 def validated_transaction_parent(target: Path) -> Path:
     parent = target.parent
-    require_private_directory(parent, "software transaction parent")
+    info = require_directory(parent, "software transaction parent")
+    mode = stat.S_IMODE(info.st_mode)
+    if current_user_owns(info) and not mode & 0o022:
+        return parent
+    if mode & stat.S_ISVTX:
+        return parent
+    fail("software transaction parent must be private or sticky")
     return parent
 
 
@@ -1131,7 +1184,7 @@ def installer_environment(stage: Path) -> dict[str, str]:
         "HOME": str(home),
         "KIRO_HOME": str(kiro_home),
         "TMPDIR": str(temp),
-        "PATH": os.environ.get("PATH", ""),
+        "PATH": TRUSTED_SYSTEM_PATH,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "KIRO_CLI_SKIP_SETUP": "1",
@@ -1140,6 +1193,14 @@ def installer_environment(stage: Path) -> dict[str, str]:
         if key in SECRET_ENV_NAMES or key.startswith(SECRET_ENV_PREFIXES):
             env.pop(key, None)
     return env
+
+
+def system_command_environment() -> dict[str, str]:
+    return {
+        "PATH": TRUSTED_SYSTEM_PATH,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
 
 
 def copy_regular_executable(source: Path, destination: Path) -> None:
@@ -1161,7 +1222,7 @@ def prepare_linux_software_root(stage: Path, artifact: Path) -> tuple[Path, str]
     install_script = extract_dir / "kirocli" / "install.sh"
     require_regular_file(install_script, "Kiro CLI archive install script", owner_only=False)
     result = subprocess.run(
-        ["bash", str(install_script)],
+        [TRUSTED_BASH, str(install_script)],
         cwd=str(install_script.parent),
         env=installer_environment(stage),
         text=True,
@@ -1191,9 +1252,9 @@ def prepare_macos_software_root(stage: Path, artifact: Path, package: SoftwarePa
     attached = False
     try:
         result = subprocess.run(
-            [
-                "hdiutil",
-                "attach",
+                [
+                    TRUSTED_HDIUTIL,
+                    "attach",
                 str(artifact),
                 "-nobrowse",
                 "-readonly",
@@ -1201,6 +1262,7 @@ def prepare_macos_software_root(stage: Path, artifact: Path, package: SoftwarePa
                 str(mount),
             ],
             text=True,
+            env=system_command_environment(),
             capture_output=True,
             check=False,
             timeout=120,
@@ -1212,6 +1274,8 @@ def prepare_macos_software_root(stage: Path, artifact: Path, package: SoftwarePa
         if len(apps) != 1:
             fail("Kiro CLI DMG must contain exactly one .app bundle")
         prepared = stage / "prepared" / SOFTWARE_DIR_NAME
+        prepared.mkdir(parents=True, mode=OWNER_DIR_MODE)
+        os.chmod(prepared, OWNER_DIR_MODE)
         app_target = prepared / apps[0].name
         shutil.copytree(apps[0], app_target, symlinks=False)
         cli_path = package.cli_path or "Contents/MacOS/kiro-cli"
@@ -1229,8 +1293,9 @@ def prepare_macos_software_root(stage: Path, artifact: Path, package: SoftwarePa
     finally:
         if attached:
             subprocess.run(
-                ["hdiutil", "detach", str(mount), "-quiet"],
+                [TRUSTED_HDIUTIL, "detach", str(mount), "-quiet"],
                 text=True,
+                env=system_command_environment(),
                 capture_output=True,
                 check=False,
                 timeout=60,
@@ -1262,10 +1327,11 @@ def ensure_directory_chain(path: Path, created_dirs: list[str], label: str) -> N
     while lstat_optional(current) is None:
         missing.append(current)
         current = current.parent
-    require_private_directory(current, f"{label} existing parent")
+    require_owner_private_directory(current, f"{label} existing parent")
     for directory in reversed(missing):
         directory.mkdir(mode=OWNER_DIR_MODE)
         os.chmod(directory, OWNER_DIR_MODE)
+        require_owner_private_directory(directory, f"{label} directory {directory}")
         created_dirs.append(str(directory))
 
 
@@ -1289,22 +1355,24 @@ def install_prepared_software_root(
         else:
             if stat.S_ISLNK(target_info.st_mode) or not stat.S_ISDIR(target_info.st_mode):
                 fail("--target must be a real directory")
-            ensure_not_group_world_writable(target_info, "--target")
+            require_current_user_owned(target_info, "--target")
+            require_exact_mode(target_info, "--target", OWNER_DIR_MODE)
         for path, label in software_ancestor_paths(target):
             if lstat_optional(path) is not None:
-                require_private_directory(path, label)
+                require_owner_private_directory(path, label)
         software_parent = final_root.parent
         if lstat_optional(software_parent) is None:
             ensure_directory_chain(software_parent, created_dirs, "software parent")
         else:
-            require_private_directory(software_parent, "software parent")
+            require_owner_private_directory(software_parent, "software parent")
         final_root_info = lstat_optional(final_root)
         if final_root_info is not None:
             if not allow_existing:
                 fail("Kiro CLI software is already installed")
             if stat.S_ISLNK(final_root_info.st_mode) or not stat.S_ISDIR(final_root_info.st_mode):
                 fail("existing software root must be a real directory")
-            ensure_not_group_world_writable(final_root_info, "existing software root")
+            require_current_user_owned(final_root_info, "existing software root")
+            require_exact_mode(final_root_info, "existing software root", OWNER_DIR_MODE)
             rollback_parent = create_transaction_dir(target, "software-rollback")
             rollback_root = rollback_parent / "previous"
             os.replace(final_root, rollback_root)
@@ -1456,7 +1524,7 @@ def software_install(
         artifact_base_url=artifact_base_url,
     )
     try:
-        with target_lock(target):
+        with target_lock(target, create_target=True):
             race_status = preflight_software_target(target, allow_partial=False)
             if race_status["state"] == "installed":
                 fail("Kiro CLI software is already installed")
@@ -1511,7 +1579,7 @@ def software_update(
         artifact_base_url=artifact_base_url,
     )
     try:
-        with target_lock(target):
+        with target_lock(target, create_target=False):
             race_status = preflight_software_target(target, allow_partial=True)
             if race_status["state"] == "installed":
                 return {
@@ -1537,7 +1605,7 @@ def software_update(
 
 
 def software_remove(target: Path) -> dict[str, Any]:
-    with target_lock(target):
+    with target_lock(target, create_target=False):
         status = software_status(target)
         root = software_root(target)
         if status["state"] in {"missing", "absent"}:
@@ -1547,7 +1615,7 @@ def software_remove(target: Path) -> dict[str, Any]:
                 "changed": False,
                 "removed_state": status["state"],
             }
-        require_directory(root, "software root")
+        require_owner_private_directory(root, "software root")
         shutil.rmtree(root)
         with contextlib.suppress(OSError):
             root.parent.rmdir()
@@ -1787,11 +1855,17 @@ def ensure_target_directory(target: Path, *, create: bool) -> bool:
     except FileNotFoundError:
         if not create:
             return False
-        target.mkdir(mode=OWNER_DIR_MODE)
+        try:
+            target.mkdir(mode=OWNER_DIR_MODE)
+        except FileExistsError:
+            fail("--target appeared concurrently")
         os.chmod(target, OWNER_DIR_MODE)
+        require_owner_private_directory(target, "--target")
         return True
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         fail("--target must be a real directory")
+    require_current_user_owned(info, "--target")
+    require_exact_mode(info, "--target", OWNER_DIR_MODE)
     return True
 
 
@@ -1972,7 +2046,12 @@ def load_stamp(target: Path) -> dict[str, Any] | None:
         return None
     if not target_file_exists(target, STAMP_NAME):
         return None
-    content = read_target_file(target, STAMP_NAME, max_bytes=METADATA_MAX_BYTES)
+    content = read_target_file(
+        target,
+        STAMP_NAME,
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+    )
     stamp = parse_json_object(content, f"managed stamp {target / STAMP_NAME}")
     schema = stamp.get("schema_version")
     if schema == LEGACY_STAMP_SCHEMA:
@@ -2089,12 +2168,41 @@ def preflight_unmanaged_target(target: Path) -> None:
             fail(f"unmanaged target already has managed Kiro settings keys: {sorted(managed)}")
 
 
+def ensure_owner_private_directory_chain(path: Path, label: str) -> None:
+    missing: list[Path] = []
+    current = path
+    while lstat_optional(current) is None:
+        missing.append(current)
+        current = current.parent
+    require_owner_private_directory(current, f"{label} existing parent")
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=OWNER_DIR_MODE)
+        except FileExistsError:
+            pass
+        os.chmod(directory, OWNER_DIR_MODE)
+        require_owner_private_directory(directory, f"{label} directory {directory}")
+
+
+def ensure_owned_nonwritable_directory_chain(path: Path, label: str) -> None:
+    missing: list[Path] = []
+    current = path
+    while lstat_optional(current) is None:
+        missing.append(current)
+        current = current.parent
+    existing = require_directory(current, f"{label} existing parent")
+    ensure_not_group_world_writable(existing, f"{label} existing parent")
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=OWNER_DIR_MODE)
+        except FileExistsError:
+            pass
+        os.chmod(directory, OWNER_DIR_MODE)
+        require_owner_private_directory(directory, f"{label} directory {directory}")
+
+
 def make_parent_directories(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(path.parent, OWNER_DIR_MODE)
-    except OSError:
-        pass
+    ensure_owned_nonwritable_directory_chain(path.parent, f"parent for {path}")
 
 
 def atomic_write(path: Path, content: bytes) -> None:
@@ -2157,13 +2265,26 @@ def restore_snapshot(
     replace_managed_state(target, desired, None, managed_files=managed_files)
 
 
+def lock_root(target: Path) -> Path:
+    return target / LOCK_RUNTIME_DIR
+
+
+def lock_path(target: Path) -> Path:
+    return lock_root(target) / LOCK_DIR_NAME
+
+
 @contextlib.contextmanager
-def target_lock(target: Path) -> Iterator[None]:
-    lock = target.parent / f".{target.name}.nddev-kiro-cli-lock"
+def target_lock(target: Path, *, create_target: bool) -> Iterator[None]:
+    if not ensure_target_directory(target, create=create_target):
+        fail("--target is missing")
+    ensure_owner_private_directory_chain(lock_root(target), "target lock root")
+    lock = lock_path(target)
     try:
         lock.mkdir(mode=OWNER_DIR_MODE)
     except FileExistsError:
         fail(f"target is already locked: {lock}")
+    os.chmod(lock, OWNER_DIR_MODE)
+    require_owner_private_directory(lock, "target lock")
     try:
         yield
     finally:
@@ -2172,34 +2293,69 @@ def target_lock(target: Path) -> Iterator[None]:
 
 
 def backup_pool(target: Path) -> Path:
-    return target.parent / f".{target.name}.nddev-kiro-cli-backups"
+    return target / BACKUP_RUNTIME_DIR
+
+
+def validate_owner_private_tree(root: Path, label: str) -> None:
+    require_owner_private_directory(root, label)
+    count = 0
+    for path in root.rglob("*"):
+        count += 1
+        if count > BACKUP_TREE_MAX_FILES:
+            fail(f"{label} has too many entries")
+        relative = path.relative_to(root).as_posix()
+        info = path.lstat()
+        child_label = f"{label} path {relative}"
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"{child_label} must not be a symlink")
+        if stat.S_ISDIR(info.st_mode):
+            require_current_user_owned(info, child_label)
+            require_exact_mode(info, child_label, OWNER_DIR_MODE)
+            continue
+        if stat.S_ISREG(info.st_mode):
+            require_owner_private_file(path, child_label)
+            continue
+        fail(f"{child_label} must be a regular file or directory")
+
+
+def ensure_backup_pool(target: Path) -> Path:
+    pool = backup_pool(target)
+    ensure_owner_private_directory_chain(pool, "backup pool")
+    validate_owner_private_tree(pool, "backup pool")
+    return pool
 
 
 def choose_backup_slot(pool: Path) -> int:
-    if not pool.exists():
-        return 0
+    require_owner_private_directory(pool, "backup pool")
     slots = sorted(
-        int(path.name)
-        for path in pool.iterdir()
-        if path.is_dir() and path.name.isdigit() and 0 <= int(path.name) < MAX_BACKUPS
+        int(path.name) for path in pool.iterdir() if path.name.isdigit()
     )
+    for path in pool.iterdir():
+        if not path.name.isdigit():
+            fail(f"backup pool contains unexpected path: {path.name}")
+        slot = int(path.name)
+        if slot < 0 or slot >= MAX_BACKUPS:
+            fail(f"backup pool contains invalid slot: {path.name}")
+        require_owner_private_directory(path, f"backup slot {path.name}")
     if not slots:
         return 0
     return (slots[-1] + 1) % MAX_BACKUPS
 
 
 def write_backup(target: Path, stamp: dict[str, Any]) -> int:
-    pool = backup_pool(target)
-    if pool.exists() and pool.is_symlink():
-        fail("backup pool must not be a symlink")
-    pool.mkdir(mode=OWNER_DIR_MODE, exist_ok=True)
-    os.chmod(pool, OWNER_DIR_MODE)
+    ensure_target_directory(target, create=False)
+    pool = ensure_backup_pool(target)
     slot = choose_backup_slot(pool)
     slot_dir = pool / str(slot)
     if slot_dir.exists():
+        validate_owner_private_tree(slot_dir, f"backup slot {slot}")
         shutil.rmtree(slot_dir)
     files_dir = slot_dir / "files"
     files_dir.mkdir(parents=True, mode=OWNER_DIR_MODE)
+    os.chmod(slot_dir, OWNER_DIR_MODE)
+    os.chmod(files_dir, OWNER_DIR_MODE)
+    require_owner_private_directory(slot_dir, f"backup slot {slot}")
+    require_owner_private_directory(files_dir, f"backup slot {slot} files")
     managed_files: dict[str, str | None] = {}
     backup_managed_files = stamp_managed_files(stamp)
     for relative in backup_managed_files:
@@ -2210,7 +2366,12 @@ def write_backup(target: Path, stamp: dict[str, Any]) -> int:
             managed_files[relative] = managed_digest(relative, content)
         else:
             managed_files[relative] = None
-    stamp_content = read_target_file(target, STAMP_NAME, max_bytes=METADATA_MAX_BYTES)
+    stamp_content = read_target_file(
+        target,
+        STAMP_NAME,
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+    )
     envelope = {
         "schema_version": BACKUP_SCHEMA,
         "product_name": PRODUCT_NAME,
@@ -2233,11 +2394,14 @@ def load_backup(
 ) -> tuple[dict[str, Any], dict[str, bytes | None], tuple[str, ...]]:
     if slot < 0 or slot >= MAX_BACKUPS:
         fail("--backup must be between 0 and 9")
+    ensure_target_directory(target, create=False)
+    pool = ensure_backup_pool(target)
     slot_dir = backup_pool(target) / str(slot)
+    validate_owner_private_tree(slot_dir, f"backup slot {slot}")
     envelope_path = slot_dir / BACKUP_NAME
     if envelope_path.is_symlink() or not envelope_path.is_file():
         fail(f"backup slot is missing: {slot}")
-    envelope = read_json_file(envelope_path, f"backup slot {slot}", owner_only=False)
+    envelope = read_json_file(envelope_path, f"backup slot {slot}", owner_only=True)
     if envelope.get("schema_version") == LEGACY_BACKUP_SCHEMA:
         if set(envelope) != LEGACY_BACKUP_KEYS:
             fail("legacy backup envelope has invalid keys")
@@ -2282,7 +2446,7 @@ def load_backup(
         if expected is None:
             files[relative] = None
             continue
-        content, _ = read_regular_file(path, f"backup file {relative}", owner_only=False)
+        content, _ = read_regular_file(path, f"backup file {relative}", owner_only=True)
         if managed_digest(relative, content) != expected:
             fail(f"backup file digest mismatch: {relative}")
         files[relative] = content
@@ -2433,7 +2597,7 @@ def mutate_setup(
 ) -> dict[str, Any]:
     setup = render_setup(setup_id)
     profile = render_permission_profile(permission_profile_id)
-    with target_lock(target):
+    with target_lock(target, create_target=action == "install"):
         ensure_target_directory(target, create=True)
         existing_stamp = load_stamp(target)
         if existing_stamp is None:
@@ -2488,7 +2652,7 @@ def mutate_setup(
 
 
 def update_setup(target: Path) -> dict[str, Any]:
-    with target_lock(target):
+    with target_lock(target, create_target=False):
         stamp = load_stamp(target)
         if stamp is None:
             fail("update requires a managed target")
@@ -2529,7 +2693,7 @@ def update_setup(target: Path) -> dict[str, Any]:
 def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
     setup = render_setup(CONTENT_SETUP_ID)
     profile = render_permission_profile(permission_profile_id)
-    with target_lock(target):
+    with target_lock(target, create_target=False):
         stamp = load_stamp(target)
         if stamp is None:
             fail("migrate requires a managed target")
@@ -2569,7 +2733,7 @@ def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
 
 
 def restore_backup(target: Path, slot: int) -> dict[str, Any]:
-    with target_lock(target):
+    with target_lock(target, create_target=False):
         stamp = require_clean_any_managed(target)
         _, files, backup_managed_files = load_backup(target, slot)
         backup_slot = write_backup(target, stamp)
@@ -2604,7 +2768,7 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
 
 
 def remove_setup(target: Path) -> dict[str, Any]:
-    with target_lock(target):
+    with target_lock(target, create_target=False):
         stamp = require_clean_any_managed(target)
         backup_slot = write_backup(target, stamp)
         managed_files = stamp_managed_files(stamp)
@@ -2637,9 +2801,9 @@ def build_launch_env(target: Path) -> dict[str, str]:
     env: dict[str, str] = {
         "HOME": str(runtime / "home"),
         "KIRO_HOME": str(target),
-        "PATH": os.environ.get("PATH", ""),
-        "LANG": os.environ.get("LANG", "C.UTF-8"),
-        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        "PATH": TRUSTED_SYSTEM_PATH,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
         "XDG_CONFIG_HOME": str(xdg / "config"),
         "XDG_DATA_HOME": str(xdg / "data"),
         "XDG_STATE_HOME": str(xdg / "state"),
@@ -2693,7 +2857,7 @@ def reject_managed_launch_overrides(child_args: list[str]) -> None:
 
 def launch(target: Path, child_args: list[str]) -> int:
     reject_managed_launch_overrides(child_args)
-    with target_lock(target):
+    with target_lock(target, create_target=False):
         require_clean_managed(target)
         executable = require_clean_software(target)
         env = build_launch_env(target)
