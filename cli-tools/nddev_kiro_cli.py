@@ -63,6 +63,23 @@ SETTINGS = "settings/cli.json"
 PERMISSIONS = "settings/permissions.yaml"
 BUILDER_AGENT = "agents/nddev-builder.md"
 BUILDER_SKILL = "skills/nddev-builder/SKILL.md"
+BUILDER_FOCUSED_SKILLS = (
+    "skills/kiro-module-creator/SKILL.md",
+    "skills/kiro-module-checker/SKILL.md",
+    "skills/kiro-release-checker/SKILL.md",
+    "skills/kiro-config-profile-creator/SKILL.md",
+    "skills/kiro-config-profile-checker/SKILL.md",
+    "skills/kiro-permissions-creator/SKILL.md",
+    "skills/kiro-permissions-checker/SKILL.md",
+    "skills/kiro-agent-creator/SKILL.md",
+    "skills/kiro-agent-checker/SKILL.md",
+    "skills/kiro-skill-creator/SKILL.md",
+    "skills/kiro-skill-checker/SKILL.md",
+    "skills/kiro-hook-checker/SKILL.md",
+    "skills/kiro-mcp-checker/SKILL.md",
+    "skills/kiro-plugin-marketplace-checker/SKILL.md",
+    "skills/kiro-lifecycle-checker/SKILL.md",
+)
 BUILDER_SKILL_REFERENCES = (
     "skills/nddev-builder/references/agents-subagents.md",
     "skills/nddev-builder/references/configuration-profiles.md",
@@ -79,6 +96,7 @@ BUILDER_HOOK = "hooks/nddev-builder.json"
 BUILDER_FILES = (
     BUILDER_AGENT,
     BUILDER_SKILL,
+    *BUILDER_FOCUSED_SKILLS,
     *BUILDER_SKILL_REFERENCES,
     BUILDER_STEERING,
 )

@@ -25,6 +25,42 @@ above.
 
 ## Routing
 
+Load a focused skill for the concrete task, then load only the references it
+names:
+
+- Public module creation or revision:
+  `skill://~/.kiro/skills/kiro-module-creator/SKILL.md`
+- Public module checking and unsupported-surface review:
+  `skill://~/.kiro/skills/kiro-module-checker/SKILL.md`
+- Release metadata and package readiness:
+  `skill://~/.kiro/skills/kiro-release-checker/SKILL.md`
+- Setup catalog or profile metadata creation:
+  `skill://~/.kiro/skills/kiro-config-profile-creator/SKILL.md`
+- Setup catalog or profile metadata checking:
+  `skill://~/.kiro/skills/kiro-config-profile-checker/SKILL.md`
+- Native permission profile creation:
+  `skill://~/.kiro/skills/kiro-permissions-creator/SKILL.md`
+- Native permission profile checking:
+  `skill://~/.kiro/skills/kiro-permissions-checker/SKILL.md`
+- Native builder agent creation:
+  `skill://~/.kiro/skills/kiro-agent-creator/SKILL.md`
+- Native builder agent checking:
+  `skill://~/.kiro/skills/kiro-agent-checker/SKILL.md`
+- Agent Skill creation:
+  `skill://~/.kiro/skills/kiro-skill-creator/SKILL.md`
+- Agent Skill checking:
+  `skill://~/.kiro/skills/kiro-skill-checker/SKILL.md`
+- Hook surface checking:
+  `skill://~/.kiro/skills/kiro-hook-checker/SKILL.md`
+- MCP surface checking:
+  `skill://~/.kiro/skills/kiro-mcp-checker/SKILL.md`
+- Plugin or marketplace surface checking:
+  `skill://~/.kiro/skills/kiro-plugin-marketplace-checker/SKILL.md`
+- Installation, runtime, migration, backup, restore, remove, and launch
+  checking: `skill://~/.kiro/skills/kiro-lifecycle-checker/SKILL.md`
+
+Reference owner routes:
+
 - Configuration, setup catalogs, profile switching, managed settings:
   `references/configuration-profiles.md`
 - Permissions, approval behavior, sandbox claims, and launch safety:

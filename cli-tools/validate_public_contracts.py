@@ -36,9 +36,79 @@ REFERENCE_FILES = [
     "skills/nddev-builder/references/plugins-marketplace.md",
     "skills/nddev-builder/references/skills-instructions.md",
 ]
+FOCUSED_SKILL_ROUTES = {
+    "kiro-module-creator": [
+        "creator-checker-release.md",
+        "configuration-profiles.md",
+        "installation-lifecycle.md",
+    ],
+    "kiro-module-checker": [
+        "creator-checker-release.md",
+        "installation-lifecycle.md",
+        "plugins-marketplace.md",
+    ],
+    "kiro-release-checker": [
+        "creator-checker-release.md",
+        "installation-lifecycle.md",
+    ],
+    "kiro-config-profile-creator": [
+        "configuration-profiles.md",
+        "creator-checker-release.md",
+    ],
+    "kiro-config-profile-checker": [
+        "configuration-profiles.md",
+        "permissions-sandbox.md",
+    ],
+    "kiro-permissions-creator": [
+        "permissions-sandbox.md",
+        "configuration-profiles.md",
+    ],
+    "kiro-permissions-checker": [
+        "permissions-sandbox.md",
+        "installation-lifecycle.md",
+    ],
+    "kiro-agent-creator": [
+        "agents-subagents.md",
+        "skills-instructions.md",
+    ],
+    "kiro-agent-checker": [
+        "agents-subagents.md",
+        "permissions-sandbox.md",
+    ],
+    "kiro-skill-creator": [
+        "skills-instructions.md",
+        "creator-checker-release.md",
+    ],
+    "kiro-skill-checker": [
+        "skills-instructions.md",
+        "creator-checker-release.md",
+    ],
+    "kiro-hook-checker": [
+        "hooks.md",
+        "creator-checker-release.md",
+    ],
+    "kiro-mcp-checker": [
+        "mcp.md",
+        "permissions-sandbox.md",
+        "installation-lifecycle.md",
+    ],
+    "kiro-plugin-marketplace-checker": [
+        "plugins-marketplace.md",
+        "creator-checker-release.md",
+    ],
+    "kiro-lifecycle-checker": [
+        "installation-lifecycle.md",
+        "permissions-sandbox.md",
+        "creator-checker-release.md",
+    ],
+}
+FOCUSED_SKILL_FILES = [
+    f"skills/{name}/SKILL.md" for name in FOCUSED_SKILL_ROUTES
+]
 BUILDER_FILES = [
     "agents/nddev-builder.md",
     "skills/nddev-builder/SKILL.md",
+    *FOCUSED_SKILL_FILES,
     *REFERENCE_FILES,
     "steering/nddev-builder.md",
 ]
@@ -220,8 +290,13 @@ BOOTSTRAP_SNAPSHOT_MAX_BYTES = 1024 * 1024
 
 def load_json(relative: str, errors: list[str]) -> dict[str, Any] | None:
     path = ROOT / relative
-    if not path.is_file():
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
         errors.append(f"missing required JSON file: {relative}")
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        errors.append(f"{relative}: must be a regular file")
         return None
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -236,8 +311,13 @@ def load_json(relative: str, errors: list[str]) -> dict[str, Any] | None:
 
 def check_text(relative: str, errors: list[str]) -> str:
     path = ROOT / relative
-    if not path.is_file():
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
         errors.append(f"missing required text file: {relative}")
+        return ""
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        errors.append(f"{relative}: must be a regular file")
         return ""
     try:
         text = path.read_text(encoding="utf-8")
@@ -273,6 +353,56 @@ def frontmatter(text: str, relative: str, errors: list[str]) -> str:
     if not rest.strip():
         errors.append(f"{relative}: missing body")
     return _
+
+
+def check_focused_skill(
+    skill_name: str,
+    references: list[str],
+    text: str,
+    errors: list[str],
+) -> None:
+    relative = f"setups/nddev-builder/skills/{skill_name}/SKILL.md"
+    metadata = frontmatter(text, relative, errors)
+    if f"name: {skill_name}\n" not in metadata:
+        errors.append(f"{relative}: frontmatter name mismatch")
+    if "description: " not in metadata:
+        errors.append(f"{relative}: description required")
+    if "validation/" in text or "private/" in text or ".agents/" in text:
+        errors.append(f"{relative}: public skill must not route to private roots")
+    for reference in references:
+        owner = f"../nddev-builder/references/{reference}"
+        if f"`{owner}`" not in text:
+            errors.append(f"{relative}: missing route to {owner}")
+        if f"skills/nddev-builder/references/{reference}" not in REFERENCE_FILES:
+            errors.append(f"{relative}: unknown reference owner {reference}")
+    if "python3 cli-tools/validate_public_contracts.py" not in text:
+        errors.append(f"{relative}: missing public validation workflow")
+
+
+def check_skill_file_closure(setup_id: str, errors: list[str]) -> None:
+    root = ROOT / "setups" / setup_id / "skills"
+    expected = sorted(
+        [
+            "skills/nddev-builder/SKILL.md",
+            *FOCUSED_SKILL_FILES,
+            *REFERENCE_FILES,
+        ]
+    )
+    actual: list[str] = []
+    for path in root.rglob("*"):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            continue
+        relative = f"skills/{path.relative_to(root).as_posix()}"
+        actual.append(relative)
+    if sorted(actual) != expected:
+        errors.append(
+            f"setups/{setup_id}/skills: skill file closure mismatch "
+            f"(actual={sorted(actual)}, expected={expected})"
+        )
 
 
 def check_profile(profile_id: str, errors: list[str]) -> None:
@@ -336,6 +466,16 @@ def check_setup(errors: list[str]) -> None:
                 f"setups/{setup_id}/skills/nddev-builder/SKILL.md: "
                 f"missing route to {routed}"
             )
+    for skill_name, references in FOCUSED_SKILL_ROUTES.items():
+        skill_uri = f"skill://~/.kiro/skills/{skill_name}/SKILL.md"
+        if f"`{skill_uri}`" not in entry_skill:
+            errors.append(
+                f"setups/{setup_id}/skills/nddev-builder/SKILL.md: "
+                f"missing route to {skill_uri}"
+            )
+        text = check_text(f"setups/{setup_id}/skills/{skill_name}/SKILL.md", errors)
+        check_focused_skill(skill_name, references, text, errors)
+    check_skill_file_closure(setup_id, errors)
     if not root.is_dir():
         errors.append(f"setups/{setup_id}: setup directory missing")
 

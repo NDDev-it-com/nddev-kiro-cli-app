@@ -107,6 +107,7 @@ The managed native content is deterministic and regular-file-only:
 
 - `agents/nddev-builder.md`
 - `skills/nddev-builder/SKILL.md`
+- `skills/kiro-*/SKILL.md`
 - `skills/nddev-builder/references/*.md`
 - `steering/nddev-builder.md`
 
@@ -114,6 +115,9 @@ The canonical builder agent uses native Kiro v3 agent frontmatter with
 `tools: ["*"]` so built-in tools, MCP, todo, knowledge, subagents, web,
 read/write/shell, and future Kiro built-ins remain discoverable. Permission
 profile behavior stays in `profiles/*/permissions.yaml`, not in the agent file.
+The entry skill routes to focused creator/checker/release, configuration,
+permissions, agent, skill, hook, MCP, plugin/marketplace, and lifecycle skills;
+those focused skills point back to code-owned references for volatile facts.
 
 Kiro workspace hooks and MCP configuration are native discovery surfaces, but
 this target-owned setup does not synthesize or manage them.
