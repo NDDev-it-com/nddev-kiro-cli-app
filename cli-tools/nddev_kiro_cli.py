@@ -906,7 +906,7 @@ def validate_software_stamp(stamp: dict[str, Any], target: Path) -> None:
         fail("software stamp has invalid keys")
     if stamp["schema_version"] != SOFTWARE_STAMP_SCHEMA or stamp["product_name"] != PRODUCT_NAME:
         fail("software stamp identity or schema is invalid")
-    if stamp["build_version"] != VERSION:
+    if not isinstance(stamp["build_version"], str) or not stamp["build_version"].strip():
         fail("software stamp build version is invalid")
     if stamp["runtime_product"] != "Kiro CLI" or stamp["version"] != expected_runtime_version():
         fail("software stamp runtime identity is invalid")
@@ -948,15 +948,33 @@ def validate_software_stamp(stamp: dict[str, Any], target: Path) -> None:
         fail("software stamp official vendor installer record is invalid")
 
 
-def load_software_stamp(target: Path) -> dict[str, Any] | None:
+def load_software_stamp_for_status(target: Path) -> tuple[dict[str, Any] | None, str | None]:
     if software_root_presence(target) != "present":
-        return None
+        return None, None
     stamp_path = software_stamp_path(target)
     if require_regular_stamp_if_present(stamp_path, "software stamp") is None:
-        return None
-    stamp = read_json_file(stamp_path, "software stamp", owner_only=False)
-    validate_software_stamp(stamp, target)
+        return None, None
+    require_owner_private_file(stamp_path, "software stamp")
+    try:
+        stamp = read_json_file(stamp_path, "software stamp", owner_only=True)
+        validate_software_stamp(stamp, target)
+    except ManagerError as exc:
+        return None, str(exc)
+    return stamp, None
+
+
+def load_software_stamp(target: Path) -> dict[str, Any] | None:
+    stamp, issue = load_software_stamp_for_status(target)
+    if issue is not None:
+        fail(issue)
     return stamp
+
+
+def software_stamp_provenance_drift(stamp: dict[str, Any]) -> list[str]:
+    drift: list[str] = []
+    if stamp["build_version"] != VERSION:
+        drift.append("software manager build_version")
+    return drift
 
 
 def software_status(target: Path) -> dict[str, Any]:
@@ -980,7 +998,16 @@ def software_status(target: Path) -> dict[str, Any]:
             "executes_binary": False,
         }
     root = software_root(target)
-    stamp = load_software_stamp(target)
+    stamp, stamp_issue = load_software_stamp_for_status(target)
+    if stamp_issue is not None:
+        return {
+            "state": "partial",
+            "target": str(target),
+            "version": expected_runtime_version(),
+            "executable": None,
+            "drift": [f"software stamp invalid: {stamp_issue}"],
+            "executes_binary": False,
+        }
     if stamp is None:
         return {
             "state": "partial",
@@ -992,13 +1019,20 @@ def software_status(target: Path) -> dict[str, Any]:
         }
     executable_relative = stamp["executable"]["relative_path"]
     tree = scan_software_tree(root, executable_relative)
-    drift = []
+    provenance_drift = software_stamp_provenance_drift(stamp)
+    integrity_drift = []
     if tree.digest != stamp["tree"]["sha256"]:
-        drift.append("software tree digest")
+        integrity_drift.append("software tree digest")
     if tree.executable_sha256 != stamp["executable"]["sha256"]:
-        drift.append("software executable digest")
+        integrity_drift.append("software executable digest")
+    drift = [*provenance_drift, *integrity_drift]
+    state = "installed"
+    if integrity_drift:
+        state = "drift"
+    elif provenance_drift:
+        state = "needs-update"
     return {
-        "state": "installed" if not drift else "drift",
+        "state": state,
         "target": str(target),
         "version": stamp["version"],
         "package": stamp["package"],
@@ -1011,8 +1045,8 @@ def software_status(target: Path) -> dict[str, Any]:
 def preflight_software_target(target: Path, *, allow_partial: bool) -> dict[str, Any]:
     validated_transaction_parent(target)
     status = software_status(target)
-    if status["state"] in {"partial", "drift"} and not allow_partial:
-        fail("software target is partial; run software-update to repair it")
+    if status["state"] in {"partial", "drift", "needs-update"} and not allow_partial:
+        fail("software target needs update or repair; run software-update")
     return status
 
 
@@ -2337,6 +2371,7 @@ def load_backup(
 
 def current_status(target: Path) -> dict[str, Any]:
     if not ensure_target_directory(target, create=False):
+        software = software_status(target)
         return {
             "state": "missing",
             "target": str(target),
@@ -2347,10 +2382,11 @@ def current_status(target: Path) -> dict[str, Any]:
             "launch_allowed": False,
             "drift": [],
             "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
-            "software": software_status(target),
+            "software": software,
         }
     stamp = load_stamp(target)
     if stamp is None:
+        software = software_status(target)
         return {
             "state": "unmanaged",
             "target": str(target),
@@ -2361,9 +2397,10 @@ def current_status(target: Path) -> dict[str, Any]:
             "launch_allowed": False,
             "drift": [],
             "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
-            "software": software_status(target),
+            "software": software,
         }
     drift = detect_drift(target, stamp)
+    software = software_status(target)
     if not stamp_is_current(stamp):
         return {
             "state": "legacy-managed",
@@ -2379,7 +2416,7 @@ def current_status(target: Path) -> dict[str, Any]:
                 "projection": LEGACY_BUILDER_PROJECTION,
                 "enabled": not any(item in drift for item in LEGACY_BUILDER_FILES),
             },
-            "software": software_status(target),
+            "software": software,
         }
     return {
         "state": "managed",
@@ -2389,13 +2426,13 @@ def current_status(target: Path) -> dict[str, Any]:
         "schema_version": stamp["schema_version"],
         "build_version": stamp["build_version"],
         "migration_required": False,
-        "launch_allowed": not drift,
+        "launch_allowed": not drift and software["state"] == "installed",
         "drift": drift,
         "builder": {
             "projection": BUILDER_PROJECTION,
             "enabled": not any(item in drift for item in BUILDER_FILES),
         },
-        "software": software_status(target),
+        "software": software,
     }
 
 

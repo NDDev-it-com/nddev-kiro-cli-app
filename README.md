@@ -62,10 +62,13 @@ python3 cli-tools/nddev_kiro_cli.py software-remove --target /absolute/kiro-home
 
 `software-install` only installs into an absent software tree. Use
 `software-update` to repair safe partial installs or refresh drift; missing or
-absent updates fail with an "install first" domain error. Mutating software
-paths verify the official Kiro manifest SHA-256/size and exact pinned artifact
-SHA-256/size before writing the target; the public manager does not expose
-alternate manifest, artifact, fixture, or environment-selected software sources.
+absent updates fail with an "install first" domain error. A stamp from an older
+manager build reports `needs-update` instead of becoming hard-invalid, and
+`software-remove` can remove a target-owned tree with a missing or malformed
+stamp after strict target trust checks. Mutating software paths verify the
+official Kiro manifest SHA-256/size and exact pinned artifact SHA-256/size
+before writing the target; the public manager does not expose alternate
+manifest, artifact, fixture, or environment-selected software sources.
 
 Launch Kiro with the isolated target:
 
@@ -74,7 +77,8 @@ python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --
 ```
 
 `launch` requires clean current managed setup state and clean target-owned
-software. It sets `KIRO_HOME` to the target, places child `HOME`, XDG
+software; `status` reports the same `launch_allowed` precondition. It sets
+`KIRO_HOME` to the target, places child `HOME`, XDG
 directories, and logs under the target runtime directory, strips provider
 credential environment variables, uses a deterministic system `PATH`, and
 invokes the target-installed `kiro-cli --v3`. Arguments that would override

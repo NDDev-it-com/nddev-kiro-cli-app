@@ -346,6 +346,12 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: source override arguments must be absent")
     if software.get("test_source_environment_switches") != []:
         errors.append(f"{label}: test source env switches must be absent")
+    if software.get("manager_build_version_mismatch") != "needs-update":
+        errors.append(f"{label}: manager build mismatch behavior mismatch")
+    if software.get("remove_tolerates_missing_or_malformed_stamp_after_trust") is not True:
+        errors.append(f"{label}: malformed stamp remove behavior mismatch")
+    if software.get("status_launch_allowed_requires_clean_software") is not True:
+        errors.append(f"{label}: launch_allowed software precondition missing")
     if software.get("supported_platforms") != SUPPORTED_PLATFORMS:
         errors.append(f"{label}: supported platforms mismatch")
     if software.get("unsupported_platforms") != ["windows"]:
@@ -549,6 +555,12 @@ def check_baseline(
             errors.append("references/kiro-cli-baseline.json: source overrides must be absent")
         if software.get("test_source_environment_switches") != []:
             errors.append("references/kiro-cli-baseline.json: test source env switches must be absent")
+        if software.get("manager_build_version_mismatch") != "needs-update":
+            errors.append("references/kiro-cli-baseline.json: manager build mismatch behavior mismatch")
+        if software.get("remove_tolerates_missing_or_malformed_stamp_after_trust") is not True:
+            errors.append("references/kiro-cli-baseline.json: malformed stamp remove behavior mismatch")
+        if software.get("status_launch_allowed_requires_clean_software") is not True:
+            errors.append("references/kiro-cli-baseline.json: launch_allowed software precondition missing")
     packages = baseline.get("install_manifest", {}).get("packages")
     if not isinstance(packages, list) or not packages:
         errors.append("references/kiro-cli-baseline.json: install packages missing")

@@ -288,6 +288,9 @@
     "production_source_pins_required": true,
     "source_override_arguments": [],
     "test_source_environment_switches": [],
+    "manager_build_version_mismatch": "needs-update",
+    "remove_tolerates_missing_or_malformed_stamp_after_trust": true,
+    "status_launch_allowed_requires_clean_software": true,
     "stage_only_probe": true,
     "official_update_command": null,
     "official_vendor_installer": {
