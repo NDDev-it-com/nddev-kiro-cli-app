@@ -8,15 +8,11 @@ switch, and never reads or writes Kiro authentication state.
 
 ## Current Kiro Baseline
 
-The source-owned baseline is `references/kiro-cli-baseline.json`. The public
-contract is `config/nddev-contract.json`.
-
-The current public contract pins Kiro CLI stable `2.14.2`. Managed launch uses
-`kiro-cli --v3` because the native permissions and agent configuration used by
-this setup are Kiro v3 surfaces; the baseline records this engine as
-`early-access-required`.
-
-Kiro marketplace/plugin projection is unsupported and intentionally `null`.
+Use `references/kiro-cli-baseline.json`, `config/nddev-contract.json`, and
+`build/manifest.json` for the current Kiro release, official provenance,
+platform support, native discovery surfaces, managed projection, and runtime
+requirements. Use `cli-tools/nddev_kiro_cli.py list --json` for the active
+setup and permission-profile catalog.
 
 ## Usage
 
@@ -26,11 +22,17 @@ List the content setup and permission profiles:
 python3 cli-tools/nddev_kiro_cli.py list --json
 ```
 
+Inspect a target:
+
+```bash
+python3 cli-tools/nddev_kiro_cli.py status --target /absolute/kiro-home --json
+```
+
 Plan without mutating the target:
 
 ```bash
 python3 cli-tools/nddev_kiro_cli.py plan --target /absolute/kiro-home --json
-python3 cli-tools/nddev_kiro_cli.py plan --setup nddev-builder --profile safe --target /absolute/kiro-home --json
+python3 cli-tools/nddev_kiro_cli.py plan --setup SETUP_ID --profile PROFILE_ID --target /absolute/kiro-home --json
 ```
 
 Install, update, switch profile, migrate legacy state, restore, or remove:
@@ -38,16 +40,15 @@ Install, update, switch profile, migrate legacy state, restore, or remove:
 ```bash
 python3 cli-tools/nddev_kiro_cli.py install --target /absolute/kiro-home --json
 python3 cli-tools/nddev_kiro_cli.py update --target /absolute/kiro-home --json
-python3 cli-tools/nddev_kiro_cli.py switch --profile safe --target /absolute/kiro-home --json
-python3 cli-tools/nddev_kiro_cli.py migrate --profile full-auto --target /absolute/kiro-home --json
+python3 cli-tools/nddev_kiro_cli.py switch --profile PROFILE_ID --target /absolute/kiro-home --json
+python3 cli-tools/nddev_kiro_cli.py migrate --profile PROFILE_ID --target /absolute/kiro-home --json
 python3 cli-tools/nddev_kiro_cli.py restore --backup 0 --target /absolute/kiro-home --json
 python3 cli-tools/nddev_kiro_cli.py remove --target /absolute/kiro-home --json
 ```
 
-`nddev-builder` is the only content setup in this release. `full-auto` is the
-default permission profile. `safe` is available for ask/deny semantics.
-Former `safe`, `balanced`, and `full-auto` setup IDs are legacy managed state
-only: status, migrate, restore, and remove may read them, but launch is denied.
+Choose `SETUP_ID` and `PROFILE_ID` from `list --json`. Legacy managed setup
+state may be inspected, migrated, restored, or removed; launch is denied until
+the target is migrated to the current managed schema.
 
 Inspect, stage-probe, install, update, or remove the target-owned Kiro CLI
 software tree:
@@ -61,16 +62,13 @@ python3 cli-tools/nddev_kiro_cli.py software-remove --target /absolute/kiro-home
 ```
 
 `software-install` only installs into an absent software tree. Use
-`software-update` to repair safe partial installs or refresh drift; missing or
-absent updates fail with an "install first" domain error. A stamp from an older
+`software-update` to repair recoverable partial installs or refresh drift;
+missing updates fail with an "install first" domain error. A stamp from an older
 manager build reports `needs-update` instead of becoming hard-invalid, and
 `software-remove` can remove a target-owned tree with a missing or malformed
-stamp after strict target trust checks. Mutating software paths verify the
-official Kiro manifest SHA-256/size and exact pinned artifact SHA-256/size
-before writing the target; the public manager does not expose alternate
-manifest, artifact, fixture, or environment-selected software sources. Software
-status also binds stamp package and installer provenance back to the current
-baseline and reports tampering as drift or `needs-update`.
+stamp after strict target trust checks. `software-status --json` reports whether
+the target-owned software matches the current baseline owner; non-current
+software makes launch unavailable until repaired.
 
 Launch Kiro with the isolated target:
 
@@ -79,62 +77,33 @@ python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --
 ```
 
 `launch` requires clean current managed setup state and clean target-owned
-software; `status` reports the same `launch_allowed` precondition. It sets
-`KIRO_HOME` to the target, places child `HOME`, `TMPDIR`, XDG
-directories, and logs under the target runtime directory, strips provider
-credential environment variables, uses a deterministic system `PATH`, and
-invokes the target-installed `kiro-cli --v3`. Launch runtime directories are
-created and validated component-by-component as target-relative owner-private
-real directories, the executable digest is revalidated immediately before
-handoff, and lifecycle exclusion remains held until the child exits. The manager
-first takes a persistent `0600` external `fcntl.flock` under the fixed resolved
-system temp root (`/private/tmp` on macOS, `/tmp` on Linux), keyed by the
-canonical target path and never exposed to the child. It then takes the
-target-internal persistent `0600` lock. The internal lock directory is
-owner-private when idle and non-writable while held, so ordinary child cleanup
-cannot unlink or rmdir the manager lock path; the external lock still blocks
-manager mutations if the child renames that internal directory. The software
-parent and installed launcher tree are immutable while launchable; runtime
-`HOME`, `TMPDIR`, XDG, log, settings, and target parents remain writable. This
-is not a sandbox against a deliberately malicious same-UID process that changes
-target or bootstrap state directly.
-Arguments that would override managed engine, agent, trust, auth, settings,
-integrations, MCP, or update scope are rejected before the target lock is taken.
+software; `status --json` reports the same `launch_allowed` outcome. Launch uses
+an isolated target runtime, strips provider credential state, uses a
+deterministic child environment, revalidates the target-owned executable before
+handoff, and holds lifecycle exclusion until the child exits. Managed-scope
+overrides are rejected before launch. Exact runtime paths, lifecycle exclusion
+mechanics, environment keys, executable checks, and blocked override arguments
+are owned by `cli-tools/nddev_kiro_cli.py`, `config/nddev-contract.json`, and
+`build/manifest.json`.
 
 ## Builder Content
 
-The managed native content is deterministic and regular-file-only:
-
-- `agents/nddev-builder.md`
-- `skills/nddev-builder/SKILL.md`
-- `skills/kiro-*/SKILL.md`
-- `skills/nddev-builder/references/*.md`
-- `steering/nddev-builder.md`
-
-The canonical builder agent uses native Kiro v3 agent frontmatter with
-`tools: ["*"]` so built-in tools, MCP, todo, knowledge, subagents, web,
-read/write/shell, and future Kiro built-ins remain discoverable. Permission
-profile behavior stays in `profiles/*/permissions.yaml`, not in the agent file.
-The entry skill routes to focused creator/checker/release, configuration,
-permissions, agent, skill, hook, MCP, plugin/marketplace, and lifecycle skills;
-those focused skills point back to code-owned references for volatile facts.
-
-Kiro workspace hooks and MCP configuration are native discovery surfaces, but
-this target-owned setup does not synthesize or manage them.
+The builder toolkit is deterministic and regular-file-only. The exact managed
+projection, agent configuration, skill routing, profile separation, and native
+surface boundaries are owned by `build/manifest.json`,
+`config/nddev-contract.json`, the setup sources, and `list --json`. Builder
+skills route volatile native paths and schemas back to their code-owned
+references instead of copying them.
 
 ## Safety Model
 
-The manager requires an explicit absolute target. It rejects target symlinks,
-targets not owned by the current user with mode `0700`, managed symlinks,
-managed hard links, oversized metadata, malformed JSON, drift from the
-target-bound stamp, and backups copied from another target. Lock and backup
-state lives under the owner-private target runtime directory. Mutations use
-target-bound backups and rollback on failure. It preserves unmanaged files and
-unowned settings keys.
+The manager requires an explicit absolute target. It enforces target trust,
+managed-file integrity, target-bound backups, rollback, restore boundaries, and
+preservation of unmanaged state. Exact trust checks, backup layout, rollback
+behavior, and removal boundaries are owned by `cli-tools/nddev_kiro_cli.py` and
+the public contract.
 
-The public Kiro shell installer at `https://cli.kiro.dev/install` is tracked as
-official evidence, but the manager does not execute it as the runtime install
-primitive: its macOS branch writes `/Applications` and launches the app. The
-manager instead downloads official stable artifacts, verifies pinned SHA-256 and
-byte sizes, extracts in staging, and atomically moves only the bounded software
-tree into the explicit target. Windows is not supported.
+Official install-channel and artifact provenance are tracked in
+`references/kiro-cli-baseline.json`. Runtime installation is target-owned and
+does not run a global installer or mutate application locations outside the
+explicit target. Platform support is declared by the baseline and contract.
