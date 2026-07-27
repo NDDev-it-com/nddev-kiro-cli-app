@@ -131,6 +131,25 @@ SUPPORTED_PLATFORMS = [
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
+DISALLOWED_MANAGER_SOURCE_TOKENS = [
+    "NDDEV_KIRO_CLI_ALLOW_TEST_SOURCES",
+    "ALLOW_TEST",
+    "_TEST_SOURCES",
+    "test_sources_enabled",
+    "package_from_manifest_for_tests",
+    "--manifest-url",
+    "--manifest-path",
+    "--artifact-base-url",
+    "--artifact-path",
+    "manifest_path",
+    "manifest_url",
+    "artifact_path",
+    "artifact_base_url",
+    "private-test",
+    "local software manifest",
+    "local software artifact",
+    "non-official software",
+]
 
 
 def load_json(relative: str, errors: list[str]) -> dict[str, Any] | None:
@@ -321,6 +340,12 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: absent update must be disabled")
     if software.get("absent_update_behavior") != "domain-error-install-first":
         errors.append(f"{label}: absent update behavior mismatch")
+    if software.get("production_source_pins_required") is not True:
+        errors.append(f"{label}: production source pins must be required")
+    if software.get("source_override_arguments") != []:
+        errors.append(f"{label}: source override arguments must be absent")
+    if software.get("test_source_environment_switches") != []:
+        errors.append(f"{label}: test source env switches must be absent")
     if software.get("supported_platforms") != SUPPORTED_PLATFORMS:
         errors.append(f"{label}: supported platforms mismatch")
     if software.get("unsupported_platforms") != ["windows"]:
@@ -518,11 +543,23 @@ def check_baseline(
             errors.append("references/kiro-cli-baseline.json: absent update must be disabled")
         if software.get("absent_update_behavior") != "domain-error-install-first":
             errors.append("references/kiro-cli-baseline.json: absent update behavior mismatch")
+        if software.get("production_source_pins_required") is not True:
+            errors.append("references/kiro-cli-baseline.json: production source pins missing")
+        if software.get("source_override_arguments") != []:
+            errors.append("references/kiro-cli-baseline.json: source overrides must be absent")
+        if software.get("test_source_environment_switches") != []:
+            errors.append("references/kiro-cli-baseline.json: test source env switches must be absent")
     packages = baseline.get("install_manifest", {}).get("packages")
     if not isinstance(packages, list) or not packages:
         errors.append("references/kiro-cli-baseline.json: install packages missing")
     elif not all(isinstance(item, dict) and item.get("sha256") for item in packages):
         errors.append("references/kiro-cli-baseline.json: package sha256 missing")
+
+
+def check_manager_source(text: str, errors: list[str]) -> None:
+    for token in DISALLOWED_MANAGER_SOURCE_TOKENS:
+        if token in text:
+            errors.append(f"cli-tools/nddev_kiro_cli.py: disallowed test/source switch {token!r}")
 
 
 def main() -> int:
@@ -553,13 +590,17 @@ def main() -> int:
     check_setup(errors)
     for profile_id in PROFILE_IDS:
         check_profile(profile_id, errors)
+    manager_source = ""
     for relative in (
         "README.md",
         "AGENTS.md",
         "SECURITY.md",
         "cli-tools/nddev_kiro_cli.py",
     ):
-        check_text(relative, errors)
+        text = check_text(relative, errors)
+        if relative == "cli-tools/nddev_kiro_cli.py":
+            manager_source = text
+    check_manager_source(manager_source, errors)
     for workflow in WORKFLOWS:
         check_text(f".github/workflows/{workflow}", errors)
 

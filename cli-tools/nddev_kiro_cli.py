@@ -571,51 +571,6 @@ def select_baseline_package(os_name: str, architecture: str, libc: str | None) -
     )
 
 
-def package_from_manifest_for_tests(
-    manifest: dict[str, Any],
-    os_name: str,
-    architecture: str,
-    libc: str | None,
-) -> SoftwarePackage:
-    if not test_sources_enabled():
-        fail("manifest-selected software packages are private-test only")
-    if manifest.get("version") != expected_runtime_version():
-        fail("test Kiro CLI manifest must use the exact current runtime version")
-    packages = manifest.get("packages")
-    if not isinstance(packages, list):
-        fail("test Kiro CLI manifest packages must be a list")
-    matches = [
-        item
-        for item in packages
-        if isinstance(item, dict) and package_matches(item, os_name, architecture, libc)
-    ]
-    if len(matches) != 1:
-        fail(f"cannot select test Kiro CLI package for {os_name}/{architecture}/{libc}")
-    package = matches[0]
-    sha256 = package.get("sha256")
-    download = package.get("download")
-    size = package.get("size")
-    if (
-        not isinstance(sha256, str)
-        or not SHA256_PATTERN.fullmatch(sha256)
-        or not isinstance(download, str)
-        or not isinstance(size, int)
-        or size <= 0
-    ):
-        fail("test Kiro CLI package is missing download, size, or sha256")
-    return SoftwarePackage(
-        os_name=os_name,
-        architecture=architecture,
-        libc=libc,
-        file_type=str(package.get("fileType")),
-        variant=str(package.get("variant")),
-        download=download,
-        sha256=sha256,
-        size=size,
-        cli_path=package.get("cliPath") if isinstance(package.get("cliPath"), str) else None,
-    )
-
-
 def parse_content_length(value: str | None, max_bytes: int, label: str) -> int | None:
     if value is None:
         return None
@@ -700,44 +655,27 @@ def download_bounded_url(url: str, destination: Path, max_bytes: int, label: str
     return digest.hexdigest()
 
 
-def test_sources_enabled() -> bool:
-    return os.environ.get("NDDEV_KIRO_CLI_ALLOW_TEST_SOURCES") == "1"
-
-
-def read_manifest_source(path: str | None, url: str | None) -> dict[str, Any]:
-    if path:
-        if not test_sources_enabled():
-            fail("local software manifest sources are private-test only")
-        content, _ = read_regular_file(
-            Path(path),
-            "local Kiro CLI software manifest",
-            owner_only=False,
-            max_bytes=DOWNLOAD_METADATA_MAX_BYTES,
-        )
-    else:
-        if url and url != OFFICIAL_INSTALL_MANIFEST_URL and not test_sources_enabled():
-            fail("non-official software manifest URLs are private-test only")
-        content = read_bounded_url(
-            url or OFFICIAL_INSTALL_MANIFEST_URL,
-            DOWNLOAD_METADATA_MAX_BYTES,
-            "Kiro CLI install manifest",
-        )
-        if not test_sources_enabled():
-            baseline = load_baseline()
-            release = baseline.get("release", {})
-            expected_digest = release.get("install_manifest_sha256")
-            expected_size = release.get("install_manifest_size")
-            if (
-                not isinstance(expected_digest, str)
-                or not SHA256_PATTERN.fullmatch(expected_digest)
-                or not isinstance(expected_size, int)
-                or expected_size <= 0
-            ):
-                fail("Kiro CLI baseline install manifest pin is missing")
-            if len(content) != expected_size:
-                fail("Kiro CLI install manifest size changed")
-            if sha256_bytes(content) != expected_digest:
-                fail("Kiro CLI install manifest digest changed")
+def read_manifest_source() -> dict[str, Any]:
+    content = read_bounded_url(
+        OFFICIAL_INSTALL_MANIFEST_URL,
+        DOWNLOAD_METADATA_MAX_BYTES,
+        "Kiro CLI install manifest",
+    )
+    baseline = load_baseline()
+    release = baseline.get("release", {})
+    expected_digest = release.get("install_manifest_sha256")
+    expected_size = release.get("install_manifest_size")
+    if (
+        not isinstance(expected_digest, str)
+        or not SHA256_PATTERN.fullmatch(expected_digest)
+        or not isinstance(expected_size, int)
+        or expected_size <= 0
+    ):
+        fail("Kiro CLI baseline install manifest pin is missing")
+    if len(content) != expected_size:
+        fail("Kiro CLI install manifest size changed")
+    if sha256_bytes(content) != expected_digest:
+        fail("Kiro CLI install manifest digest changed")
     return parse_json_object(content, "Kiro CLI install manifest")
 
 
@@ -773,34 +711,9 @@ def artifact_download_url(base_url: str, download: str) -> str:
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def stage_artifact(
-    stage: Path,
-    package: SoftwarePackage,
-    *,
-    artifact_path: str | None,
-    artifact_base_url: str | None,
-) -> Path:
+def stage_artifact(stage: Path, package: SoftwarePackage) -> Path:
     artifact = stage / "download" / Path(package.download).name
-    if artifact_path:
-        if not test_sources_enabled():
-            fail("local software artifact sources are private-test only")
-        source = Path(artifact_path)
-        content, _ = read_regular_file(
-            source,
-            "local Kiro CLI software artifact",
-            owner_only=False,
-            max_bytes=package.size,
-        )
-        if len(content) != package.size:
-            fail("local Kiro CLI software artifact size mismatch")
-        if sha256_bytes(content) != package.sha256:
-            fail("local Kiro CLI software artifact digest mismatch")
-        atomic_write(artifact, content)
-        return artifact
-    base_url = artifact_base_url or "https://prod.download.cli.kiro.dev/stable"
-    if artifact_base_url and base_url != "https://prod.download.cli.kiro.dev/stable" and not test_sources_enabled():
-        fail("non-official software artifact URLs are private-test only")
-    url = artifact_download_url(base_url, package.download)
+    url = artifact_download_url("https://prod.download.cli.kiro.dev/stable", package.download)
     digest = download_bounded_url(
         url,
         artifact,
@@ -1414,15 +1327,11 @@ def select_software_package(
     platform_arg: str | None,
     architecture_arg: str | None,
     libc_arg: str | None,
-    manifest_path: str | None,
-    manifest_url: str | None,
 ) -> SoftwarePackage:
     os_name = normalize_platform_name(platform_arg)
     architecture = normalize_architecture(architecture_arg, os_name)
     libc = normalize_libc(libc_arg, os_name)
-    manifest = read_manifest_source(manifest_path, manifest_url)
-    if manifest_path and test_sources_enabled():
-        return package_from_manifest_for_tests(manifest, os_name, architecture, libc)
+    manifest = read_manifest_source()
     package = select_baseline_package(os_name, architecture, libc)
     verify_manifest_package(manifest, package)
     return package
@@ -1431,18 +1340,10 @@ def select_software_package(
 def prepare_software_from_package(
     target: Path,
     package: SoftwarePackage,
-    *,
-    artifact_path: str | None,
-    artifact_base_url: str | None,
 ) -> tuple[Path, Path]:
     stage = create_transaction_dir(target, "software-stage")
     try:
-        artifact = stage_artifact(
-            stage,
-            package,
-            artifact_path=artifact_path,
-            artifact_base_url=artifact_base_url,
-        )
+        artifact = stage_artifact(stage, package)
         prepared, executable_relative = prepare_software_root(stage, artifact, package)
         finalize_prepared_software(prepared, target, package, executable_relative)
         return prepared, stage
@@ -1457,26 +1358,15 @@ def software_probe(
     platform_arg: str | None,
     architecture_arg: str | None,
     libc_arg: str | None,
-    manifest_path: str | None,
-    manifest_url: str | None,
-    artifact_path: str | None,
-    artifact_base_url: str | None,
 ) -> dict[str, Any]:
     preflight_software_target(target, allow_partial=True)
     package = select_software_package(
         platform_arg,
         architecture_arg,
         libc_arg,
-        manifest_path,
-        manifest_url,
     )
     with software_stage(target) as stage:
-        artifact = stage_artifact(
-            stage,
-            package,
-            artifact_path=artifact_path,
-            artifact_base_url=artifact_base_url,
-        )
+        artifact = stage_artifact(stage, package)
         prepared, executable_relative = prepare_software_root(stage, artifact, package)
         finalize_prepared_software(prepared, target, package, executable_relative)
         stamp = parse_json_object(
@@ -1502,10 +1392,6 @@ def software_install(
     platform_arg: str | None,
     architecture_arg: str | None,
     libc_arg: str | None,
-    manifest_path: str | None,
-    manifest_url: str | None,
-    artifact_path: str | None,
-    artifact_base_url: str | None,
 ) -> dict[str, Any]:
     status = preflight_software_target(target, allow_partial=False)
     if status["state"] == "installed":
@@ -1514,15 +1400,8 @@ def software_install(
         platform_arg,
         architecture_arg,
         libc_arg,
-        manifest_path,
-        manifest_url,
     )
-    prepared, stage = prepare_software_from_package(
-        target,
-        package,
-        artifact_path=artifact_path,
-        artifact_base_url=artifact_base_url,
-    )
+    prepared, stage = prepare_software_from_package(target, package)
     try:
         with target_lock(target, create_target=True):
             race_status = preflight_software_target(target, allow_partial=False)
@@ -1546,10 +1425,6 @@ def software_update(
     platform_arg: str | None,
     architecture_arg: str | None,
     libc_arg: str | None,
-    manifest_path: str | None,
-    manifest_url: str | None,
-    artifact_path: str | None,
-    artifact_base_url: str | None,
 ) -> dict[str, Any]:
     status = preflight_software_target(target, allow_partial=True)
     if status["state"] in {"missing", "absent"}:
@@ -1569,15 +1444,8 @@ def software_update(
         platform_arg,
         architecture_arg,
         libc_arg,
-        manifest_path,
-        manifest_url,
     )
-    prepared, stage = prepare_software_from_package(
-        target,
-        package,
-        artifact_path=artifact_path,
-        artifact_base_url=artifact_base_url,
-    )
+    prepared, stage = prepare_software_from_package(target, package)
     try:
         with target_lock(target, create_target=False):
             race_status = preflight_software_target(target, allow_partial=True)
@@ -2907,10 +2775,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         command.add_argument("--platform")
         command.add_argument("--architecture")
         command.add_argument("--libc")
-        command.add_argument("--manifest-url")
-        command.add_argument("--manifest-path")
-        command.add_argument("--artifact-base-url")
-        command.add_argument("--artifact-path")
         command.add_argument("--json", action="store_true")
 
     launch_parser = subparsers.add_parser("launch")
@@ -2979,10 +2843,6 @@ def main(argv: list[str] | None = None) -> int:
                     platform_arg=args.platform,
                     architecture_arg=args.architecture,
                     libc_arg=args.libc,
-                    manifest_path=args.manifest_path,
-                    manifest_url=args.manifest_url,
-                    artifact_path=args.artifact_path,
-                    artifact_base_url=args.artifact_base_url,
                 ),
                 as_json=args.json,
             )
@@ -2994,10 +2854,6 @@ def main(argv: list[str] | None = None) -> int:
                     platform_arg=args.platform,
                     architecture_arg=args.architecture,
                     libc_arg=args.libc,
-                    manifest_path=args.manifest_path,
-                    manifest_url=args.manifest_url,
-                    artifact_path=args.artifact_path,
-                    artifact_base_url=args.artifact_base_url,
                 ),
                 as_json=args.json,
             )
@@ -3009,10 +2865,6 @@ def main(argv: list[str] | None = None) -> int:
                     platform_arg=args.platform,
                     architecture_arg=args.architecture,
                     libc_arg=args.libc,
-                    manifest_path=args.manifest_path,
-                    manifest_url=args.manifest_url,
-                    artifact_path=args.artifact_path,
-                    artifact_base_url=args.artifact_base_url,
                 ),
                 as_json=args.json,
             )

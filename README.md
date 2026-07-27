@@ -64,7 +64,8 @@ python3 cli-tools/nddev_kiro_cli.py software-remove --target /absolute/kiro-home
 `software-update` to repair safe partial installs or refresh drift; missing or
 absent updates fail with an "install first" domain error. Mutating software
 paths verify the official Kiro manifest SHA-256/size and exact pinned artifact
-SHA-256/size before writing the target.
+SHA-256/size before writing the target; the public manager does not expose
+alternate manifest, artifact, fixture, or environment-selected software sources.
 
 Launch Kiro with the isolated target:
 

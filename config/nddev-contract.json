@@ -285,6 +285,9 @@
     "update_repairs_safe_partial": true,
     "update_installs_absent": false,
     "absent_update_behavior": "domain-error-install-first",
+    "production_source_pins_required": true,
+    "source_override_arguments": [],
+    "test_source_environment_switches": [],
     "stage_only_probe": true,
     "official_update_command": null,
     "official_vendor_installer": {
