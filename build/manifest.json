@@ -9,6 +9,9 @@
     "engine_argument": "--v3",
     "engine_status": "early-access-required",
     "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "launch_lock_held_until_child_exit": true,
+    "launch_executable_revalidated_before_handoff": true,
+    "launch_runtime_directories_target_relative_owner_private": true,
     "managed_launch_blocked_commands": [
       "agent",
       "diagnostic",

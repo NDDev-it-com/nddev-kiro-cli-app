@@ -4,8 +4,14 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import os
 import re
+import shlex
+import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -287,6 +293,12 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
         errors.append(f"{label}: managed launch option guard mismatch")
     if runtime.get("trusted_system_path") not in (None, TRUSTED_SYSTEM_PATH):
         errors.append(f"{label}: trusted system PATH mismatch")
+    if runtime.get("launch_lock_held_until_child_exit") is not True:
+        errors.append(f"{label}: launch lock lifetime mismatch")
+    if runtime.get("launch_executable_revalidated_before_handoff") is not True:
+        errors.append(f"{label}: executable revalidation contract missing")
+    if runtime.get("launch_runtime_directories_target_relative_owner_private") is not True:
+        errors.append(f"{label}: launch runtime directory trust mismatch")
 
 
 def check_builder(builder: Any, label: str, errors: list[str]) -> None:
@@ -354,6 +366,8 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: malformed stamp remove behavior mismatch")
     if software.get("status_launch_allowed_requires_clean_software") is not True:
         errors.append(f"{label}: launch_allowed software precondition missing")
+    if software.get("stamp_provenance_bound_to_current_baseline") is not True:
+        errors.append(f"{label}: software stamp provenance baseline binding missing")
     if software.get("supported_platforms") != SUPPORTED_PLATFORMS:
         errors.append(f"{label}: supported platforms mismatch")
     if software.get("unsupported_platforms") != ["windows"]:
@@ -476,6 +490,10 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         "lock_state_under_target",
         "backup_state_under_target",
         "attacker_sibling_lock_backup_ignored",
+        "launch_runtime_directories_target_relative_owner_private",
+        "reject_symlink_runtime_directories",
+        "launch_lock_held_until_child_exit",
+        "launch_executable_revalidated_before_handoff",
     ):
         if safety.get(key) is not True:
             errors.append(f"config/nddev-contract.json: safety.{key} required")
@@ -520,6 +538,12 @@ def check_baseline(
     authentication = baseline.get("authentication", {})
     if authentication.get("manager_launch_inherits_path") is not False:
         errors.append("references/kiro-cli-baseline.json: launch PATH boundary mismatch")
+    if authentication.get("launch_lock_held_until_child_exit") is not True:
+        errors.append("references/kiro-cli-baseline.json: launch lock lifetime mismatch")
+    if authentication.get("launch_executable_revalidated_before_handoff") is not True:
+        errors.append("references/kiro-cli-baseline.json: executable revalidation missing")
+    if authentication.get("launch_runtime_directories_target_relative_owner_private") is not True:
+        errors.append("references/kiro-cli-baseline.json: launch runtime directory trust missing")
     release = baseline.get("release", {})
     if release.get("install_script_sha256") != INSTALLER_SHA256:
         errors.append("references/kiro-cli-baseline.json: install script sha256 mismatch")
@@ -563,6 +587,8 @@ def check_baseline(
             errors.append("references/kiro-cli-baseline.json: malformed stamp remove behavior mismatch")
         if software.get("status_launch_allowed_requires_clean_software") is not True:
             errors.append("references/kiro-cli-baseline.json: launch_allowed software precondition missing")
+        if software.get("stamp_provenance_bound_to_current_baseline") is not True:
+            errors.append("references/kiro-cli-baseline.json: software stamp provenance binding missing")
     packages = baseline.get("install_manifest", {}).get("packages")
     if not isinstance(packages, list) or not packages:
         errors.append("references/kiro-cli-baseline.json: install packages missing")
@@ -574,6 +600,272 @@ def check_manager_source(text: str, errors: list[str]) -> None:
     for token in DISALLOWED_MANAGER_SOURCE_TOKENS:
         if token in text:
             errors.append(f"cli-tools/nddev_kiro_cli.py: disallowed test/source switch {token!r}")
+
+
+def load_manager_for_regressions(errors: list[str]) -> Any | None:
+    path = ROOT / "cli-tools/nddev_kiro_cli.py"
+    try:
+        spec = importlib.util.spec_from_file_location("nddev_kiro_cli_public_regression", path)
+        if spec is None or spec.loader is None:
+            errors.append("cli-tools/nddev_kiro_cli.py: cannot build import spec")
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        errors.append(f"cli-tools/nddev_kiro_cli.py: cannot import manager: {exc}")
+        return None
+    return module
+
+
+def regression_env() -> dict[str, str]:
+    return {
+        "PATH": TRUSTED_SYSTEM_PATH,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+
+
+def private_dir(manager: Any, path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, manager.OWNER_DIR_MODE)
+
+
+def fake_package(manager: Any) -> Any:
+    return manager.select_baseline_package("linux", "x86_64", "glibc")
+
+
+def install_fake_software(manager: Any, target: Path, script: str) -> Path:
+    target = target.resolve(strict=False)
+    root = target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME
+    private_dir(manager, target / manager.NDDEV_RUNTIME_DIR)
+    private_dir(manager, target / manager.SOFTWARE_RUNTIME_DIR)
+    private_dir(manager, root)
+    private_dir(manager, root / "bin")
+    executable = root / "bin" / "kiro-cli"
+    executable.write_text(script, encoding="utf-8")
+    os.chmod(executable, 0o700)
+    package = fake_package(manager)
+    tree = manager.scan_software_tree(root, "bin/kiro-cli")
+    stamp = manager.software_stamp_payload(target, package, "bin/kiro-cli", tree)
+    manager.atomic_write(root / manager.SOFTWARE_STAMP_NAME, manager.canonical_json(stamp))
+    return root / manager.SOFTWARE_STAMP_NAME
+
+
+def mutate_stamp(manager: Any, stamp_path: Path, mutator: Any) -> None:
+    stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+    mutator(stamp)
+    manager.atomic_write(stamp_path, manager.canonical_json(stamp))
+
+
+def assert_status_blocks_launch(
+    manager: Any,
+    target: Path,
+    marker: Path,
+    expected_state: str,
+    expected_drift: str,
+    errors: list[str],
+    label: str,
+) -> None:
+    status = manager.software_status(target)
+    if status.get("state") != expected_state:
+        errors.append(f"{label}: expected software state {expected_state}, got {status.get('state')}")
+    if expected_drift not in status.get("drift", []):
+        errors.append(f"{label}: expected drift {expected_drift!r}, got {status.get('drift')}")
+    managed_status = manager.current_status(target)
+    if managed_status.get("launch_allowed") is not False:
+        errors.append(f"{label}: launch_allowed must be false")
+    try:
+        manager.launch(target, [])
+        errors.append(f"{label}: launch unexpectedly succeeded")
+    except manager.ManagerError:
+        pass
+    if marker.exists():
+        errors.append(f"{label}: child executable ran despite blocked software state")
+
+
+def prepare_managed_target(manager: Any, target: Path) -> None:
+    manager.mutate_setup(
+        target,
+        manager.CONTENT_SETUP_ID,
+        manager.DEFAULT_PERMISSION_PROFILE_ID,
+        "install",
+    )
+
+
+def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "stamp-provenance").resolve(strict=False)
+    prepare_managed_target(manager, target)
+    marker = tmp / "tampered-child-ran"
+    script = f"#!/bin/sh\nprintf run > {shlex.quote(str(marker))}\nexit 0\n"
+    stamp_path = install_fake_software(manager, target, script)
+
+    mutate_stamp(manager, stamp_path, lambda stamp: stamp["package"].__setitem__("download", "2.14.2/tampered.zip"))
+    assert_status_blocks_launch(
+        manager,
+        target,
+        marker,
+        "needs-update",
+        "software package download",
+        errors,
+        "tampered software artifact identity",
+    )
+
+    marker.unlink(missing_ok=True)
+    stamp_path = install_fake_software(manager, target, script)
+    mutate_stamp(manager, stamp_path, lambda stamp: stamp["package"].__setitem__("sha256", "0" * 64))
+    assert_status_blocks_launch(
+        manager,
+        target,
+        marker,
+        "needs-update",
+        "software package sha256",
+        errors,
+        "tampered software artifact sha256",
+    )
+
+    marker.unlink(missing_ok=True)
+    stamp_path = install_fake_software(manager, target, script)
+    mutate_stamp(manager, stamp_path, lambda stamp: stamp.__setitem__("build_version", "0.1.0"))
+    assert_status_blocks_launch(
+        manager,
+        target,
+        marker,
+        "needs-update",
+        "software manager build_version",
+        errors,
+        "older manager software stamp",
+    )
+
+
+def make_private_parent_chain(manager: Any, root: Path, relative_parent: Path) -> None:
+    current = root
+    for part in relative_parent.parts:
+        current = current / part
+        private_dir(manager, current)
+
+
+def run_launch_runtime_symlink_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    runtime_links = [
+        "home",
+        "xdg",
+        "xdg/config",
+        "xdg/data",
+        "xdg/state",
+        "xdg/cache",
+        "logs",
+    ]
+    for name in runtime_links:
+        target = (tmp / f"runtime-symlink-{name.replace('/', '-')}").resolve(strict=False)
+        prepare_managed_target(manager, target)
+        marker = tmp / f"runtime-symlink-{name.replace('/', '-')}-child-ran"
+        script = f"#!/bin/sh\nprintf run > {shlex.quote(str(marker))}\nexit 0\n"
+        install_fake_software(manager, target, script)
+        outside = tmp / f"outside-{name.replace('/', '-')}"
+        private_dir(manager, outside)
+        runtime_root = target / manager.NDDEV_RUNTIME_DIR
+        link = runtime_root / name
+        make_private_parent_chain(manager, runtime_root, link.relative_to(runtime_root).parent)
+        os.symlink(outside, link)
+        try:
+            manager.launch(target, [])
+            errors.append(f"launch runtime {name}: launch unexpectedly succeeded through symlink")
+        except manager.ManagerError:
+            pass
+        if marker.exists():
+            errors.append(f"launch runtime {name}: child executable ran through symlinked runtime root")
+
+
+def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "launch-lock").resolve(strict=False)
+    prepare_managed_target(manager, target)
+    started = tmp / "launch-child-started"
+    stop = tmp / "launch-child-stop"
+    script = (
+        "#!/bin/sh\n"
+        f"printf started > {shlex.quote(str(started))}\n"
+        f"while [ ! -f {shlex.quote(str(stop))} ]; do sleep 0.05; done\n"
+        "exit 0\n"
+    )
+    install_fake_software(manager, target, script)
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(ROOT / "cli-tools/nddev_kiro_cli.py"),
+            "launch",
+            "--target",
+            str(target),
+            "--",
+        ],
+        cwd=str(ROOT),
+        env=regression_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    communicated = False
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline and not started.exists() and process.poll() is None:
+            time.sleep(0.05)
+        if not started.exists():
+            if process.poll() is None:
+                process.kill()
+            stdout, stderr = process.communicate(timeout=5)
+            communicated = True
+            errors.append(
+                "launch lock regression: child did not start "
+                f"(rc={process.returncode}, stdout={stdout!r}, stderr={stderr!r})"
+            )
+            return
+        mutation = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "cli-tools/nddev_kiro_cli.py"),
+                "switch",
+                "--profile",
+                "safe",
+                "--target",
+                str(target),
+                "--json",
+            ],
+            cwd=str(ROOT),
+            env=regression_env(),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+        if mutation.returncode == 0:
+            errors.append("launch lock regression: lifecycle mutation succeeded while child ran")
+    finally:
+        stop.write_text("stop\n", encoding="utf-8")
+        if not communicated:
+            try:
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate(timeout=5)
+                errors.append("launch lock regression: child did not exit after stop signal")
+            if process.returncode not in (0, None):
+                errors.append(
+                    "launch lock regression: launch process failed "
+                    f"(rc={process.returncode}, stdout={stdout!r}, stderr={stderr!r})"
+                )
+
+
+def run_public_manager_regressions(errors: list[str]) -> None:
+    manager = load_manager_for_regressions(errors)
+    if manager is None:
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix="nddev-kiro-public-validator-") as tmp_name:
+            tmp = Path(tmp_name).resolve(strict=False)
+            run_stamp_provenance_regressions(manager, tmp, errors)
+            run_launch_runtime_symlink_regressions(manager, tmp, errors)
+            run_launch_lock_regression(manager, tmp, errors)
+    except Exception as exc:
+        errors.append(f"public manager regressions failed: {exc}")
 
 
 def main() -> int:
@@ -615,6 +907,7 @@ def main() -> int:
         if relative == "cli-tools/nddev_kiro_cli.py":
             manager_source = text
     check_manager_source(manager_source, errors)
+    run_public_manager_regressions(errors)
     for workflow in WORKFLOWS:
         check_text(f".github/workflows/{workflow}", errors)
 

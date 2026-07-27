@@ -68,7 +68,9 @@ manager build reports `needs-update` instead of becoming hard-invalid, and
 stamp after strict target trust checks. Mutating software paths verify the
 official Kiro manifest SHA-256/size and exact pinned artifact SHA-256/size
 before writing the target; the public manager does not expose alternate
-manifest, artifact, fixture, or environment-selected software sources.
+manifest, artifact, fixture, or environment-selected software sources. Software
+status also binds stamp package and installer provenance back to the current
+baseline and reports tampering as drift or `needs-update`.
 
 Launch Kiro with the isolated target:
 
@@ -81,9 +83,12 @@ software; `status` reports the same `launch_allowed` precondition. It sets
 `KIRO_HOME` to the target, places child `HOME`, XDG
 directories, and logs under the target runtime directory, strips provider
 credential environment variables, uses a deterministic system `PATH`, and
-invokes the target-installed `kiro-cli --v3`. Arguments that would override
-managed engine, agent, trust, auth, settings, integrations, MCP, or update scope
-are rejected before the target lock is taken.
+invokes the target-installed `kiro-cli --v3`. Launch runtime directories are
+created and validated component-by-component as target-relative owner-private
+real directories, the executable digest is revalidated immediately before
+handoff, and the target lock remains held until the child exits. Arguments that
+would override managed engine, agent, trust, auth, settings, integrations, MCP,
+or update scope are rejected before the target lock is taken.
 
 ## Builder Content
 

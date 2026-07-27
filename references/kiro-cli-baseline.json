@@ -173,7 +173,10 @@
     "native_headless_api_key": "KIRO_API_KEY",
     "manager_launch_inherits_provider_credentials": false,
     "manager_launch_blocks_login_scope_commands": true,
-    "manager_launch_inherits_path": false
+    "manager_launch_inherits_path": false,
+    "launch_lock_held_until_child_exit": true,
+    "launch_executable_revalidated_before_handoff": true,
+    "launch_runtime_directories_target_relative_owner_private": true
   },
   "software_installation": {
     "manager_install_mode": "target-owned-official-artifact",
@@ -210,6 +213,7 @@
     "manager_build_version_mismatch": "needs-update",
     "remove_tolerates_missing_or_malformed_stamp_after_trust": true,
     "status_launch_allowed_requires_clean_software": true,
+    "stamp_provenance_bound_to_current_baseline": true,
     "stage_only_probe": true
   },
   "migration": {

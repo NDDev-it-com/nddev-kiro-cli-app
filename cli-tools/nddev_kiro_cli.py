@@ -316,6 +316,32 @@ def require_owner_private_file(path: Path, label: str) -> os.stat_result:
     return info
 
 
+def ensure_target_private_directory(target: Path, relative: str, label: str) -> Path:
+    relative_path = safe_relative_path(relative)
+    require_owner_private_directory(target, "target")
+    target_root = target.resolve(strict=True)
+    current = target
+    for part in relative_path.parts:
+        current = current / part
+        component_label = f"{label} component {current}"
+        info = lstat_optional(current)
+        if info is None:
+            try:
+                current.mkdir(mode=OWNER_DIR_MODE)
+            except FileExistsError as exc:
+                raise ConcurrentTargetChange(f"{component_label} appeared during creation") from exc
+            info = require_directory(current, component_label)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            fail(f"{component_label} must be a real directory")
+        require_current_user_owned(info, component_label)
+        require_exact_mode(info, component_label, OWNER_DIR_MODE)
+    try:
+        current.resolve(strict=True).relative_to(target_root)
+    except ValueError:
+        fail(f"{label} must remain under the target")
+    return current
+
+
 def safe_relative_path(relative: str) -> Path:
     path = Path(relative)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
@@ -399,6 +425,45 @@ def read_regular_file(
     if identity_of(final) != identity_of(before) or identity_of(after) != identity_of(before):
         raise ConcurrentTargetChange(f"{label} changed while it was read")
     return b"".join(blocks), final
+
+
+def digest_regular_file(
+    path: Path,
+    label: str,
+    *,
+    owner_only: bool = False,
+    max_bytes: int = MANAGED_PAYLOAD_MAX_BYTES,
+) -> tuple[str, os.stat_result]:
+    before = require_regular_file(path, label, owner_only=owner_only)
+    if before.st_size > max_bytes:
+        fail(f"{label} exceeds the {max_bytes}-byte size limit")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        opened = os.fstat(descriptor)
+        if identity_of(opened) != identity_of(before):
+            raise ConcurrentTargetChange(f"{label} changed while it was opened")
+        while True:
+            block = os.read(descriptor, 65536)
+            if not block:
+                break
+            total += len(block)
+            if total > max_bytes:
+                fail(f"{label} exceeds the {max_bytes}-byte size limit")
+            digest.update(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    final = require_regular_file(path, label, owner_only=owner_only)
+    if identity_of(final) != identity_of(before) or identity_of(after) != identity_of(before):
+        raise ConcurrentTargetChange(f"{label} changed while it was read")
+    return digest.hexdigest(), final
 
 
 def parse_json_object(content: bytes, label: str) -> dict[str, Any]:
@@ -908,18 +973,32 @@ def validate_software_stamp(stamp: dict[str, Any], target: Path) -> None:
         fail("software stamp identity or schema is invalid")
     if not isinstance(stamp["build_version"], str) or not stamp["build_version"].strip():
         fail("software stamp build version is invalid")
-    if stamp["runtime_product"] != "Kiro CLI" or stamp["version"] != expected_runtime_version():
+    if not isinstance(stamp["runtime_product"], str) or not isinstance(stamp["version"], str):
         fail("software stamp runtime identity is invalid")
     if stamp["canonical_target"] != str(target):
         fail("software stamp is bound to a different canonical target")
-    if stamp["install_mode"] != "target-owned-official-artifact":
+    if not isinstance(stamp["install_mode"], str) or not stamp["install_mode"].strip():
         fail("software stamp install mode is invalid")
     package = stamp["package"]
     if not isinstance(package, dict):
         fail("software stamp package is invalid")
-    for key in ("os", "architecture", "fileType", "variant", "download", "sha256", "size"):
-        if key not in package:
-            fail(f"software stamp package.{key} is missing")
+    expected_package_keys = {
+        "os",
+        "architecture",
+        "libc",
+        "fileType",
+        "variant",
+        "download",
+        "sha256",
+        "size",
+    }
+    if set(package) != expected_package_keys:
+        fail("software stamp package has invalid keys")
+    for key in ("os", "architecture", "fileType", "variant", "download"):
+        if not isinstance(package[key], str) or not package[key].strip():
+            fail(f"software stamp package.{key} is invalid")
+    if package["libc"] is not None and not isinstance(package["libc"], str):
+        fail("software stamp package.libc is invalid")
     if not isinstance(package["sha256"], str) or not SHA256_PATTERN.fullmatch(package["sha256"]):
         fail("software stamp package.sha256 is invalid")
     if not isinstance(package["size"], int) or package["size"] <= 0:
@@ -970,10 +1049,54 @@ def load_software_stamp(target: Path) -> dict[str, Any] | None:
     return stamp
 
 
+def package_libc(package: dict[str, Any]) -> str | None:
+    if package.get("os") != "linux":
+        return None
+    download = str(package.get("download", ""))
+    return "musl" if "-musl." in download else "glibc"
+
+
+def baseline_package_for_stamp(package: dict[str, Any]) -> dict[str, Any] | None:
+    matches = [
+        baseline_package
+        for baseline_package in baseline_packages()
+        if baseline_package.get("download") == package["download"]
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
 def software_stamp_provenance_drift(stamp: dict[str, Any]) -> list[str]:
     drift: list[str] = []
     if stamp["build_version"] != VERSION:
         drift.append("software manager build_version")
+    if stamp["runtime_product"] != "Kiro CLI":
+        drift.append("software runtime product")
+    if stamp["version"] != expected_runtime_version():
+        drift.append("software runtime version")
+    if stamp["install_mode"] != "target-owned-official-artifact":
+        drift.append("software install mode")
+    if stamp["official_vendor_installer"] != official_vendor_installer_record():
+        drift.append("software official vendor installer")
+    package = stamp["package"]
+    baseline_package = baseline_package_for_stamp(package)
+    if baseline_package is None:
+        drift.append("software package download")
+        return drift
+    expected_values = {
+        "os": baseline_package.get("os"),
+        "architecture": baseline_package.get("architecture"),
+        "libc": package_libc(baseline_package),
+        "fileType": baseline_package.get("fileType"),
+        "variant": baseline_package.get("variant"),
+        "download": baseline_package.get("download"),
+        "sha256": baseline_package.get("sha256"),
+        "size": baseline_package.get("size"),
+    }
+    for key, expected in expected_values.items():
+        if package.get(key) != expected:
+            drift.append(f"software package {key}")
     return drift
 
 
@@ -2701,48 +2824,74 @@ def remove_setup(target: Path) -> dict[str, Any]:
 
 
 def build_launch_env(target: Path) -> dict[str, str]:
-    runtime = target / ".nddev-runtime"
-    xdg = runtime / "xdg"
+    ensure_target_private_directory(target, NDDEV_RUNTIME_DIR, "launch runtime root")
+    home = ensure_target_private_directory(target, f"{NDDEV_RUNTIME_DIR}/home", "launch HOME")
+    ensure_target_private_directory(target, f"{NDDEV_RUNTIME_DIR}/xdg", "launch XDG root")
+    xdg_config = ensure_target_private_directory(
+        target,
+        f"{NDDEV_RUNTIME_DIR}/xdg/config",
+        "launch XDG_CONFIG_HOME",
+    )
+    xdg_data = ensure_target_private_directory(
+        target,
+        f"{NDDEV_RUNTIME_DIR}/xdg/data",
+        "launch XDG_DATA_HOME",
+    )
+    xdg_state = ensure_target_private_directory(
+        target,
+        f"{NDDEV_RUNTIME_DIR}/xdg/state",
+        "launch XDG_STATE_HOME",
+    )
+    xdg_cache = ensure_target_private_directory(
+        target,
+        f"{NDDEV_RUNTIME_DIR}/xdg/cache",
+        "launch XDG_CACHE_HOME",
+    )
+    logs = ensure_target_private_directory(target, f"{NDDEV_RUNTIME_DIR}/logs", "launch logs")
     env: dict[str, str] = {
-        "HOME": str(runtime / "home"),
+        "HOME": str(home),
         "KIRO_HOME": str(target),
         "PATH": TRUSTED_SYSTEM_PATH,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "XDG_CONFIG_HOME": str(xdg / "config"),
-        "XDG_DATA_HOME": str(xdg / "data"),
-        "XDG_STATE_HOME": str(xdg / "state"),
-        "XDG_CACHE_HOME": str(xdg / "cache"),
-        "KIRO_CHAT_LOG_FILE": str(runtime / "logs" / "kiro-chat.log"),
+        "XDG_CONFIG_HOME": str(xdg_config),
+        "XDG_DATA_HOME": str(xdg_data),
+        "XDG_STATE_HOME": str(xdg_state),
+        "XDG_CACHE_HOME": str(xdg_cache),
+        "KIRO_CHAT_LOG_FILE": str(logs / "kiro-chat.log"),
     }
     if "TERM" in os.environ:
         env["TERM"] = os.environ["TERM"]
-    for directory in (
-        Path(env["XDG_CONFIG_HOME"]),
-        Path(env["XDG_DATA_HOME"]),
-        Path(env["XDG_STATE_HOME"]),
-        Path(env["XDG_CACHE_HOME"]),
-        Path(env["HOME"]),
-        Path(env["KIRO_CHAT_LOG_FILE"]).parent,
-    ):
-        directory.mkdir(parents=True, exist_ok=True)
-        os.chmod(directory, OWNER_DIR_MODE)
     for key in tuple(env):
         if key in SECRET_ENV_NAMES or key.startswith(SECRET_ENV_PREFIXES):
             env.pop(key, None)
     return env
 
 
-def require_clean_software(target: Path) -> Path:
-    status = software_status(target)
-    if status["state"] != "installed":
-        fail(f"Kiro CLI software is not installed cleanly in target: {status['state']}")
+def revalidate_software_executable(target: Path) -> Path:
     stamp = load_software_stamp(target)
     if stamp is None:
         fail("Kiro CLI software stamp is missing")
     executable = software_executable_from_stamp(target, stamp)
-    require_regular_file(executable, f"Kiro CLI executable {executable}", owner_only=False)
+    digest, info = digest_regular_file(
+        executable,
+        f"Kiro CLI executable {executable}",
+        owner_only=False,
+        max_bytes=SOFTWARE_TREE_MAX_BYTES,
+    )
+    ensure_not_group_world_writable(info, f"Kiro CLI executable {executable}")
+    if not stat.S_IMODE(info.st_mode) & stat.S_IXUSR:
+        fail(f"Kiro CLI executable is not owner-executable: {executable}")
+    if digest != stamp["executable"]["sha256"]:
+        fail("Kiro CLI executable digest changed before launch")
     return executable
+
+
+def require_clean_software(target: Path) -> Path:
+    status = software_status(target)
+    if status["state"] != "installed":
+        fail(f"Kiro CLI software is not installed cleanly in target: {status['state']}")
+    return revalidate_software_executable(target)
 
 
 def reject_managed_launch_overrides(child_args: list[str]) -> None:
@@ -2766,8 +2915,9 @@ def launch(target: Path, child_args: list[str]) -> int:
         require_clean_managed(target)
         executable = require_clean_software(target)
         env = build_launch_env(target)
-    launch_args = [MANAGED_LAUNCH_ENGINE_ARGUMENT, *child_args]
-    return subprocess.call([str(executable), *launch_args], env=env)
+        executable = revalidate_software_executable(target)
+        launch_args = [MANAGED_LAUNCH_ENGINE_ARGUMENT, *child_args]
+        return subprocess.call([str(executable), *launch_args], env=env)
 
 
 def emit(payload: dict[str, Any] | list[Any], *, as_json: bool) -> None:
