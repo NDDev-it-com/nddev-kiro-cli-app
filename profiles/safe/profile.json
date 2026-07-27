@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "safe",
+  "description": "NDDev safe profile that denies known secret reads and asks before shell, write, web, MCP, and subagent capabilities.",
+  "permissions_file": "permissions.yaml"
+}

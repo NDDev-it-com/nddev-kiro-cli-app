@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0
+
+- Breaking pre-1.0: replace setup variants with one `nddev-builder` content
+  setup plus orthogonal `full-auto` and `safe` permission profiles.
+- Make `full-auto` the default profile and keep managed launch on Kiro v3
+  `--v3`, recorded as early-access-required in the public baseline.
+- Add current managed schema with explicit legacy status, migrate, restore, and
+  remove boundaries; legacy managed state cannot launch.
+- Update official stable Kiro CLI artifact provenance and target-owned install
+  contract.
+- Expand the managed `nddev-builder` Agent Skills toolkit with routed focused
+  references for native Kiro setup, permissions, agents, skills, hooks, MCP,
+  installation lifecycle, marketplace limits, and validation workflows.
+
 ## 0.1.0
 
 - Add target-explicit Kiro CLI setup manager.

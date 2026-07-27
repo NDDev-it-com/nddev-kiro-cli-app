@@ -1,0 +1,6 @@
+{
+  "app.disableAutoupdates": true,
+  "chat.defaultAgent": "nddev-builder",
+  "chat.ui": "tui",
+  "telemetry.enabled": false
+}

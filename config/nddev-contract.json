@@ -1,5 +1,5 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "product_name": "nddev-kiro-cli-app",
   "github_repository": "NDDev-it-com/nddev-kiro-cli-app",
   "license": "AGPL-3.0-or-later",
@@ -7,22 +7,35 @@
   "version_ref": "build/version.json",
   "setup_system": {
     "catalog_root": "setups",
-    "setup_ids": [
+    "content_setup_ids": [
+      "nddev-builder"
+    ],
+    "default_setup_id": "nddev-builder",
+    "profile_root": "profiles",
+    "permission_profile_ids": [
+      "safe",
+      "full-auto"
+    ],
+    "default_permission_profile_id": "full-auto",
+    "legacy_setup_ids": [
       "safe",
       "balanced",
       "full-auto"
     ],
     "list_command": "python3 cli-tools/nddev_kiro_cli.py list --json",
     "status_command": "python3 cli-tools/nddev_kiro_cli.py status --target /absolute/kiro-home --json",
-    "plan_command": "python3 cli-tools/nddev_kiro_cli.py plan --setup safe --target /absolute/kiro-home --json",
-    "install_command": "python3 cli-tools/nddev_kiro_cli.py install --setup safe --target /absolute/kiro-home --json",
+    "plan_command": "python3 cli-tools/nddev_kiro_cli.py plan --setup nddev-builder --profile full-auto --target /absolute/kiro-home --json",
+    "install_command": "python3 cli-tools/nddev_kiro_cli.py install --setup nddev-builder --profile full-auto --target /absolute/kiro-home --json",
     "update_command": "python3 cli-tools/nddev_kiro_cli.py update --target /absolute/kiro-home --json",
-    "switch_command": "python3 cli-tools/nddev_kiro_cli.py switch --setup balanced --target /absolute/kiro-home --json",
+    "switch_command": "python3 cli-tools/nddev_kiro_cli.py switch --setup nddev-builder --profile safe --target /absolute/kiro-home --json",
+    "migrate_command": "python3 cli-tools/nddev_kiro_cli.py migrate --profile full-auto --target /absolute/kiro-home --json",
     "restore_command": "python3 cli-tools/nddev_kiro_cli.py restore --backup 0 --target /absolute/kiro-home --json",
     "remove_command": "python3 cli-tools/nddev_kiro_cli.py remove --target /absolute/kiro-home --json",
     "launch_command": "python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --",
     "selection_option": "--setup",
-    "plan_mutates": false
+    "profile_option": "--profile",
+    "plan_mutates": false,
+    "future_switch_model": "content setup and permission profile are orthogonal; no balanced profile is exposed without a precise native Kiro meaning"
   },
   "managed_state": {
     "target_model": "isolated-kiro-home",
@@ -30,13 +43,16 @@
     "settings_file": "settings/cli.json",
     "permissions_file": "settings/permissions.yaml",
     "stamp_file": "NDDEV-KIRO-CLI-SETUP.json",
-    "stamp_schema": 1,
+    "stamp_schema": 2,
+    "legacy_stamp_schema": 1,
+    "backup_schema": 2,
+    "legacy_backup_schema": 1,
     "backup_slots": 10,
     "new_target_mode": "0700",
     "managed_file_mode": "0600",
     "managed_settings_keys": [
+      "app.disableAutoupdates",
       "chat.defaultAgent",
-      "chat.disableInheritingDefaultResources",
       "chat.ui",
       "telemetry.enabled"
     ],
@@ -45,41 +61,125 @@
       "settings/permissions.yaml",
       "agents/nddev-builder.md",
       "skills/nddev-builder/SKILL.md",
-      "steering/nddev-builder.md",
-      "hooks/nddev-builder.json"
+      "skills/nddev-builder/references/agents-subagents.md",
+      "skills/nddev-builder/references/configuration-profiles.md",
+      "skills/nddev-builder/references/creator-checker-release.md",
+      "skills/nddev-builder/references/hooks.md",
+      "skills/nddev-builder/references/installation-lifecycle.md",
+      "skills/nddev-builder/references/mcp.md",
+      "skills/nddev-builder/references/permissions-sandbox.md",
+      "skills/nddev-builder/references/plugins-marketplace.md",
+      "skills/nddev-builder/references/skills-instructions.md",
+      "steering/nddev-builder.md"
     ],
-    "preserve_other_state": true
-  },
-  "builder": {
-    "id": "nddev-builder",
-    "status": "default-on",
-    "projection": "native-agent-skill-steering-hook",
-    "marketplace": null,
-    "native_surfaces": {
-      "agents": "Kiro v3 Markdown agent profile under KIRO_HOME/agents",
-      "skills": "Agent Skills SKILL.md under KIRO_HOME/skills",
-      "steering": "global steering Markdown under KIRO_HOME/steering",
-      "hooks": "Kiro v3 standalone hook JSON under KIRO_HOME/hooks",
-      "mcp": null
-    },
-    "managed_files": [
+    "managed_content_files": [
+      "agents/nddev-builder.md",
+      "skills/nddev-builder/SKILL.md",
+      "skills/nddev-builder/references/agents-subagents.md",
+      "skills/nddev-builder/references/configuration-profiles.md",
+      "skills/nddev-builder/references/creator-checker-release.md",
+      "skills/nddev-builder/references/hooks.md",
+      "skills/nddev-builder/references/installation-lifecycle.md",
+      "skills/nddev-builder/references/mcp.md",
+      "skills/nddev-builder/references/permissions-sandbox.md",
+      "skills/nddev-builder/references/plugins-marketplace.md",
+      "skills/nddev-builder/references/skills-instructions.md",
+      "steering/nddev-builder.md"
+    ],
+    "legacy_managed_files": [
+      "settings/cli.json",
+      "settings/permissions.yaml",
       "agents/nddev-builder.md",
       "skills/nddev-builder/SKILL.md",
       "steering/nddev-builder.md",
       "hooks/nddev-builder.json"
     ],
-    "enabled_in_setups": [
+    "legacy_read_only_actions": [
+      "status",
+      "migrate",
+      "restore",
+      "remove"
+    ],
+    "legacy_launch_allowed": false,
+    "preserve_other_state": true
+  },
+  "permission_profiles": {
+    "default": "full-auto",
+    "profile_ids": [
       "safe",
-      "balanced",
       "full-auto"
+    ],
+    "vendor_named_profiles": [],
+    "profiles": {
+      "full-auto": {
+        "file": "profiles/full-auto/permissions.yaml",
+        "native_rule": {
+          "capability": "all",
+          "effect": "allow"
+        }
+      },
+      "safe": {
+        "file": "profiles/safe/permissions.yaml",
+        "native_rules": [
+          "deny selected fs_read secret patterns",
+          "ask shell, fs_write, web_fetch, web_search, mcp, and subagent",
+          "allow skill, diagnostics, and context"
+        ]
+      }
+    }
+  },
+  "builder": {
+    "id": "nddev-builder",
+    "status": "default-on",
+    "projection": "native-agent-skill-steering",
+    "marketplace": null,
+    "agent_file": "agents/nddev-builder.md",
+    "agent_schema": {
+      "format": "Markdown with YAML frontmatter",
+      "tools": [
+        "*"
+      ],
+      "resources": [
+        "skill://~/.kiro/skills/nddev-builder/SKILL.md",
+        "file://~/.kiro/skills/nddev-builder/references/**/*.md",
+        "file://~/.kiro/steering/nddev-builder.md"
+      ],
+      "inline_permissions": false,
+      "inline_mcp_servers": false
+    },
+    "native_surfaces": {
+      "agents": "KIRO_HOME/agents and workspace .kiro/agents",
+      "skills": "KIRO_HOME/skills and workspace .kiro/skills",
+      "steering": "KIRO_HOME/steering and workspace .kiro/steering",
+      "hooks": "workspace .kiro/hooks/<name>.json; not target-managed",
+      "mcp": "KIRO_HOME/settings/mcp.json, workspace .kiro/settings/mcp.json, or agent mcpServers; not target-managed"
+    },
+    "managed_files": [
+      "agents/nddev-builder.md",
+      "skills/nddev-builder/SKILL.md",
+      "skills/nddev-builder/references/agents-subagents.md",
+      "skills/nddev-builder/references/configuration-profiles.md",
+      "skills/nddev-builder/references/creator-checker-release.md",
+      "skills/nddev-builder/references/hooks.md",
+      "skills/nddev-builder/references/installation-lifecycle.md",
+      "skills/nddev-builder/references/mcp.md",
+      "skills/nddev-builder/references/permissions-sandbox.md",
+      "skills/nddev-builder/references/plugins-marketplace.md",
+      "skills/nddev-builder/references/skills-instructions.md",
+      "steering/nddev-builder.md"
+    ],
+    "enabled_in_setups": [
+      "nddev-builder"
     ]
   },
   "runtime_launch": {
     "executable": "kiro-cli",
     "engine_argument": "--v3",
+    "engine_status": "early-access-required",
     "direct_command": false,
     "manager_command": "python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --",
     "requires_clean_managed_target": true,
+    "denies_legacy_managed_target": true,
     "target_environment_scope": {
       "KIRO_HOME": "target",
       "HOME": "target/.nddev-runtime/home",
@@ -111,6 +211,7 @@
       "--v3"
     ],
     "credential_env_inherited": false,
+    "pre_login_auth_boundary": "login, logout, whoami, KIRO_API_KEY, and provider credential environment are outside managed launch",
     "forwards_arguments": true,
     "forwards_child_exit_code": true,
     "successful_child_output_wrapped": false
@@ -132,6 +233,8 @@
       "steering": "https://kiro.dev/docs/cli/steering/",
       "hooks": "https://kiro.dev/docs/cli/v3/hooks/",
       "mcp": "https://kiro.dev/docs/cli/mcp/configuration/",
+      "authentication": "https://kiro.dev/docs/cli/authentication/",
+      "headless": "https://kiro.dev/docs/cli/headless/",
       "privacy_security": "https://kiro.dev/docs/cli/privacy-and-security/",
       "migration": "https://kiro.dev/docs/cli/migrating-from-q/"
     },
@@ -144,7 +247,7 @@
   },
   "software_distribution": {
     "manager_installs_software": true,
-    "install_mode": "harness-owned-official-artifact",
+    "install_mode": "target-owned-official-artifact",
     "status_command": "python3 cli-tools/nddev_kiro_cli.py software-status --target /absolute/kiro-home --json",
     "probe_command": "python3 cli-tools/nddev_kiro_cli.py software-probe --target /absolute/kiro-home --json",
     "install_command": "python3 cli-tools/nddev_kiro_cli.py software-install --target /absolute/kiro-home --json",
@@ -164,6 +267,9 @@
       "linux-aarch64-glibc-zip",
       "linux-x86_64-musl-zip",
       "linux-aarch64-musl-zip"
+    ],
+    "unsupported_platforms": [
+      "windows"
     ],
     "install_only_absent": true,
     "update_repairs_safe_partial": true,
@@ -186,6 +292,13 @@
     "integrity_pinned": true
   },
   "migration": {
+    "legacy_setup_ids": [
+      "safe",
+      "balanced",
+      "full-auto"
+    ],
+    "legacy_status": "read-only except migrate, restore, and remove",
+    "legacy_launch_allowed": false,
     "legacy_amazon_q": "documented migration source only; q and q chat are not product aliases for this module",
     "codewhisperer": null
   },

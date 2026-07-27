@@ -33,12 +33,15 @@ from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_ROOT = ROOT / "setups"
+PROFILE_ROOT = ROOT / "profiles"
 VERSION = (ROOT / "VERSION").read_text(encoding="ascii").strip()
 PRODUCT_NAME = "nddev-kiro-cli-app"
 STAMP_NAME = "NDDEV-KIRO-CLI-SETUP.json"
 BACKUP_NAME = "NDDEV-KIRO-CLI-BACKUP.json"
-STAMP_SCHEMA = 1
-BACKUP_SCHEMA = 1
+STAMP_SCHEMA = 2
+LEGACY_STAMP_SCHEMA = 1
+BACKUP_SCHEMA = 2
+LEGACY_BACKUP_SCHEMA = 1
 MAX_BACKUPS = 10
 OWNER_FILE_MODE = 0o600
 OWNER_DIR_MODE = 0o700
@@ -46,14 +49,36 @@ METADATA_MAX_BYTES = 256 * 1024
 MANAGED_PAYLOAD_MAX_BYTES = 1024 * 1024
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+CONTENT_SETUP_ID = "nddev-builder"
+DEFAULT_PERMISSION_PROFILE_ID = "full-auto"
+PERMISSION_PROFILE_IDS = ("safe", "full-auto")
+LEGACY_SETUP_IDS = ("safe", "balanced", "full-auto")
 SETTINGS = "settings/cli.json"
 PERMISSIONS = "settings/permissions.yaml"
 BUILDER_AGENT = "agents/nddev-builder.md"
 BUILDER_SKILL = "skills/nddev-builder/SKILL.md"
+BUILDER_SKILL_REFERENCES = (
+    "skills/nddev-builder/references/agents-subagents.md",
+    "skills/nddev-builder/references/configuration-profiles.md",
+    "skills/nddev-builder/references/creator-checker-release.md",
+    "skills/nddev-builder/references/hooks.md",
+    "skills/nddev-builder/references/installation-lifecycle.md",
+    "skills/nddev-builder/references/mcp.md",
+    "skills/nddev-builder/references/permissions-sandbox.md",
+    "skills/nddev-builder/references/plugins-marketplace.md",
+    "skills/nddev-builder/references/skills-instructions.md",
+)
 BUILDER_STEERING = "steering/nddev-builder.md"
 BUILDER_HOOK = "hooks/nddev-builder.json"
-BUILDER_FILES = (BUILDER_AGENT, BUILDER_SKILL, BUILDER_STEERING, BUILDER_HOOK)
+BUILDER_FILES = (
+    BUILDER_AGENT,
+    BUILDER_SKILL,
+    *BUILDER_SKILL_REFERENCES,
+    BUILDER_STEERING,
+)
+LEGACY_BUILDER_FILES = (BUILDER_AGENT, BUILDER_SKILL, BUILDER_STEERING, BUILDER_HOOK)
 MANAGED_FILES = (SETTINGS, PERMISSIONS, *BUILDER_FILES)
+LEGACY_MANAGED_FILES = (SETTINGS, PERMISSIONS, *LEGACY_BUILDER_FILES)
 BASELINE_PATH = ROOT / "references" / "kiro-cli-baseline.json"
 OFFICIAL_INSTALL_MANIFEST_URL = "https://prod.download.cli.kiro.dev/stable/latest/manifest.json"
 SOFTWARE_RUNTIME_DIR = ".nddev-runtime/software"
@@ -65,6 +90,7 @@ SOFTWARE_TREE_MAX_BYTES = 3 * 1024 * 1024 * 1024
 SOFTWARE_METADATA_MAX_BYTES = 1024 * 1024
 DOWNLOAD_METADATA_MAX_BYTES = 4 * 1024 * 1024
 MANAGED_LAUNCH_ENGINE_ARGUMENT = "--v3"
+MANAGED_LAUNCH_ENGINE_STATUS = "early-access-required"
 MANAGED_LAUNCH_BLOCKED_OPTIONS = (
     "--agent",
     "--classic",
@@ -87,13 +113,25 @@ MANAGED_LAUNCH_BLOCKED_COMMANDS = (
     "whoami",
 )
 SETTINGS_MANAGED_KEYS = (
+    "app.disableAutoupdates",
     "chat.defaultAgent",
-    "chat.disableInheritingDefaultResources",
     "chat.ui",
     "telemetry.enabled",
 )
-BUILDER_PROJECTION = "native-agent-skill-steering-hook"
+BUILDER_PROJECTION = "native-agent-skill-steering"
+LEGACY_BUILDER_PROJECTION = "native-agent-skill-steering-hook"
 STAMP_KEYS = {
+    "schema_version",
+    "product_name",
+    "build_version",
+    "setup_id",
+    "permission_profile_id",
+    "canonical_target",
+    "managed_files",
+    "builder",
+    "engine",
+}
+LEGACY_STAMP_KEYS = {
     "schema_version",
     "product_name",
     "build_version",
@@ -103,6 +141,18 @@ STAMP_KEYS = {
     "builder",
 }
 BACKUP_KEYS = {
+    "schema_version",
+    "product_name",
+    "build_version",
+    "slot",
+    "canonical_target",
+    "source_setup_id",
+    "source_permission_profile_id",
+    "stamp_schema",
+    "managed_files",
+    "stamp_sha256",
+}
+LEGACY_BACKUP_KEYS = {
     "schema_version",
     "product_name",
     "build_version",
@@ -163,9 +213,16 @@ class Setup:
     setup_id: str
     description: str
     managed_settings: dict[str, Any]
-    managed_files: tuple[str, ...]
+    managed_content_files: tuple[str, ...]
     builder_enabled: bool
     files: dict[str, bytes]
+
+
+@dataclass(frozen=True)
+class PermissionProfile:
+    profile_id: str
+    description: str
+    permissions: bytes
 
 
 @dataclass(frozen=True)
@@ -858,7 +915,7 @@ def software_stamp_payload(
         "runtime_product": "Kiro CLI",
         "version": expected_runtime_version(),
         "canonical_target": str(target),
-        "install_mode": "harness-owned-official-artifact",
+        "install_mode": "target-owned-official-artifact",
         "package": {
             "os": package.os_name,
             "architecture": package.architecture,
@@ -895,7 +952,7 @@ def validate_software_stamp(stamp: dict[str, Any], target: Path) -> None:
         fail("software stamp runtime identity is invalid")
     if stamp["canonical_target"] != str(target):
         fail("software stamp is bound to a different canonical target")
-    if stamp["install_mode"] != "harness-owned-official-artifact":
+    if stamp["install_mode"] != "target-owned-official-artifact":
         fail("software stamp install mode is invalid")
     package = stamp["package"]
     if not isinstance(package, dict):
@@ -1507,17 +1564,24 @@ def validate_setup_id(setup_id: str) -> None:
         fail(f"invalid setup id: {setup_id!r}")
 
 
+def validate_permission_profile_id(profile_id: str) -> None:
+    if not SETUP_ID_PATTERN.fullmatch(profile_id):
+        fail(f"invalid permission profile id: {profile_id!r}")
+    if profile_id not in PERMISSION_PROFILE_IDS:
+        fail(f"unknown permission profile: {profile_id}")
+
+
 def expected_settings_for(_setup_id: str) -> dict[str, Any]:
     return {
+        "app.disableAutoupdates": True,
         "chat.defaultAgent": "nddev-builder",
-        "chat.disableInheritingDefaultResources": False,
-        "chat.ui": "terminal",
+        "chat.ui": "tui",
         "telemetry.enabled": False,
     }
 
 
-def expected_permissions_for(setup_id: str) -> bytes:
-    if setup_id == "safe":
+def expected_permissions_for(profile_id: str) -> bytes:
+    if profile_id == "safe":
         return (
             "rules:\n"
             "  - capability: fs_read\n"
@@ -1546,53 +1610,55 @@ def expected_permissions_for(setup_id: str) -> bytes:
             "  - capability: context\n"
             "    effect: allow\n"
         ).encode("utf-8")
-    if setup_id == "balanced":
-        return (
-            "rules:\n"
-            "  - capability: fs_read\n"
-            "    effect: deny\n"
-            "    match:\n"
-            '      - "**/.env"\n'
-            '      - "**/.env.*"\n'
-            '      - "**/*.pem"\n'
-            '      - "secrets/**"\n'
-            "  - capability: fs_read\n"
-            "    effect: allow\n"
-            "  - capability: shell\n"
-            "    effect: allow\n"
-            "    match:\n"
-            '      - "git status*"\n'
-            '      - "git diff*"\n'
-            '      - "git log*"\n'
-            '      - "git branch*"\n'
-            '      - "python3 -m unittest*"\n'
-            '      - "python3 -m pytest*"\n'
-            '      - "npm test*"\n'
-            '      - "npm run test*"\n'
-            "  - capability: fs_write\n"
-            "    effect: ask\n"
-            "  - capability: web_fetch\n"
-            "    effect: ask\n"
-            "  - capability: web_search\n"
-            "    effect: ask\n"
-            "  - capability: mcp\n"
-            "    effect: ask\n"
-            "  - capability: subagent\n"
-            "    effect: allow\n"
-            "  - capability: skill\n"
-            "    effect: allow\n"
-            "  - capability: diagnostics\n"
-            "    effect: allow\n"
-            "  - capability: context\n"
-            "    effect: allow\n"
-        ).encode("utf-8")
-    if setup_id == "full-auto":
+    if profile_id == "full-auto":
         return "rules:\n  - capability: all\n    effect: allow\n".encode("utf-8")
-    fail(f"unsupported setup id: {setup_id}")
+    fail(f"unsupported permission profile id: {profile_id}")
+
+
+def render_permission_profile(profile_id: str) -> PermissionProfile:
+    validate_permission_profile_id(profile_id)
+    profile_root = PROFILE_ROOT / profile_id
+    if not profile_root.is_dir() or profile_root.is_symlink():
+        fail(f"unknown permission profile: {profile_id}")
+    metadata = read_json_file(
+        profile_root / "profile.json",
+        f"permission profile {profile_id} metadata",
+    )
+    expected_keys = {"schema_version", "id", "description", "permissions_file"}
+    if set(metadata) != expected_keys:
+        fail(f"permission profile {profile_id} metadata has invalid keys")
+    if metadata["schema_version"] != 1 or metadata["id"] != profile_id:
+        fail(f"permission profile {profile_id} metadata identity or schema is invalid")
+    if metadata["permissions_file"] != "permissions.yaml":
+        fail(f"permission profile {profile_id} permissions_file declaration is invalid")
+    if not isinstance(metadata["description"], str) or not metadata["description"].strip():
+        fail(f"permission profile {profile_id} description must be non-empty")
+    content, _ = read_regular_file(
+        profile_root / "permissions.yaml",
+        f"permission profile {profile_id}/permissions.yaml",
+    )
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        fail(f"permission profile {profile_id}/permissions.yaml must be UTF-8: {exc}")
+    if not content or not content.endswith(b"\n") or b"\r" in content:
+        fail(
+            f"permission profile {profile_id}/permissions.yaml "
+            "must be non-empty LF-terminated text"
+        )
+    if content != expected_permissions_for(profile_id):
+        fail(f"permission profile {profile_id}/permissions.yaml does not match the profile")
+    return PermissionProfile(
+        profile_id=profile_id,
+        description=metadata["description"],
+        permissions=content,
+    )
 
 
 def render_setup(setup_id: str) -> Setup:
     validate_setup_id(setup_id)
+    if setup_id != CONTENT_SETUP_ID:
+        fail(f"unknown setup: {setup_id}")
     setup_root = CATALOG_ROOT / setup_id
     if not setup_root.is_dir() or setup_root.is_symlink():
         fail(f"unknown setup: {setup_id}")
@@ -1601,33 +1667,32 @@ def render_setup(setup_id: str) -> Setup:
         "schema_version",
         "id",
         "description",
-        "managed_files",
+        "managed_content_files",
         "managed_settings",
-        "permission_profile",
+        "default_permission_profile",
+        "supported_permission_profiles",
         "builder_enabled",
     }
     if set(metadata) != expected_keys:
         fail(f"setup {setup_id} metadata has invalid keys")
     if metadata["schema_version"] != 1 or metadata["id"] != setup_id:
         fail(f"setup {setup_id} metadata identity or schema is invalid")
-    if metadata["managed_files"] != list(MANAGED_FILES):
-        fail(f"setup {setup_id} managed file declaration is invalid")
+    if metadata["managed_content_files"] != list(BUILDER_FILES):
+        fail(f"setup {setup_id} managed content file declaration is invalid")
     if metadata["managed_settings"] != expected_settings_for(setup_id):
         fail(f"setup {setup_id} managed settings declaration is invalid")
     if metadata["builder_enabled"] is not True:
         fail(f"setup {setup_id} must enable the native nddev-builder projection")
-    if metadata["permission_profile"] != setup_id:
-        fail(f"setup {setup_id} permission profile declaration is invalid")
+    if metadata["default_permission_profile"] != DEFAULT_PERMISSION_PROFILE_ID:
+        fail(f"setup {setup_id} default permission profile declaration is invalid")
+    if metadata["supported_permission_profiles"] != list(PERMISSION_PROFILE_IDS):
+        fail(f"setup {setup_id} supported permission profile declaration is invalid")
     if not isinstance(metadata["description"], str) or not metadata["description"].strip():
         fail(f"setup {setup_id} description must be non-empty")
 
     source_paths = {
         SETTINGS: "settings/cli.json",
-        PERMISSIONS: "settings/permissions.yaml",
-        BUILDER_AGENT: "agents/nddev-builder.md",
-        BUILDER_SKILL: "skills/nddev-builder/SKILL.md",
-        BUILDER_STEERING: "steering/nddev-builder.md",
-        BUILDER_HOOK: "hooks/nddev-builder.json",
+        **{relative: relative for relative in BUILDER_FILES},
     }
     files: dict[str, bytes] = {}
     for relative, source in source_paths.items():
@@ -1644,16 +1709,11 @@ def render_setup(setup_id: str) -> Setup:
     settings = parse_json_object(files[SETTINGS], f"setup {setup_id}/settings/cli.json")
     if settings != expected_settings_for(setup_id):
         fail(f"setup {setup_id}/settings/cli.json does not match the product model")
-    if files[PERMISSIONS] != expected_permissions_for(setup_id):
-        fail(f"setup {setup_id}/settings/permissions.yaml does not match the profile")
-    hook = parse_json_object(files[BUILDER_HOOK], f"setup {setup_id}/hooks/nddev-builder.json")
-    if hook.get("version") != "v1" or not isinstance(hook.get("hooks"), list):
-        fail(f"setup {setup_id}/hooks/nddev-builder.json is not a Kiro v3 hook file")
     return Setup(
         setup_id=setup_id,
         description=metadata["description"],
         managed_settings=metadata["managed_settings"],
-        managed_files=tuple(metadata["managed_files"]),
+        managed_content_files=tuple(metadata["managed_content_files"]),
         builder_enabled=True,
         files=files,
     )
@@ -1663,22 +1723,38 @@ def list_setups() -> list[dict[str, Any]]:
     if not CATALOG_ROOT.is_dir() or CATALOG_ROOT.is_symlink():
         fail("setup catalog is missing or unsafe")
     result: list[dict[str, Any]] = []
-    for candidate in sorted(CATALOG_ROOT.iterdir(), key=lambda item: item.name):
-        if not candidate.is_dir() or candidate.is_symlink():
-            fail(f"catalog entry must be a real directory: {candidate.name}")
-        setup = render_setup(candidate.name)
+    for setup_id in (CONTENT_SETUP_ID,):
+        setup = render_setup(setup_id)
         result.append(
             {
                 "id": setup.setup_id,
                 "description": setup.description,
-                "managed_files": list(setup.managed_files),
+                "managed_content_files": list(setup.managed_content_files),
                 "managed_settings": setup.managed_settings,
-                "permission_profile": setup.setup_id,
+                "default_permission_profile": DEFAULT_PERMISSION_PROFILE_ID,
+                "supported_permission_profiles": list(PERMISSION_PROFILE_IDS),
                 "builder_enabled": setup.builder_enabled,
             }
         )
     if not result:
         fail("setup catalog is empty")
+    return result
+
+
+def list_permission_profiles() -> list[dict[str, Any]]:
+    if not PROFILE_ROOT.is_dir() or PROFILE_ROOT.is_symlink():
+        fail("permission profile catalog is missing or unsafe")
+    result: list[dict[str, Any]] = []
+    for profile_id in PERMISSION_PROFILE_IDS:
+        profile = render_permission_profile(profile_id)
+        result.append(
+            {
+                "id": profile.profile_id,
+                "description": profile.description,
+                "permissions_file": "permissions.yaml",
+                "default": profile.profile_id == DEFAULT_PERMISSION_PROFILE_ID,
+            }
+        )
     return result
 
 
@@ -1792,15 +1868,25 @@ def strip_managed_settings(current: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def desired_for_setup(target: Path, setup: Setup) -> dict[str, bytes | None]:
+def desired_for_setup(
+    target: Path,
+    setup: Setup,
+    profile: PermissionProfile,
+) -> dict[str, bytes | None]:
     current = read_target_settings_if_present(target) if target.exists() else {}
     setup_settings = parse_json_object(setup.files[SETTINGS], "setup settings.json")
     desired = dict(setup.files)
+    desired[PERMISSIONS] = profile.permissions
     desired[SETTINGS] = canonical_json(compose_settings(current, setup_settings))
     return desired
 
 
-def stamp_payload(target: Path, setup_id: str, desired: dict[str, bytes | None]) -> dict[str, Any]:
+def stamp_payload(
+    target: Path,
+    setup_id: str,
+    permission_profile_id: str,
+    desired: dict[str, bytes | None],
+) -> dict[str, Any]:
     managed_files: dict[str, str | None] = {}
     for relative in MANAGED_FILES:
         content = desired.get(relative)
@@ -1810,6 +1896,7 @@ def stamp_payload(target: Path, setup_id: str, desired: dict[str, bytes | None])
         "product_name": PRODUCT_NAME,
         "build_version": VERSION,
         "setup_id": setup_id,
+        "permission_profile_id": permission_profile_id,
         "canonical_target": str(target),
         "managed_files": managed_files,
         "builder": {
@@ -1818,14 +1905,59 @@ def stamp_payload(target: Path, setup_id: str, desired: dict[str, bytes | None])
             "marketplace": None,
             "files": list(BUILDER_FILES),
         },
+        "engine": {
+            "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
+            "status": MANAGED_LAUNCH_ENGINE_STATUS,
+        },
     }
 
 
-def validate_digest_map(value: Any, label: str) -> dict[str, str | None]:
-    if not isinstance(value, dict) or set(value) != set(MANAGED_FILES):
-        fail(f"{label} must declare exactly {list(MANAGED_FILES)}")
+def legacy_stamp_payload(
+    target: Path,
+    setup_id: str,
+    desired: dict[str, bytes | None],
+) -> dict[str, Any]:
+    managed_files: dict[str, str | None] = {}
+    for relative in LEGACY_MANAGED_FILES:
+        content = desired.get(relative)
+        managed_files[relative] = None if content is None else managed_digest(relative, content)
+    return {
+        "schema_version": LEGACY_STAMP_SCHEMA,
+        "product_name": PRODUCT_NAME,
+        "build_version": VERSION,
+        "setup_id": setup_id,
+        "canonical_target": str(target),
+        "managed_files": managed_files,
+        "builder": {
+            "projection": LEGACY_BUILDER_PROJECTION,
+            "enabled": True,
+            "marketplace": None,
+            "files": list(LEGACY_BUILDER_FILES),
+        },
+    }
+
+
+def stamp_managed_files(stamp: dict[str, Any]) -> tuple[str, ...]:
+    if stamp.get("schema_version") == STAMP_SCHEMA:
+        return MANAGED_FILES
+    if stamp.get("schema_version") == LEGACY_STAMP_SCHEMA:
+        return LEGACY_MANAGED_FILES
+    fail("managed stamp schema is invalid")
+
+
+def stamp_is_current(stamp: dict[str, Any]) -> bool:
+    return stamp.get("schema_version") == STAMP_SCHEMA
+
+
+def validate_digest_map(
+    value: Any,
+    label: str,
+    managed_files: tuple[str, ...] = MANAGED_FILES,
+) -> dict[str, str | None]:
+    if not isinstance(value, dict) or set(value) != set(managed_files):
+        fail(f"{label} must declare exactly {list(managed_files)}")
     result: dict[str, str | None] = {}
-    for name in MANAGED_FILES:
+    for name in managed_files:
         digest = value[name]
         if digest is not None and (
             not isinstance(digest, str) or not SHA256_PATTERN.fullmatch(digest)
@@ -1842,28 +1974,68 @@ def load_stamp(target: Path) -> dict[str, Any] | None:
         return None
     content = read_target_file(target, STAMP_NAME, max_bytes=METADATA_MAX_BYTES)
     stamp = parse_json_object(content, f"managed stamp {target / STAMP_NAME}")
+    schema = stamp.get("schema_version")
+    if schema == LEGACY_STAMP_SCHEMA:
+        if set(stamp) != LEGACY_STAMP_KEYS:
+            fail("legacy managed stamp has invalid keys")
+        if stamp["product_name"] != PRODUCT_NAME:
+            fail("legacy managed stamp identity is invalid")
+        if stamp["canonical_target"] != str(target):
+            fail("legacy managed stamp is bound to a different canonical target")
+        setup_id = stamp.get("setup_id")
+        if setup_id not in LEGACY_SETUP_IDS:
+            fail("legacy managed stamp setup_id is invalid")
+        validate_digest_map(
+            stamp["managed_files"],
+            "legacy managed stamp managed_files",
+            LEGACY_MANAGED_FILES,
+        )
+        builder = stamp["builder"]
+        if not isinstance(builder, dict) or builder.get("projection") != LEGACY_BUILDER_PROJECTION:
+            fail("legacy managed stamp builder projection is invalid")
+        if builder.get("enabled") is not True or builder.get("marketplace") is not None:
+            fail("legacy managed stamp builder state is invalid")
+        return stamp
     if set(stamp) != STAMP_KEYS:
         fail("managed stamp has invalid keys")
     if stamp["schema_version"] != STAMP_SCHEMA or stamp["product_name"] != PRODUCT_NAME:
         fail("managed stamp identity or schema is invalid")
     if stamp["canonical_target"] != str(target):
         fail("managed stamp is bound to a different canonical target")
-    if not isinstance(stamp["setup_id"], str):
-        fail("managed stamp setup_id must be a string")
-    validate_setup_id(stamp["setup_id"])
-    validate_digest_map(stamp["managed_files"], "managed stamp managed_files")
+    if stamp["setup_id"] != CONTENT_SETUP_ID:
+        fail("managed stamp setup_id is invalid")
+    permission_profile_id = stamp["permission_profile_id"]
+    if not isinstance(permission_profile_id, str):
+        fail("managed stamp permission_profile_id must be a string")
+    validate_permission_profile_id(permission_profile_id)
+    validate_digest_map(stamp["managed_files"], "managed stamp managed_files", MANAGED_FILES)
     builder = stamp["builder"]
     if not isinstance(builder, dict) or builder.get("projection") != BUILDER_PROJECTION:
         fail("managed stamp builder projection is invalid")
     if builder.get("enabled") is not True or builder.get("marketplace") is not None:
         fail("managed stamp builder state is invalid")
+    if builder.get("files") != list(BUILDER_FILES):
+        fail("managed stamp builder file list is invalid")
+    engine = stamp["engine"]
+    if not isinstance(engine, dict):
+        fail("managed stamp engine state is invalid")
+    if (
+        engine.get("argument") != MANAGED_LAUNCH_ENGINE_ARGUMENT
+        or engine.get("status") != MANAGED_LAUNCH_ENGINE_STATUS
+    ):
+        fail("managed stamp engine state is invalid")
     return stamp
 
 
 def detect_drift(target: Path, stamp: dict[str, Any]) -> list[str]:
     drift: list[str] = []
-    expected = validate_digest_map(stamp["managed_files"], "managed stamp managed_files")
-    for relative in MANAGED_FILES:
+    managed_files = stamp_managed_files(stamp)
+    expected = validate_digest_map(
+        stamp["managed_files"],
+        "managed stamp managed_files",
+        managed_files,
+    )
+    for relative in managed_files:
         if not target_file_exists(target, relative):
             drift.append(relative)
             continue
@@ -1873,9 +2045,12 @@ def detect_drift(target: Path, stamp: dict[str, Any]) -> list[str]:
     return drift
 
 
-def snapshot_managed_files(target: Path) -> dict[str, FileSnapshot]:
+def snapshot_managed_files(
+    target: Path,
+    managed_files: tuple[str, ...] = MANAGED_FILES,
+) -> dict[str, FileSnapshot]:
     snapshot: dict[str, FileSnapshot] = {}
-    for relative in (*MANAGED_FILES, STAMP_NAME):
+    for relative in (*managed_files, STAMP_NAME):
         if ensure_target_directory(target, create=False) and target_file_exists(target, relative):
             content = read_target_file(target, relative, owner_only=False)
             snapshot[relative] = FileSnapshot(content=content, digest=sha256_bytes(content))
@@ -1950,12 +2125,13 @@ def replace_managed_state(
     desired: dict[str, bytes | None],
     expected: dict[str, FileSnapshot] | None,
     *,
+    managed_files: tuple[str, ...] = MANAGED_FILES,
     remove_empty_parents: bool = True,
 ) -> None:
     ensure_target_directory(target, create=True)
     if expected is not None:
         assert_snapshot(target, expected)
-    for relative in (*MANAGED_FILES, STAMP_NAME):
+    for relative in (*managed_files, STAMP_NAME):
         path = target_path(target, relative)
         content = desired.get(relative)
         if content is None:
@@ -1967,13 +2143,18 @@ def replace_managed_state(
             continue
         atomic_write(path, content)
     if expected is not None:
-        for relative in (*MANAGED_FILES, STAMP_NAME):
+        for relative in (*managed_files, STAMP_NAME):
             target_file_exists(target, relative)
 
 
-def restore_snapshot(target: Path, snapshot: dict[str, FileSnapshot]) -> None:
+def restore_snapshot(
+    target: Path,
+    snapshot: dict[str, FileSnapshot],
+    *,
+    managed_files: tuple[str, ...] = MANAGED_FILES,
+) -> None:
     desired = {relative: item.content for relative, item in snapshot.items()}
-    replace_managed_state(target, desired, None)
+    replace_managed_state(target, desired, None, managed_files=managed_files)
 
 
 @contextlib.contextmanager
@@ -2020,7 +2201,8 @@ def write_backup(target: Path, stamp: dict[str, Any]) -> int:
     files_dir = slot_dir / "files"
     files_dir.mkdir(parents=True, mode=OWNER_DIR_MODE)
     managed_files: dict[str, str | None] = {}
-    for relative in MANAGED_FILES:
+    backup_managed_files = stamp_managed_files(stamp)
+    for relative in backup_managed_files:
         if target_file_exists(target, relative):
             content = read_target_file(target, relative, owner_only=False)
             backup_path = files_dir / safe_relative_path(relative)
@@ -2036,6 +2218,8 @@ def write_backup(target: Path, stamp: dict[str, Any]) -> int:
         "slot": slot,
         "canonical_target": str(target),
         "source_setup_id": stamp["setup_id"],
+        "source_permission_profile_id": stamp.get("permission_profile_id"),
+        "stamp_schema": stamp["schema_version"],
         "managed_files": managed_files,
         "stamp_sha256": sha256_bytes(stamp_content),
     }
@@ -2043,7 +2227,10 @@ def write_backup(target: Path, stamp: dict[str, Any]) -> int:
     return slot
 
 
-def load_backup(target: Path, slot: int) -> tuple[dict[str, Any], dict[str, bytes | None]]:
+def load_backup(
+    target: Path,
+    slot: int,
+) -> tuple[dict[str, Any], dict[str, bytes | None], tuple[str, ...]]:
     if slot < 0 or slot >= MAX_BACKUPS:
         fail("--backup must be between 0 and 9")
     slot_dir = backup_pool(target) / str(slot)
@@ -2051,16 +2238,45 @@ def load_backup(target: Path, slot: int) -> tuple[dict[str, Any], dict[str, byte
     if envelope_path.is_symlink() or not envelope_path.is_file():
         fail(f"backup slot is missing: {slot}")
     envelope = read_json_file(envelope_path, f"backup slot {slot}", owner_only=False)
-    if set(envelope) != BACKUP_KEYS:
-        fail("backup envelope has invalid keys")
-    if envelope["schema_version"] != BACKUP_SCHEMA or envelope["product_name"] != PRODUCT_NAME:
-        fail("backup envelope identity or schema is invalid")
+    if envelope.get("schema_version") == LEGACY_BACKUP_SCHEMA:
+        if set(envelope) != LEGACY_BACKUP_KEYS:
+            fail("legacy backup envelope has invalid keys")
+        if envelope["product_name"] != PRODUCT_NAME:
+            fail("legacy backup envelope identity is invalid")
+        backup_managed_files = LEGACY_MANAGED_FILES
+        source_permission_profile_id = None
+        stamp_schema = LEGACY_STAMP_SCHEMA
+        if envelope["source_setup_id"] not in LEGACY_SETUP_IDS:
+            fail("legacy backup envelope source_setup_id is invalid")
+    else:
+        if set(envelope) != BACKUP_KEYS:
+            fail("backup envelope has invalid keys")
+        if envelope["schema_version"] != BACKUP_SCHEMA or envelope["product_name"] != PRODUCT_NAME:
+            fail("backup envelope identity or schema is invalid")
+        stamp_schema = envelope["stamp_schema"]
+        if stamp_schema == STAMP_SCHEMA:
+            backup_managed_files = MANAGED_FILES
+            if envelope["source_setup_id"] != CONTENT_SETUP_ID:
+                fail("backup envelope source_setup_id is invalid")
+            source_permission_profile_id = envelope["source_permission_profile_id"]
+            if not isinstance(source_permission_profile_id, str):
+                fail("backup envelope source_permission_profile_id is invalid")
+            validate_permission_profile_id(source_permission_profile_id)
+        elif stamp_schema == LEGACY_STAMP_SCHEMA:
+            backup_managed_files = LEGACY_MANAGED_FILES
+            if envelope["source_setup_id"] not in LEGACY_SETUP_IDS:
+                fail("legacy backup envelope source_setup_id is invalid")
+            source_permission_profile_id = None
+            if envelope["source_permission_profile_id"] is not None:
+                fail("legacy backup envelope source_permission_profile_id must be null")
+        else:
+            fail("backup envelope stamp_schema is invalid")
     if envelope["canonical_target"] != str(target):
         fail("backup belongs to a different canonical target")
-    validate_digest_map(envelope["managed_files"], "backup managed_files")
+    validate_digest_map(envelope["managed_files"], "backup managed_files", backup_managed_files)
     files: dict[str, bytes | None] = {}
     files_dir = slot_dir / "files"
-    for relative in MANAGED_FILES:
+    for relative in backup_managed_files:
         expected = envelope["managed_files"][relative]
         path = files_dir / safe_relative_path(relative)
         if expected is None:
@@ -2070,8 +2286,21 @@ def load_backup(target: Path, slot: int) -> tuple[dict[str, Any], dict[str, byte
         if managed_digest(relative, content) != expected:
             fail(f"backup file digest mismatch: {relative}")
         files[relative] = content
-    files[STAMP_NAME] = canonical_json(stamp_payload(target, envelope["source_setup_id"], files))
-    return envelope, files
+    if stamp_schema == STAMP_SCHEMA:
+        assert isinstance(source_permission_profile_id, str)
+        files[STAMP_NAME] = canonical_json(
+            stamp_payload(
+                target,
+                envelope["source_setup_id"],
+                source_permission_profile_id,
+                files,
+            )
+        )
+    else:
+        files[STAMP_NAME] = canonical_json(
+            legacy_stamp_payload(target, envelope["source_setup_id"], files)
+        )
+    return envelope, files, backup_managed_files
 
 
 def current_status(target: Path) -> dict[str, Any]:
@@ -2080,6 +2309,10 @@ def current_status(target: Path) -> dict[str, Any]:
             "state": "missing",
             "target": str(target),
             "setup_id": None,
+            "permission_profile_id": None,
+            "schema_version": None,
+            "migration_required": False,
+            "launch_allowed": False,
             "drift": [],
             "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
             "software": software_status(target),
@@ -2090,16 +2323,41 @@ def current_status(target: Path) -> dict[str, Any]:
             "state": "unmanaged",
             "target": str(target),
             "setup_id": None,
+            "permission_profile_id": None,
+            "schema_version": None,
+            "migration_required": False,
+            "launch_allowed": False,
             "drift": [],
             "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
             "software": software_status(target),
         }
     drift = detect_drift(target, stamp)
+    if not stamp_is_current(stamp):
+        return {
+            "state": "legacy-managed",
+            "target": str(target),
+            "setup_id": stamp["setup_id"],
+            "permission_profile_id": None,
+            "schema_version": stamp["schema_version"],
+            "build_version": stamp["build_version"],
+            "migration_required": True,
+            "launch_allowed": False,
+            "drift": drift,
+            "builder": {
+                "projection": LEGACY_BUILDER_PROJECTION,
+                "enabled": not any(item in drift for item in LEGACY_BUILDER_FILES),
+            },
+            "software": software_status(target),
+        }
     return {
         "state": "managed",
         "target": str(target),
         "setup_id": stamp["setup_id"],
+        "permission_profile_id": stamp["permission_profile_id"],
+        "schema_version": stamp["schema_version"],
         "build_version": stamp["build_version"],
+        "migration_required": False,
+        "launch_allowed": not drift,
         "drift": drift,
         "builder": {
             "projection": BUILDER_PROJECTION,
@@ -2109,8 +2367,9 @@ def current_status(target: Path) -> dict[str, Any]:
     }
 
 
-def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
+def plan_setup(target: Path, setup_id: str, permission_profile_id: str) -> dict[str, Any]:
     render_setup(setup_id)
+    render_permission_profile(permission_profile_id)
     status = current_status(target)
     if status["state"] == "missing":
         operation = "install"
@@ -2118,7 +2377,13 @@ def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
     elif status["state"] == "unmanaged":
         operation = "install"
         backup_required = False
-    elif status["setup_id"] == setup_id:
+    elif status["state"] == "legacy-managed":
+        operation = "migrate"
+        backup_required = True
+    elif (
+        status["setup_id"] == setup_id
+        and status["permission_profile_id"] == permission_profile_id
+    ):
         operation = "update"
         backup_required = False
     else:
@@ -2128,15 +2393,29 @@ def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
         "operation": operation,
         "target": str(target),
         "setup_id": setup_id,
+        "permission_profile_id": permission_profile_id,
         "mutates": False,
         "backup_required": backup_required,
         "state": status["state"],
         "current_setup_id": status["setup_id"],
+        "current_permission_profile_id": status["permission_profile_id"],
         "drift": status["drift"],
     }
 
 
 def require_clean_managed(target: Path) -> dict[str, Any]:
+    stamp = load_stamp(target)
+    if stamp is None:
+        fail("target is not managed")
+    if not stamp_is_current(stamp):
+        fail("legacy managed target cannot launch; run migrate first")
+    drift = detect_drift(target, stamp)
+    if drift:
+        fail(f"managed target has drift: {drift}")
+    return stamp
+
+
+def require_clean_any_managed(target: Path) -> dict[str, Any]:
     stamp = load_stamp(target)
     if stamp is None:
         fail("target is not managed")
@@ -2146,8 +2425,14 @@ def require_clean_managed(target: Path) -> dict[str, Any]:
     return stamp
 
 
-def mutate_setup(target: Path, setup_id: str, action: str) -> dict[str, Any]:
+def mutate_setup(
+    target: Path,
+    setup_id: str,
+    permission_profile_id: str,
+    action: str,
+) -> dict[str, Any]:
     setup = render_setup(setup_id)
+    profile = render_permission_profile(permission_profile_id)
     with target_lock(target):
         ensure_target_directory(target, create=True)
         existing_stamp = load_stamp(target)
@@ -2156,17 +2441,27 @@ def mutate_setup(target: Path, setup_id: str, action: str) -> dict[str, Any]:
                 fail("switch requires a managed target")
             preflight_unmanaged_target(target)
         else:
+            if not stamp_is_current(existing_stamp):
+                fail(
+                    "legacy managed target requires migrate before apply, "
+                    "switch, update, or launch"
+                )
             if action == "install":
                 fail("install requires an absent managed target; use update or switch")
             drift = detect_drift(target, existing_stamp)
             if drift:
                 fail(f"managed target has drift: {drift}")
         backup_slot: int | None = None
-        if existing_stamp is not None and existing_stamp["setup_id"] != setup_id:
+        if existing_stamp is not None and (
+            existing_stamp["setup_id"] != setup_id
+            or existing_stamp["permission_profile_id"] != permission_profile_id
+        ):
             backup_slot = write_backup(target, existing_stamp)
         before = snapshot_managed_files(target)
-        desired = desired_for_setup(target, setup)
-        desired[STAMP_NAME] = canonical_json(stamp_payload(target, setup_id, desired))
+        desired = desired_for_setup(target, setup, profile)
+        desired[STAMP_NAME] = canonical_json(
+            stamp_payload(target, setup_id, permission_profile_id, desired)
+        )
         try:
             replace_managed_state(target, desired, before)
         except BaseException:
@@ -2181,9 +2476,14 @@ def mutate_setup(target: Path, setup_id: str, action: str) -> dict[str, Any]:
             "operation": "install" if existing_stamp is None else action,
             "target": str(target),
             "setup_id": setup_id,
+            "permission_profile_id": permission_profile_id,
             "changed": changed,
             "backup_slot": backup_slot,
             "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
+            "engine": {
+                "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
+                "status": MANAGED_LAUNCH_ENGINE_STATUS,
+            },
         }
 
 
@@ -2192,10 +2492,15 @@ def update_setup(target: Path) -> dict[str, Any]:
         stamp = load_stamp(target)
         if stamp is None:
             fail("update requires a managed target")
+        if not stamp_is_current(stamp):
+            fail("legacy managed target requires migrate before update")
         setup = render_setup(stamp["setup_id"])
+        profile = render_permission_profile(stamp["permission_profile_id"])
         before = snapshot_managed_files(target)
-        desired = desired_for_setup(target, setup)
-        desired[STAMP_NAME] = canonical_json(stamp_payload(target, setup.setup_id, desired))
+        desired = desired_for_setup(target, setup, profile)
+        desired[STAMP_NAME] = canonical_json(
+            stamp_payload(target, setup.setup_id, profile.profile_id, desired)
+        )
         try:
             replace_managed_state(target, desired, before)
         except BaseException:
@@ -2210,22 +2515,73 @@ def update_setup(target: Path) -> dict[str, Any]:
             "operation": "update",
             "target": str(target),
             "setup_id": setup.setup_id,
+            "permission_profile_id": profile.profile_id,
             "changed": changed,
             "backup_slot": None,
             "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
+            "engine": {
+                "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
+                "status": MANAGED_LAUNCH_ENGINE_STATUS,
+            },
+        }
+
+
+def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
+    setup = render_setup(CONTENT_SETUP_ID)
+    profile = render_permission_profile(permission_profile_id)
+    with target_lock(target):
+        stamp = load_stamp(target)
+        if stamp is None:
+            fail("migrate requires a managed target")
+        if stamp_is_current(stamp):
+            fail("target already uses the current managed schema")
+        drift = detect_drift(target, stamp)
+        if drift:
+            fail(f"managed target has drift: {drift}")
+        backup_slot = write_backup(target, stamp)
+        managed_files = tuple(dict.fromkeys((*LEGACY_MANAGED_FILES, *MANAGED_FILES)))
+        before = snapshot_managed_files(target, managed_files)
+        desired = desired_for_setup(target, setup, profile)
+        for relative in managed_files:
+            desired.setdefault(relative, None)
+        desired[STAMP_NAME] = canonical_json(
+            stamp_payload(target, setup.setup_id, profile.profile_id, desired)
+        )
+        try:
+            replace_managed_state(target, desired, before, managed_files=managed_files)
+        except BaseException:
+            restore_snapshot(target, before, managed_files=managed_files)
+            raise
+        return {
+            "operation": "migrate",
+            "target": str(target),
+            "from_schema_version": stamp["schema_version"],
+            "from_setup_id": stamp["setup_id"],
+            "setup_id": setup.setup_id,
+            "permission_profile_id": profile.profile_id,
+            "backup_slot": backup_slot,
+            "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
+            "engine": {
+                "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
+                "status": MANAGED_LAUNCH_ENGINE_STATUS,
+            },
         }
 
 
 def restore_backup(target: Path, slot: int) -> dict[str, Any]:
     with target_lock(target):
-        stamp = require_clean_managed(target)
-        _, files = load_backup(target, slot)
+        stamp = require_clean_any_managed(target)
+        _, files, backup_managed_files = load_backup(target, slot)
         backup_slot = write_backup(target, stamp)
-        before = snapshot_managed_files(target)
+        active_managed_files = stamp_managed_files(stamp)
+        managed_files = tuple(dict.fromkeys((*active_managed_files, *backup_managed_files)))
+        for relative in managed_files:
+            files.setdefault(relative, None)
+        before = snapshot_managed_files(target, managed_files)
         try:
-            replace_managed_state(target, files, before)
+            replace_managed_state(target, files, before, managed_files=managed_files)
         except BaseException:
-            restore_snapshot(target, before)
+            restore_snapshot(target, before, managed_files=managed_files)
             raise
         restored_stamp = load_stamp(target)
         assert restored_stamp is not None
@@ -2233,32 +2589,43 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
             "operation": "restore",
             "target": str(target),
             "setup_id": restored_stamp["setup_id"],
+            "permission_profile_id": restored_stamp.get("permission_profile_id"),
+            "schema_version": restored_stamp["schema_version"],
             "backup_slot": backup_slot,
             "restored_backup": slot,
-            "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
+            "migration_required": not stamp_is_current(restored_stamp),
+            "builder": {
+                "projection": BUILDER_PROJECTION
+                if stamp_is_current(restored_stamp)
+                else LEGACY_BUILDER_PROJECTION,
+                "enabled": True,
+            },
         }
 
 
 def remove_setup(target: Path) -> dict[str, Any]:
     with target_lock(target):
-        stamp = require_clean_managed(target)
+        stamp = require_clean_any_managed(target)
         backup_slot = write_backup(target, stamp)
-        before = snapshot_managed_files(target)
-        desired: dict[str, bytes | None] = {relative: None for relative in MANAGED_FILES}
+        managed_files = stamp_managed_files(stamp)
+        before = snapshot_managed_files(target, managed_files)
+        desired: dict[str, bytes | None] = {relative: None for relative in managed_files}
         if target_file_exists(target, SETTINGS):
             current = read_target_settings_if_present(target)
             stripped = strip_managed_settings(current)
             desired[SETTINGS] = canonical_json(stripped) if stripped else None
         desired[STAMP_NAME] = None
         try:
-            replace_managed_state(target, desired, before)
+            replace_managed_state(target, desired, before, managed_files=managed_files)
         except BaseException:
-            restore_snapshot(target, before)
+            restore_snapshot(target, before, managed_files=managed_files)
             raise
         return {
             "operation": "remove",
             "target": str(target),
             "removed_setup_id": stamp["setup_id"],
+            "removed_permission_profile_id": stamp.get("permission_profile_id"),
+            "removed_schema_version": stamp["schema_version"],
             "backup_slot": backup_slot,
             "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
         }
@@ -2355,9 +2722,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     for name in ("plan", "install", "apply", "switch"):
         command = subparsers.add_parser(name)
-        command.add_argument("--setup", required=True)
+        command.add_argument("--setup", default=CONTENT_SETUP_ID)
+        command.add_argument("--profile", default=DEFAULT_PERMISSION_PROFILE_ID)
         command.add_argument("--target")
         command.add_argument("--json", action="store_true")
+
+    migrate_parser = subparsers.add_parser("migrate")
+    migrate_parser.add_argument("--target")
+    migrate_parser.add_argument("--profile", default=DEFAULT_PERMISSION_PROFILE_ID)
+    migrate_parser.add_argument("--json", action="store_true")
 
     restore_parser = subparsers.add_parser("restore")
     restore_parser.add_argument("--backup", required=True, type=int)
@@ -2391,7 +2764,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(raw_argv)
         if args.command == "list":
-            emit({"setups": list_setups()}, as_json=args.json)
+            emit(
+                {
+                    "setups": list_setups(),
+                    "permission_profiles": list_permission_profiles(),
+                    "default_setup": CONTENT_SETUP_ID,
+                    "default_permission_profile": DEFAULT_PERMISSION_PROFILE_ID,
+                },
+                as_json=args.json,
+            )
             return 0
         if args.command == "status":
             emit(current_status(resolve_target(args.target)), as_json=args.json)
@@ -2400,11 +2781,23 @@ def main(argv: list[str] | None = None) -> int:
             emit(software_status(resolve_target(args.target)), as_json=args.json)
             return 0
         if args.command == "plan":
-            emit(plan_setup(resolve_target(args.target), args.setup), as_json=args.json)
+            emit(
+                plan_setup(resolve_target(args.target), args.setup, args.profile),
+                as_json=args.json,
+            )
             return 0
         if args.command in {"install", "apply", "switch"}:
             action = "install" if args.command == "apply" else args.command
-            emit(mutate_setup(resolve_target(args.target), args.setup, action), as_json=args.json)
+            emit(
+                mutate_setup(resolve_target(args.target), args.setup, args.profile, action),
+                as_json=args.json,
+            )
+            return 0
+        if args.command == "migrate":
+            emit(
+                migrate_setup(resolve_target(args.target), args.profile),
+                as_json=args.json,
+            )
             return 0
         if args.command == "update":
             emit(update_setup(resolve_target(args.target)), as_json=args.json)

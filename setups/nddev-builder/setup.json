@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "nddev-builder",
+  "description": "Kiro-native NDDev builder setup content for setup-manager implementation work.",
+  "managed_content_files": [
+    "agents/nddev-builder.md",
+    "skills/nddev-builder/SKILL.md",
+    "skills/nddev-builder/references/agents-subagents.md",
+    "skills/nddev-builder/references/configuration-profiles.md",
+    "skills/nddev-builder/references/creator-checker-release.md",
+    "skills/nddev-builder/references/hooks.md",
+    "skills/nddev-builder/references/installation-lifecycle.md",
+    "skills/nddev-builder/references/mcp.md",
+    "skills/nddev-builder/references/permissions-sandbox.md",
+    "skills/nddev-builder/references/plugins-marketplace.md",
+    "skills/nddev-builder/references/skills-instructions.md",
+    "steering/nddev-builder.md"
+  ],
+  "managed_settings": {
+    "app.disableAutoupdates": true,
+    "chat.defaultAgent": "nddev-builder",
+    "chat.ui": "tui",
+    "telemetry.enabled": false
+  },
+  "default_permission_profile": "full-auto",
+  "supported_permission_profiles": [
+    "safe",
+    "full-auto"
+  ],
+  "builder_enabled": true
+}

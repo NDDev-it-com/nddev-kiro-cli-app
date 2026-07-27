@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "full-auto",
+  "description": "NDDev full-auto profile for isolated automation targets using Kiro v3 capability permissions.",
+  "permissions_file": "permissions.yaml"
+}

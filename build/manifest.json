@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
   "product_name": "nddev-kiro-cli-app",
-  "build_version": "0.1.0",
+  "build_version": "0.2.0",
   "runtime": {
     "product": "Kiro CLI",
     "executable": "kiro-cli",
     "current_version": "2.14.2",
     "engine_argument": "--v3",
+    "engine_status": "early-access-required",
     "managed_launch_blocked_commands": [
       "agent",
       "diagnostic",
@@ -31,11 +32,21 @@
     "baseline": "references/kiro-cli-baseline.json"
   },
   "setup_ids": [
+    "nddev-builder"
+  ],
+  "default_setup_id": "nddev-builder",
+  "permission_profile_ids": [
+    "safe",
+    "full-auto"
+  ],
+  "default_permission_profile_id": "full-auto",
+  "legacy_setup_ids": [
     "safe",
     "balanced",
     "full-auto"
   ],
   "catalog_root": "setups",
+  "profile_root": "profiles",
   "manager": {
     "path": "cli-tools/nddev_kiro_cli.py",
     "commands": [
@@ -46,6 +57,7 @@
       "update",
       "apply",
       "switch",
+      "migrate",
       "restore",
       "remove",
       "software-status",
@@ -61,20 +73,32 @@
   "builder": {
     "id": "nddev-builder",
     "status": "default-on",
-    "projection": "native-agent-skill-steering-hook",
+    "projection": "native-agent-skill-steering",
     "marketplace": null,
+    "agent_tools": [
+      "*"
+    ],
     "native_surfaces": [
       "agents",
       "skills",
       "steering",
-      "hooks",
-      "permissions"
+      "permissions",
+      "workspace_hooks",
+      "mcp_configuration"
     ],
     "managed_files": [
       "agents/nddev-builder.md",
       "skills/nddev-builder/SKILL.md",
-      "steering/nddev-builder.md",
-      "hooks/nddev-builder.json"
+      "skills/nddev-builder/references/agents-subagents.md",
+      "skills/nddev-builder/references/configuration-profiles.md",
+      "skills/nddev-builder/references/creator-checker-release.md",
+      "skills/nddev-builder/references/hooks.md",
+      "skills/nddev-builder/references/installation-lifecycle.md",
+      "skills/nddev-builder/references/mcp.md",
+      "skills/nddev-builder/references/permissions-sandbox.md",
+      "skills/nddev-builder/references/plugins-marketplace.md",
+      "skills/nddev-builder/references/skills-instructions.md",
+      "steering/nddev-builder.md"
     ]
   },
   "public_validator": "cli-tools/validate_public_contracts.py"

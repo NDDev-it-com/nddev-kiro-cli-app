@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
-  "verified_on": "2026-07-26",
+  "verified_on": "2026-07-27",
   "verified_version_ref": "build/version.json:kiro_cli_current",
   "runtime": {
     "product": "Kiro CLI",
     "executable": "kiro-cli",
     "engine_argument": "--v3",
+    "engine_status": "early-access-required",
     "kiro_home_env": "KIRO_HOME"
   },
   "release": {
@@ -23,13 +24,25 @@
   },
   "configuration": {
     "kiro_home": "~/.kiro",
+    "kiro_home_override_env": "KIRO_HOME",
     "settings_file": "~/.kiro/settings/cli.json",
     "permissions_file": "~/.kiro/settings/permissions.yaml",
     "global_agents": "~/.kiro/agents/",
+    "workspace_agents": ".kiro/agents/",
     "global_skills": "~/.kiro/skills/",
+    "workspace_skills": ".kiro/skills/",
     "global_steering": "~/.kiro/steering/",
-    "global_hooks": "~/.kiro/hooks/",
-    "mcp_file": "~/.kiro/settings/mcp.json",
+    "workspace_steering": ".kiro/steering/",
+    "global_hooks": null,
+    "workspace_hooks": ".kiro/hooks/<name>.json",
+    "mcp_files": [
+      "~/.kiro/settings/mcp.json",
+      ".kiro/settings/mcp.json"
+    ],
+    "agent_mcp_servers": "frontmatter mcpServers",
+    "agent_tools": [
+      "*"
+    ],
     "marketplace": null,
     "sandbox": null
   },
@@ -86,27 +99,82 @@
     ]
   },
   "official_docs": {
-    "overview": "https://kiro.dev/docs/cli/",
-    "installation": "https://kiro.dev/docs/cli/installation/",
-    "settings": "https://kiro.dev/docs/cli/reference/settings/",
-    "commands": "https://kiro.dev/docs/cli/reference/cli-commands/",
-    "configuration": "https://kiro.dev/docs/cli/chat/configuration/",
-    "permissions": "https://kiro.dev/docs/cli/v3/permissions/",
-    "v3": "https://kiro.dev/docs/cli/v3/",
-    "agents": "https://kiro.dev/docs/cli/v3/agent-config/",
-    "skills": "https://kiro.dev/docs/cli/skills/",
-    "steering": "https://kiro.dev/docs/cli/steering/",
-    "hooks": "https://kiro.dev/docs/cli/v3/hooks/",
-    "mcp": "https://kiro.dev/docs/cli/mcp/configuration/",
-    "privacy_security": "https://kiro.dev/docs/cli/privacy-and-security/",
-    "migration": "https://kiro.dev/docs/cli/migrating-from-q/"
+    "overview": {
+      "url": "https://kiro.dev/docs/cli/"
+    },
+    "installation": {
+      "url": "https://kiro.dev/docs/cli/installation/",
+      "updated_on": "2026-06-03"
+    },
+    "settings": {
+      "url": "https://kiro.dev/docs/cli/reference/settings/",
+      "updated_on": "2026-06-05"
+    },
+    "commands": {
+      "url": "https://kiro.dev/docs/cli/reference/cli-commands/"
+    },
+    "configuration": {
+      "url": "https://kiro.dev/docs/cli/chat/configuration/",
+      "updated_on": "2026-05-27"
+    },
+    "permissions": {
+      "url": "https://kiro.dev/docs/cli/v3/permissions/",
+      "updated_on": "2026-06-17"
+    },
+    "v3": {
+      "url": "https://kiro.dev/docs/cli/v3/",
+      "updated_on": "2026-07-24"
+    },
+    "agents": {
+      "url": "https://kiro.dev/docs/cli/v3/agent-config/",
+      "updated_on": "2026-07-23"
+    },
+    "skills": {
+      "url": "https://kiro.dev/docs/cli/skills/",
+      "updated_on": "2026-05-12"
+    },
+    "steering": {
+      "url": "https://kiro.dev/docs/cli/steering/",
+      "updated_on": "2026-01-08"
+    },
+    "hooks": {
+      "url": "https://kiro.dev/docs/cli/v3/hooks/",
+      "updated_on": "2026-06-17"
+    },
+    "mcp": {
+      "url": "https://kiro.dev/docs/cli/mcp/configuration/",
+      "updated_on": "2026-07-09"
+    },
+    "authentication": {
+      "url": "https://kiro.dev/docs/cli/authentication/",
+      "updated_on": "2026-06-04"
+    },
+    "headless": {
+      "url": "https://kiro.dev/docs/cli/headless/",
+      "updated_on": "2026-06-04"
+    },
+    "privacy_security": {
+      "url": "https://kiro.dev/docs/cli/privacy-and-security/"
+    },
+    "migration": {
+      "url": "https://kiro.dev/docs/cli/migrating-from-q/"
+    }
   },
   "official_source": {
     "repository": "https://github.com/kirodotdev/Kiro",
     "releases": "https://github.com/kirodotdev/Kiro/releases"
   },
+  "authentication": {
+    "native_login_commands": [
+      "kiro-cli",
+      "kiro-cli login"
+    ],
+    "native_headless_api_key": "KIRO_API_KEY",
+    "manager_launch_inherits_provider_credentials": false,
+    "manager_launch_blocks_login_scope_commands": true
+  },
   "software_installation": {
-    "manager_install_mode": "harness-owned-official-artifact",
+    "manager_install_mode": "target-owned-official-artifact",
     "target_software_root": "target/.nddev-runtime/software/kiro-cli",
     "software_stamp_file": "target/.nddev-runtime/software/kiro-cli/NDDEV-KIRO-CLI-SOFTWARE.json",
     "official_vendor_installer_supported": false,
@@ -114,6 +182,16 @@
       "macOS branch writes /Applications",
       "macOS branch launches the app after install",
       "Linux branch installs into HOME/.local/bin and is only usable inside isolated staging"
+    ],
+    "supported_platforms": [
+      "macos-universal-dmg",
+      "linux-x86_64-glibc-zip",
+      "linux-aarch64-glibc-zip",
+      "linux-x86_64-musl-zip",
+      "linux-aarch64-musl-zip"
+    ],
+    "unsupported_platforms": [
+      "windows"
     ],
     "install_only_absent": true,
     "update_repairs_safe_partial": true,
