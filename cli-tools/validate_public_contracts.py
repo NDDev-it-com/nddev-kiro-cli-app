@@ -235,6 +235,7 @@ TARGET_ENVIRONMENT_SCOPE = {
 }
 MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
+CLAUDE_BRIDGE_BYTES = b"@../AGENTS.md\n"
 RELEASE_WORKFLOW_USES = (
     "NDDev-it-com/ci-workflows/.github/workflows/release-supply-chain.yml"
     "@2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
@@ -1246,6 +1247,42 @@ def check_manager_source(text: str, errors: list[str]) -> None:
         errors.append("cli-tools/nddev_kiro_cli.py: complete write loop must reject no-progress writes")
 
 
+def check_claude_bridge(errors: list[str]) -> None:
+    directory = ROOT / ".claude"
+    try:
+        directory_info = directory.lstat()
+    except FileNotFoundError:
+        errors.append(".claude bridge directory must exist")
+        return
+    if stat.S_ISLNK(directory_info.st_mode) or not stat.S_ISDIR(directory_info.st_mode):
+        errors.append(".claude bridge directory must be a real directory")
+        return
+    try:
+        entries = sorted(path.name for path in directory.iterdir())
+    except OSError as exc:
+        errors.append(f".claude bridge directory is unreadable: {exc}")
+        return
+    if entries != ["CLAUDE.md"]:
+        errors.append(".claude bridge directory must contain only CLAUDE.md")
+    relative = ".claude/CLAUDE.md"
+    path = ROOT / relative
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        errors.append(".claude/CLAUDE.md bridge must exist")
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        errors.append(".claude/CLAUDE.md bridge must be a regular file")
+        return
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        errors.append(f".claude/CLAUDE.md bridge is unreadable: {exc}")
+        return
+    if content != CLAUDE_BRIDGE_BYTES:
+        errors.append(".claude/CLAUDE.md bridge must exactly import ../AGENTS.md")
+
+
 def load_manager_for_regressions(errors: list[str]) -> Any | None:
     path = ROOT / "cli-tools/nddev_kiro_cli.py"
     try:
@@ -2123,6 +2160,7 @@ def main() -> int:
         if relative == "cli-tools/nddev_kiro_cli.py":
             manager_source = text
     check_manager_source(manager_source, errors)
+    check_claude_bridge(errors)
     run_public_manager_regressions(errors)
     for workflow in WORKFLOWS:
         check_text(f".github/workflows/{workflow}", errors)

@@ -25,6 +25,6 @@ jobs:
       package_name: nddev-kiro-cli-app
       archive_paths: >-
         README.md LICENSE VERSION CHANGELOG.md SECURITY.md AGENTS.md .gitignore
-        .gds .github build cli-tools config references setups profiles
+        .claude .gds .github build cli-tools config references setups profiles
       runtime_paths: >-
-        README.md LICENSE VERSION build cli-tools config references setups profiles
+        README.md LICENSE VERSION .claude build cli-tools config references setups profiles
