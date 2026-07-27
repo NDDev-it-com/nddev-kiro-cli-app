@@ -1292,7 +1292,12 @@ def load_manager_for_regressions(errors: list[str]) -> Any | None:
             return None
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        original_dont_write_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = original_dont_write_bytecode
     except Exception as exc:
         errors.append(f"cli-tools/nddev_kiro_cli.py: cannot import manager: {exc}")
         return None
