@@ -48,6 +48,9 @@ MAX_BACKUPS = 10
 OWNER_FILE_MODE = 0o600
 OWNER_DIR_MODE = 0o700
 LOCK_HELD_DIR_MODE = 0o500
+SOFTWARE_IMMUTABLE_FILE_MODE = 0o400
+SOFTWARE_IMMUTABLE_EXECUTABLE_MODE = 0o500
+SOFTWARE_IMMUTABLE_DIR_MODE = 0o500
 METADATA_MAX_BYTES = 256 * 1024
 MANAGED_PAYLOAD_MAX_BYTES = 1024 * 1024
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -801,6 +804,10 @@ def software_root(target: Path) -> Path:
     return target / SOFTWARE_RUNTIME_DIR / SOFTWARE_DIR_NAME
 
 
+def software_parent(target: Path) -> Path:
+    return target / SOFTWARE_RUNTIME_DIR
+
+
 def software_stamp_path(target: Path) -> Path:
     return software_root(target) / SOFTWARE_STAMP_NAME
 
@@ -848,6 +855,38 @@ def optional_owner_private_directory(path: Path, label: str) -> os.stat_result |
     return info
 
 
+def require_owned_directory_modes(
+    path: Path,
+    label: str,
+    allowed_modes: set[int],
+) -> os.stat_result:
+    info = require_directory(path, label)
+    require_current_user_owned(info, label)
+    mode = stat.S_IMODE(info.st_mode)
+    if mode not in allowed_modes:
+        expected = " or ".join(f"{item:04o}" for item in sorted(allowed_modes))
+        fail(f"{label} must have mode {expected}, got {mode:04o}")
+    return info
+
+
+def optional_owned_directory_modes(
+    path: Path,
+    label: str,
+    allowed_modes: set[int],
+) -> os.stat_result | None:
+    info = lstat_optional(path)
+    if info is None:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail(f"{label} must be a real directory")
+    require_current_user_owned(info, label)
+    mode = stat.S_IMODE(info.st_mode)
+    if mode not in allowed_modes:
+        expected = " or ".join(f"{item:04o}" for item in sorted(allowed_modes))
+        fail(f"{label} must have mode {expected}, got {mode:04o}")
+    return info
+
+
 def require_regular_stamp_if_present(path: Path, label: str) -> os.stat_result | None:
     info = lstat_optional(path)
     if info is None:
@@ -862,17 +901,19 @@ def require_regular_stamp_if_present(path: Path, label: str) -> os.stat_result |
 def software_ancestor_paths(target: Path) -> tuple[tuple[Path, str], ...]:
     return (
         (target / ".nddev-runtime", "software runtime directory"),
-        (target / SOFTWARE_RUNTIME_DIR, "software parent"),
+        (software_parent(target), "software parent"),
     )
 
 
 def software_root_presence(target: Path) -> str:
     if optional_owner_private_directory(target, "--target") is None:
         return "missing"
-    for path, label in software_ancestor_paths(target):
-        if optional_owner_private_directory(path, label) is None:
-            return "absent"
-    if optional_owner_private_directory(software_root(target), "software root") is None:
+    if optional_owner_private_directory(target / NDDEV_RUNTIME_DIR, "software runtime directory") is None:
+        return "absent"
+    software_modes = {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE}
+    if optional_owned_directory_modes(software_parent(target), "software parent", software_modes) is None:
+        return "absent"
+    if optional_owned_directory_modes(software_root(target), "software root", software_modes) is None:
         return "absent"
     return "present"
 
@@ -928,6 +969,121 @@ def scan_software_tree(root: Path, executable_relative: str) -> SoftwareTree:
         byte_count=byte_count,
         executable_sha256=executable_digest,
     )
+
+
+def software_file_hardened_mode(path: Path, executable_path: Path, info: os.stat_result) -> int:
+    if path == executable_path or stat.S_IMODE(info.st_mode) & stat.S_IXUSR:
+        return SOFTWARE_IMMUTABLE_EXECUTABLE_MODE
+    return SOFTWARE_IMMUTABLE_FILE_MODE
+
+
+def harden_software_tree(root: Path, executable_relative: str) -> None:
+    require_private_directory(root, "software root")
+    executable_path = root / safe_relative_path(executable_relative)
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        relative = path.relative_to(root).as_posix()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"software tree must not contain symlinks: {relative}")
+        require_current_user_owned(info, f"software path {relative}")
+        if stat.S_ISDIR(info.st_mode):
+            os.chmod(path, SOFTWARE_IMMUTABLE_DIR_MODE)
+            continue
+        if stat.S_ISREG(info.st_mode):
+            if info.st_nlink != 1:
+                fail(f"software path must not have hard-link aliases: {relative}")
+            os.chmod(path, software_file_hardened_mode(path, executable_path, info))
+            continue
+        fail(f"software tree path must be regular file or directory: {relative}")
+    os.chmod(root, SOFTWARE_IMMUTABLE_DIR_MODE)
+    require_owned_directory_modes(root, "software root", {SOFTWARE_IMMUTABLE_DIR_MODE})
+
+
+def harden_installed_software(target: Path, executable_relative: str) -> None:
+    harden_software_tree(software_root(target), executable_relative)
+    os.chmod(software_parent(target), SOFTWARE_IMMUTABLE_DIR_MODE)
+    require_owned_directory_modes(
+        software_parent(target),
+        "software parent",
+        {SOFTWARE_IMMUTABLE_DIR_MODE},
+    )
+
+
+def make_software_tree_mutable(root: Path) -> None:
+    info = lstat_optional(root)
+    if info is None:
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("software root must be a real directory")
+    require_current_user_owned(info, "software root")
+    os.chmod(root, OWNER_DIR_MODE)
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        child = path.lstat()
+        if stat.S_ISLNK(child.st_mode):
+            fail(f"software tree must not contain symlinks: {relative}")
+        require_current_user_owned(child, f"software path {relative}")
+        if stat.S_ISDIR(child.st_mode):
+            os.chmod(path, OWNER_DIR_MODE)
+        elif stat.S_ISREG(child.st_mode):
+            if child.st_nlink != 1:
+                fail(f"software path must not have hard-link aliases: {relative}")
+            mode = OWNER_DIR_MODE if stat.S_IMODE(child.st_mode) & stat.S_IXUSR else OWNER_FILE_MODE
+            os.chmod(path, mode)
+        else:
+            fail(f"software tree path must be regular file or directory: {relative}")
+
+
+def make_software_parent_mutable(target: Path) -> None:
+    parent = software_parent(target)
+    info = lstat_optional(parent)
+    if info is None:
+        return
+    require_owned_directory_modes(
+        parent,
+        "software parent",
+        {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE},
+    )
+    os.chmod(parent, OWNER_DIR_MODE)
+    require_owner_private_directory(parent, "software parent")
+
+
+def software_installation_mode_drift(target: Path, executable_relative: str) -> list[str]:
+    drift: list[str] = []
+    parent_info = require_owned_directory_modes(
+        software_parent(target),
+        "software parent",
+        {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE},
+    )
+    if stat.S_IMODE(parent_info.st_mode) != SOFTWARE_IMMUTABLE_DIR_MODE:
+        drift.append("software parent mode")
+    root = software_root(target)
+    root_info = require_owned_directory_modes(
+        root,
+        "software root",
+        {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE},
+    )
+    if stat.S_IMODE(root_info.st_mode) != SOFTWARE_IMMUTABLE_DIR_MODE:
+        drift.append("software root mode")
+    executable_path = root / safe_relative_path(executable_relative)
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"software tree must not contain symlinks: {relative}")
+        require_current_user_owned(info, f"software path {relative}")
+        actual = stat.S_IMODE(info.st_mode)
+        if stat.S_ISDIR(info.st_mode):
+            expected = SOFTWARE_IMMUTABLE_DIR_MODE
+        elif stat.S_ISREG(info.st_mode):
+            if info.st_nlink != 1:
+                fail(f"software path must not have hard-link aliases: {relative}")
+            expected = software_file_hardened_mode(path, executable_path, info)
+        else:
+            fail(f"software tree path must be regular file or directory: {relative}")
+        if actual != expected:
+            drift.append(f"software mode {relative}")
+    return drift
 
 
 def software_stamp_payload(
@@ -1036,9 +1192,16 @@ def load_software_stamp_for_status(target: Path) -> tuple[dict[str, Any] | None,
     stamp_path = software_stamp_path(target)
     if require_regular_stamp_if_present(stamp_path, "software stamp") is None:
         return None, None
-    require_owner_private_file(stamp_path, "software stamp")
     try:
-        stamp = read_json_file(stamp_path, "software stamp", owner_only=True)
+        content, info = read_regular_file(
+            stamp_path,
+            "software stamp",
+            owner_only=False,
+            max_bytes=SOFTWARE_METADATA_MAX_BYTES,
+        )
+        require_current_user_owned(info, "software stamp")
+        ensure_not_group_world_writable(info, "software stamp")
+        stamp = parse_json_object(content, "software stamp")
         validate_software_stamp(stamp, target)
     except ManagerError as exc:
         return None, str(exc)
@@ -1146,14 +1309,15 @@ def software_status(target: Path) -> dict[str, Any]:
     executable_relative = stamp["executable"]["relative_path"]
     tree = scan_software_tree(root, executable_relative)
     provenance_drift = software_stamp_provenance_drift(stamp)
+    mode_drift = software_installation_mode_drift(target, executable_relative)
     integrity_drift = []
     if tree.digest != stamp["tree"]["sha256"]:
         integrity_drift.append("software tree digest")
     if tree.executable_sha256 != stamp["executable"]["sha256"]:
         integrity_drift.append("software executable digest")
-    drift = [*provenance_drift, *integrity_drift]
+    drift = [*provenance_drift, *mode_drift, *integrity_drift]
     state = "installed"
-    if integrity_drift:
+    if integrity_drift or mode_drift:
         state = "drift"
     elif provenance_drift:
         state = "needs-update"
@@ -1432,12 +1596,19 @@ def install_prepared_software_root(
             require_exact_mode(target_info, "--target", OWNER_DIR_MODE)
         for path, label in software_ancestor_paths(target):
             if lstat_optional(path) is not None:
-                require_owner_private_directory(path, label)
-        software_parent = final_root.parent
-        if lstat_optional(software_parent) is None:
-            ensure_directory_chain(software_parent, created_dirs, "software parent")
+                if path == software_parent(target):
+                    require_owned_directory_modes(
+                        path,
+                        label,
+                        {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE},
+                    )
+                else:
+                    require_owner_private_directory(path, label)
+        software_parent_path = final_root.parent
+        if lstat_optional(software_parent_path) is None:
+            ensure_directory_chain(software_parent_path, created_dirs, "software parent")
         else:
-            require_owner_private_directory(software_parent, "software parent")
+            make_software_parent_mutable(target)
         final_root_info = lstat_optional(final_root)
         if final_root_info is not None:
             if not allow_existing:
@@ -1445,15 +1616,22 @@ def install_prepared_software_root(
             if stat.S_ISLNK(final_root_info.st_mode) or not stat.S_ISDIR(final_root_info.st_mode):
                 fail("existing software root must be a real directory")
             require_current_user_owned(final_root_info, "existing software root")
-            require_exact_mode(final_root_info, "existing software root", OWNER_DIR_MODE)
+            mode = stat.S_IMODE(final_root_info.st_mode)
+            if mode not in {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE}:
+                fail(f"existing software root must have mode 0700 or 0500, got {mode:04o}")
             rollback_parent = create_transaction_dir(target, "software-rollback")
             rollback_root = rollback_parent / "previous"
             os.replace(final_root, rollback_root)
         os.replace(prepared, final_root)
         installed_new_root = True
+        stamp = read_json_file(final_root / SOFTWARE_STAMP_NAME, "software stamp", owner_only=True)
+        executable_relative = stamp["executable"]["relative_path"]
+        harden_installed_software(target, executable_relative)
         stamp = load_software_stamp(target)
         assert stamp is not None
         if rollback_parent is not None:
+            if rollback_root is not None:
+                make_software_tree_mutable(rollback_root)
             shutil.rmtree(rollback_parent)
             rollback_parent = None
         return {
@@ -1467,15 +1645,26 @@ def install_prepared_software_root(
             },
         }
     except BaseException:
+        with contextlib.suppress(ManagerError, OSError):
+            make_software_parent_mutable(target)
         if installed_new_root:
             final_info = lstat_optional(final_root)
             if final_info is not None and stat.S_ISDIR(final_info.st_mode) and not stat.S_ISLNK(
                 final_info.st_mode
             ):
+                with contextlib.suppress(ManagerError, OSError):
+                    make_software_tree_mutable(final_root)
                 shutil.rmtree(final_root, ignore_errors=True)
         if rollback_root is not None and lstat_optional(rollback_root) is not None:
             os.replace(rollback_root, final_root)
+            with contextlib.suppress(ManagerError, OSError):
+                stamp = load_software_stamp(target)
+                if stamp is not None:
+                    harden_installed_software(target, stamp["executable"]["relative_path"])
         if rollback_parent is not None:
+            if rollback_root is not None:
+                with contextlib.suppress(ManagerError, OSError):
+                    make_software_tree_mutable(rollback_root)
             shutil.rmtree(rollback_parent, ignore_errors=True)
         for directory in reversed(created_dirs):
             with contextlib.suppress(OSError):
@@ -1643,7 +1832,13 @@ def software_remove(target: Path) -> dict[str, Any]:
                 "changed": False,
                 "removed_state": status["state"],
             }
-        require_owner_private_directory(root, "software root")
+        require_owned_directory_modes(
+            root,
+            "software root",
+            {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE},
+        )
+        make_software_parent_mutable(target)
+        make_software_tree_mutable(root)
         shutil.rmtree(root)
         with contextlib.suppress(OSError):
             root.parent.rmdir()
@@ -2992,6 +3187,7 @@ def remove_setup(target: Path) -> dict[str, Any]:
 def build_launch_env(target: Path) -> dict[str, str]:
     ensure_target_private_directory(target, NDDEV_RUNTIME_DIR, "launch runtime root")
     home = ensure_target_private_directory(target, f"{NDDEV_RUNTIME_DIR}/home", "launch HOME")
+    temp = ensure_target_private_directory(target, f"{NDDEV_RUNTIME_DIR}/tmp", "launch TMPDIR")
     ensure_target_private_directory(target, f"{NDDEV_RUNTIME_DIR}/xdg", "launch XDG root")
     xdg_config = ensure_target_private_directory(
         target,
@@ -3017,6 +3213,7 @@ def build_launch_env(target: Path) -> dict[str, str]:
     env: dict[str, str] = {
         "HOME": str(home),
         "KIRO_HOME": str(target),
+        "TMPDIR": str(temp),
         "PATH": TRUSTED_SYSTEM_PATH,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
@@ -3039,6 +3236,9 @@ def revalidate_software_executable(target: Path) -> Path:
     if stamp is None:
         fail("Kiro CLI software stamp is missing")
     executable = software_executable_from_stamp(target, stamp)
+    mode_drift = software_installation_mode_drift(target, stamp["executable"]["relative_path"])
+    if mode_drift:
+        fail(f"Kiro CLI software mutable before launch: {mode_drift}")
     digest, info = digest_regular_file(
         executable,
         f"Kiro CLI executable {executable}",
@@ -3046,8 +3246,11 @@ def revalidate_software_executable(target: Path) -> Path:
         max_bytes=SOFTWARE_TREE_MAX_BYTES,
     )
     ensure_not_group_world_writable(info, f"Kiro CLI executable {executable}")
-    if not stat.S_IMODE(info.st_mode) & stat.S_IXUSR:
-        fail(f"Kiro CLI executable is not owner-executable: {executable}")
+    require_exact_mode(
+        info,
+        f"Kiro CLI executable {executable}",
+        SOFTWARE_IMMUTABLE_EXECUTABLE_MODE,
+    )
     if digest != stamp["executable"]["sha256"]:
         fail("Kiro CLI executable digest changed before launch")
     return executable

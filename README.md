@@ -80,7 +80,7 @@ python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --
 
 `launch` requires clean current managed setup state and clean target-owned
 software; `status` reports the same `launch_allowed` precondition. It sets
-`KIRO_HOME` to the target, places child `HOME`, XDG
+`KIRO_HOME` to the target, places child `HOME`, `TMPDIR`, XDG
 directories, and logs under the target runtime directory, strips provider
 credential environment variables, uses a deterministic system `PATH`, and
 invokes the target-installed `kiro-cli --v3`. Launch runtime directories are
@@ -89,10 +89,12 @@ real directories, the executable digest is revalidated immediately before
 handoff, and a target-internal `fcntl.flock` on a persistent `0600` lock file
 remains held until the child exits. The lock directory is owner-private when
 idle and non-writable while held, so ordinary child cleanup cannot unlink or
-rmdir the manager lock path. This is not a sandbox against a deliberately
-malicious same-UID process that changes target state directly. Arguments that
-would override managed engine, agent, trust, auth, settings, integrations, MCP,
-or update scope are rejected before the target lock is taken.
+rmdir the manager lock path. The software parent and installed launcher tree
+are immutable while launchable; runtime `HOME`, `TMPDIR`, XDG, log, settings,
+and target parents remain writable. This is not a sandbox against a
+deliberately malicious same-UID process that changes target state directly.
+Arguments that would override managed engine, agent, trust, auth, settings,
+integrations, MCP, or update scope are rejected before the target lock is taken.
 
 ## Builder Content
 

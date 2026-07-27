@@ -143,6 +143,20 @@ LOCK_MECHANISM = "fcntl-flock-persistent-file"
 LOCK_FILE_MODE = "0600"
 LOCK_DIRECTORY_IDLE_MODE = "0700"
 LOCK_DIRECTORY_HELD_MODE = "0500"
+SOFTWARE_IMMUTABLE_FILE_MODE = "0400"
+SOFTWARE_IMMUTABLE_EXECUTABLE_MODE = "0500"
+SOFTWARE_IMMUTABLE_DIR_MODE = "0500"
+TARGET_ENVIRONMENT_SCOPE = {
+    "KIRO_HOME": "target",
+    "HOME": "target/.nddev-runtime/home",
+    "TMPDIR": "target/.nddev-runtime/tmp",
+    "XDG_CONFIG_HOME": "target/.nddev-runtime/xdg/config",
+    "XDG_DATA_HOME": "target/.nddev-runtime/xdg/data",
+    "XDG_STATE_HOME": "target/.nddev-runtime/xdg/state",
+    "XDG_CACHE_HOME": "target/.nddev-runtime/xdg/cache",
+    "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log",
+    "PATH": TRUSTED_SYSTEM_PATH,
+}
 MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
 RELEASE_WORKFLOW_USES = (
@@ -337,6 +351,18 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
         errors.append(f"{label}: removable directory lock must not be used")
     if runtime.get("ordinary_child_lock_cleanup_denied") is not True:
         errors.append(f"{label}: child lock cleanup guard missing")
+    if runtime.get("runtime_mutable_directories_remain_writable") is not True:
+        errors.append(f"{label}: writable runtime state contract missing")
+    if runtime.get("mutable_runtime_ancestors_not_chmod_read_only") is not True:
+        errors.append(f"{label}: mutable runtime ancestor guard missing")
+    if runtime.get("software_launcher_artifact_immutable") is not True:
+        errors.append(f"{label}: immutable launcher artifact contract missing")
+    if runtime.get("software_immutable_file_mode") != SOFTWARE_IMMUTABLE_FILE_MODE:
+        errors.append(f"{label}: immutable software file mode mismatch")
+    if runtime.get("software_immutable_executable_mode") != SOFTWARE_IMMUTABLE_EXECUTABLE_MODE:
+        errors.append(f"{label}: immutable software executable mode mismatch")
+    if runtime.get("software_immutable_directory_mode") != SOFTWARE_IMMUTABLE_DIR_MODE:
+        errors.append(f"{label}: immutable software directory mode mismatch")
     if runtime.get("launch_executable_revalidated_before_handoff") is not True:
         errors.append(f"{label}: executable revalidation contract missing")
     if runtime.get("launch_runtime_directories_target_relative_owner_private") is not True:
@@ -662,6 +688,16 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: launch_allowed software precondition missing")
     if software.get("stamp_provenance_bound_to_current_baseline") is not True:
         errors.append(f"{label}: software stamp provenance baseline binding missing")
+    if software.get("software_launcher_artifact_immutable") is not True:
+        errors.append(f"{label}: immutable launcher artifact contract missing")
+    if software.get("software_parent_mode") != SOFTWARE_IMMUTABLE_DIR_MODE:
+        errors.append(f"{label}: software parent mode mismatch")
+    if software.get("software_directory_mode") != SOFTWARE_IMMUTABLE_DIR_MODE:
+        errors.append(f"{label}: software directory mode mismatch")
+    if software.get("software_file_mode") != SOFTWARE_IMMUTABLE_FILE_MODE:
+        errors.append(f"{label}: software file mode mismatch")
+    if software.get("software_executable_mode") != SOFTWARE_IMMUTABLE_EXECUTABLE_MODE:
+        errors.append(f"{label}: software executable mode mismatch")
     if software.get("supported_platforms") != SUPPORTED_PLATFORMS:
         errors.append(f"{label}: supported platforms mismatch")
     if software.get("unsupported_platforms") != ["windows"]:
@@ -765,8 +801,8 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         if runtime_launch.get("trusted_system_path") != TRUSTED_SYSTEM_PATH:
             errors.append("config/nddev-contract.json: trusted system PATH mismatch")
         target_env = runtime_launch.get("target_environment_scope", {})
-        if target_env.get("PATH") != TRUSTED_SYSTEM_PATH:
-            errors.append("config/nddev-contract.json: launch PATH mismatch")
+        if target_env != TARGET_ENVIRONMENT_SCOPE:
+            errors.append("config/nddev-contract.json: launch environment scope mismatch")
         if runtime_launch.get("denies_legacy_managed_target") is not True:
             errors.append("config/nddev-contract.json: legacy launch denial required")
     check_builder(contract.get("builder"), "config/nddev-contract.json", errors)
@@ -802,6 +838,9 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         "persistent_kernel_lock_file",
         "lock_parent_not_writable_while_held",
         "ordinary_child_lock_cleanup_denied",
+        "runtime_mutable_directories_remain_writable",
+        "mutable_runtime_ancestors_not_chmod_read_only",
+        "software_launcher_artifact_immutable",
         "same_uid_malicious_process_not_sandboxed",
         "launch_executable_revalidated_before_handoff",
     ):
@@ -858,6 +897,12 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: persistent lock file missing")
     if authentication.get("ordinary_child_lock_cleanup_denied") is not True:
         errors.append("references/kiro-cli-baseline.json: child lock cleanup guard missing")
+    if authentication.get("runtime_mutable_directories_remain_writable") is not True:
+        errors.append("references/kiro-cli-baseline.json: writable runtime state guard missing")
+    if authentication.get("mutable_runtime_ancestors_not_chmod_read_only") is not True:
+        errors.append("references/kiro-cli-baseline.json: mutable runtime ancestor guard missing")
+    if authentication.get("software_launcher_artifact_immutable") is not True:
+        errors.append("references/kiro-cli-baseline.json: immutable launcher artifact missing")
     if authentication.get("same_uid_malicious_process_not_sandboxed") is not True:
         errors.append("references/kiro-cli-baseline.json: same-UID sandbox caveat missing")
     if authentication.get("launch_executable_revalidated_before_handoff") is not True:
@@ -921,6 +966,16 @@ def check_baseline(
             errors.append("references/kiro-cli-baseline.json: launch_allowed software precondition missing")
         if software.get("stamp_provenance_bound_to_current_baseline") is not True:
             errors.append("references/kiro-cli-baseline.json: software stamp provenance binding missing")
+        if software.get("software_launcher_artifact_immutable") is not True:
+            errors.append("references/kiro-cli-baseline.json: immutable launcher artifact missing")
+        if software.get("software_parent_mode") != SOFTWARE_IMMUTABLE_DIR_MODE:
+            errors.append("references/kiro-cli-baseline.json: software parent mode mismatch")
+        if software.get("software_directory_mode") != SOFTWARE_IMMUTABLE_DIR_MODE:
+            errors.append("references/kiro-cli-baseline.json: software directory mode mismatch")
+        if software.get("software_file_mode") != SOFTWARE_IMMUTABLE_FILE_MODE:
+            errors.append("references/kiro-cli-baseline.json: software file mode mismatch")
+        if software.get("software_executable_mode") != SOFTWARE_IMMUTABLE_EXECUTABLE_MODE:
+            errors.append("references/kiro-cli-baseline.json: software executable mode mismatch")
     packages = baseline.get("install_manifest", {}).get("packages")
     if not isinstance(packages, list) or not packages:
         errors.append("references/kiro-cli-baseline.json: install packages missing")
@@ -970,6 +1025,9 @@ def fake_package(manager: Any) -> Any:
 def install_fake_software(manager: Any, target: Path, script: str) -> Path:
     target = target.resolve(strict=False)
     root = target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME
+    if root.exists():
+        manager.make_software_parent_mutable(target)
+        manager.make_software_tree_mutable(root)
     private_dir(manager, target / manager.NDDEV_RUNTIME_DIR)
     private_dir(manager, target / manager.SOFTWARE_RUNTIME_DIR)
     private_dir(manager, root)
@@ -981,13 +1039,18 @@ def install_fake_software(manager: Any, target: Path, script: str) -> Path:
     tree = manager.scan_software_tree(root, "bin/kiro-cli")
     stamp = manager.software_stamp_payload(target, package, "bin/kiro-cli", tree)
     manager.atomic_write(root / manager.SOFTWARE_STAMP_NAME, manager.canonical_json(stamp))
+    manager.harden_installed_software(target, "bin/kiro-cli")
     return root / manager.SOFTWARE_STAMP_NAME
 
 
 def mutate_stamp(manager: Any, stamp_path: Path, mutator: Any) -> None:
+    root = stamp_path.parent
+    target = root.parent.parent.parent
+    manager.make_software_tree_mutable(root)
     stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
     mutator(stamp)
     manager.atomic_write(stamp_path, manager.canonical_json(stamp))
+    manager.harden_installed_software(target, stamp["executable"]["relative_path"])
 
 
 def assert_status_blocks_launch(
@@ -1080,6 +1143,7 @@ def make_private_parent_chain(manager: Any, root: Path, relative_parent: Path) -
 def run_launch_runtime_symlink_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
     runtime_links = [
         "home",
+        "tmp",
         "xdg",
         "xdg/config",
         "xdg/data",
@@ -1115,10 +1179,42 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
     stop = tmp / "launch-child-stop"
     lock_file = target / manager.LOCK_RUNTIME_DIR / manager.LOCK_DIR_NAME
     lock_root = target / manager.LOCK_RUNTIME_DIR
+    executable = target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME / "bin/kiro-cli"
+    executable_write_marker = tmp / "launch-executable-write-succeeded"
+    executable_remove_marker = tmp / "launch-executable-remove-succeeded"
+    runtime_files = {
+        "home": target / manager.NDDEV_RUNTIME_DIR / "home" / "nddev-runtime-write",
+        "tmp": target / manager.NDDEV_RUNTIME_DIR / "tmp" / "nddev-runtime-write",
+        "xdg_config": target
+        / manager.NDDEV_RUNTIME_DIR
+        / "xdg"
+        / "config"
+        / "nddev-runtime-write",
+        "xdg_data": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "data" / "nddev-runtime-write",
+        "xdg_state": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "state" / "nddev-runtime-write",
+        "xdg_cache": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "cache" / "nddev-runtime-write",
+        "log": target / manager.NDDEV_RUNTIME_DIR / "logs" / "kiro-chat.log",
+        "kiro_settings": target / "settings" / "session" / "nddev-runtime-write",
+    }
     script = (
         "#!/bin/sh\n"
+        "mkdir -p \"$HOME\" \"$TMPDIR\" \"$XDG_CONFIG_HOME\" \"$XDG_DATA_HOME\" "
+        "\"$XDG_STATE_HOME\" \"$XDG_CACHE_HOME\" \"$(dirname \"$KIRO_CHAT_LOG_FILE\")\" "
+        "\"$KIRO_HOME/settings/session\"\n"
+        "printf home > \"$HOME/nddev-runtime-write\"\n"
+        "printf tmp > \"$TMPDIR/nddev-runtime-write\"\n"
+        "printf config > \"$XDG_CONFIG_HOME/nddev-runtime-write\"\n"
+        "printf data > \"$XDG_DATA_HOME/nddev-runtime-write\"\n"
+        "printf state > \"$XDG_STATE_HOME/nddev-runtime-write\"\n"
+        "printf cache > \"$XDG_CACHE_HOME/nddev-runtime-write\"\n"
+        "printf log > \"$KIRO_CHAT_LOG_FILE\"\n"
+        "printf settings > \"$KIRO_HOME/settings/session/nddev-runtime-write\"\n"
         f"rm -f {shlex.quote(str(lock_file))} 2>/dev/null || true\n"
         f"rmdir {shlex.quote(str(lock_root))} 2>/dev/null || true\n"
+        f"if printf replace > {shlex.quote(str(executable))} 2>/dev/null; then "
+        f"printf ok > {shlex.quote(str(executable_write_marker))}; fi\n"
+        f"if rm -f {shlex.quote(str(executable))} 2>/dev/null; then "
+        f"printf ok > {shlex.quote(str(executable_remove_marker))}; fi\n"
         f"printf started > {shlex.quote(str(started))}\n"
         f"while [ ! -f {shlex.quote(str(stop))} ]; do sleep 0.05; done\n"
         "exit 0\n"
@@ -1161,6 +1257,13 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
                 errors.append("launch lock regression: lock file mode changed while child ran")
             if stat.S_IMODE(lock_root.lstat().st_mode) != manager.LOCK_HELD_DIR_MODE:
                 errors.append("launch lock regression: lock root was writable while child ran")
+        for label, runtime_file in runtime_files.items():
+            if not runtime_file.is_file():
+                errors.append(f"launch runtime write regression: {label} was not writable")
+        if executable_write_marker.exists():
+            errors.append("launch executable regression: child overwrote the launcher artifact")
+        if executable_remove_marker.exists() or not executable.is_file():
+            errors.append("launch executable regression: child removed the launcher artifact")
         commands = [
             ["switch", "--profile", "safe", "--target", str(target), "--json"],
             ["remove", "--target", str(target), "--json"],
@@ -1211,6 +1314,37 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
             errors.append("launch lock regression: lock file mode changed after child exit")
         if stat.S_IMODE(lock_root.lstat().st_mode) != manager.OWNER_DIR_MODE:
             errors.append("launch lock regression: lock root did not return to owner-private mode")
+    runtime_writable_roots = [
+        target / manager.NDDEV_RUNTIME_DIR,
+        target / manager.NDDEV_RUNTIME_DIR / "home",
+        target / manager.NDDEV_RUNTIME_DIR / "tmp",
+        target / manager.NDDEV_RUNTIME_DIR / "xdg",
+        target / manager.NDDEV_RUNTIME_DIR / "xdg" / "config",
+        target / manager.NDDEV_RUNTIME_DIR / "xdg" / "data",
+        target / manager.NDDEV_RUNTIME_DIR / "xdg" / "state",
+        target / manager.NDDEV_RUNTIME_DIR / "xdg" / "cache",
+        target / manager.NDDEV_RUNTIME_DIR / "logs",
+        target / "settings",
+    ]
+    for runtime_root in runtime_writable_roots:
+        if not runtime_root.is_dir():
+            errors.append(f"launch runtime write regression: missing {runtime_root}")
+        elif stat.S_IMODE(runtime_root.lstat().st_mode) != manager.OWNER_DIR_MODE:
+            errors.append(f"launch runtime write regression: read-only runtime root {runtime_root}")
+    immutable_paths = [
+        target / manager.SOFTWARE_RUNTIME_DIR,
+        target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME,
+        target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME / "bin",
+    ]
+    for immutable_path in immutable_paths:
+        if not immutable_path.is_dir():
+            errors.append(f"launch executable regression: missing immutable path {immutable_path}")
+        elif stat.S_IMODE(immutable_path.lstat().st_mode) != manager.SOFTWARE_IMMUTABLE_DIR_MODE:
+            errors.append(f"launch executable regression: writable immutable path {immutable_path}")
+    if executable.is_file():
+        executable_mode = stat.S_IMODE(executable.lstat().st_mode)
+        if executable_mode != manager.SOFTWARE_IMMUTABLE_EXECUTABLE_MODE:
+            errors.append("launch executable regression: launcher mode is not immutable executable")
     switch_after_exit = subprocess.run(
         [
             sys.executable,
