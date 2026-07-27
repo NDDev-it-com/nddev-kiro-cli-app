@@ -139,6 +139,28 @@ SUPPORTED_PLATFORMS = [
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
+RELEASE_WORKFLOW_USES = (
+    "NDDev-it-com/ci-workflows/.github/workflows/release-supply-chain.yml"
+    "@2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
+)
+RELEASE_WORKFLOW_VERSION = "0.12.0"
+RELEASE_PACKAGE_NAME = "nddev-kiro-cli-app"
+RELEASE_VERSION_INPUT = "${{ github.ref_name }}"
+RELEASE_JOB_PERMISSIONS = {
+    "contents": "write",
+    "id-token": "write",
+    "attestations": "write",
+    "artifact-metadata": "write",
+}
+FORBIDDEN_RELEASE_PATH_PARTS = {
+    ".agents",
+    ".serena",
+    "__pycache__",
+    "benchmarks",
+    "fixtures",
+    "private",
+    "validation",
+}
 DISALLOWED_MANAGER_SOURCE_TOKENS = [
     "NDDEV_KIRO_CLI_ALLOW_TEST_SOURCES",
     "ALLOW_TEST",
@@ -415,8 +437,97 @@ def check_release_path_entry(relative: str, label: str, errors: list[str]) -> No
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         errors.append(f".github/workflows/release.yml: {label} path is unsafe: {relative}")
         return
+    forbidden = set(path.parts) & FORBIDDEN_RELEASE_PATH_PARTS
+    if forbidden:
+        errors.append(
+            ".github/workflows/release.yml: "
+            f"{label} path contains private marker {sorted(forbidden)}: {relative}"
+        )
     if not (ROOT / path).exists():
         errors.append(f".github/workflows/release.yml: {label} path does not exist: {relative}")
+
+
+def tracked_paths() -> set[str] | None:
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files"],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return None
+    return set(result.stdout.splitlines())
+
+
+def check_release_path_tracked(
+    relative: str,
+    label: str,
+    tracked: set[str] | None,
+    errors: list[str],
+) -> None:
+    if tracked is None:
+        errors.append(".github/workflows/release.yml: cannot inspect git tracked paths")
+        return
+    prefix = relative.rstrip("/") + "/"
+    if relative not in tracked and not any(path.startswith(prefix) for path in tracked):
+        errors.append(f".github/workflows/release.yml: {label} path is not tracked: {relative}")
+
+
+def parse_mapping_block(
+    text: str,
+    key: str,
+    *,
+    indent: int,
+    child_indent: int,
+    errors: list[str],
+) -> dict[str, str]:
+    lines = text.splitlines()
+    key_prefix = " " * indent + f"{key}:"
+    for index, line in enumerate(lines):
+        if line != key_prefix:
+            continue
+        result: dict[str, str] = {}
+        for item in lines[index + 1 :]:
+            if not item.strip():
+                continue
+            item_indent = len(item) - len(item.lstrip(" "))
+            if item_indent <= indent:
+                break
+            match = re.match(rf"^ {{{child_indent}}}([^:]+):\s+(.+?)\s*$", item)
+            if match is None:
+                errors.append(f".github/workflows/release.yml: malformed {key} entry: {item.strip()}")
+                continue
+            result[match.group(1)] = match.group(2)
+        if not result:
+            errors.append(f".github/workflows/release.yml: {key} block must not be empty")
+        return result
+    errors.append(f".github/workflows/release.yml: missing {key} block")
+    return {}
+
+
+def check_release_workflow_static(text: str, errors: list[str]) -> None:
+    uses_line = f"    uses: {RELEASE_WORKFLOW_USES} # {RELEASE_WORKFLOW_VERSION}"
+    if uses_line not in text.splitlines():
+        errors.append(".github/workflows/release.yml: reusable workflow pin/version mismatch")
+    expected_scalars = {
+        "      version": RELEASE_VERSION_INPUT,
+        "      package_name": RELEASE_PACKAGE_NAME,
+    }
+    for key, expected in expected_scalars.items():
+        if f"{key}: {expected}" not in text.splitlines():
+            errors.append(f".github/workflows/release.yml: {key.strip()} mismatch")
+    if "permissions: {}" not in text.splitlines():
+        errors.append(".github/workflows/release.yml: top-level permissions must be empty")
+    job_permissions = parse_mapping_block(
+        text,
+        "permissions",
+        indent=4,
+        child_indent=6,
+        errors=errors,
+    )
+    if job_permissions != RELEASE_JOB_PERMISSIONS:
+        errors.append(".github/workflows/release.yml: publish job permissions mismatch")
 
 
 def check_release_workflow(
@@ -425,14 +536,20 @@ def check_release_workflow(
     errors: list[str],
 ) -> None:
     text = check_text(".github/workflows/release.yml", errors)
+    check_release_workflow_static(text, errors)
     archive_paths = parse_release_path_list(text, "archive_paths", errors)
     runtime_paths = parse_release_path_list(text, "runtime_paths", errors)
+    tracked = tracked_paths()
     for label, paths in (("archive_paths", archive_paths), ("runtime_paths", runtime_paths)):
         for relative in paths:
             check_release_path_entry(relative, label, errors)
-    required_roots = contract_required_runtime_roots(contract, manifest)
+            check_release_path_tracked(relative, label, tracked, errors)
     archive_set = set(archive_paths)
     runtime_set = set(runtime_paths)
+    if not runtime_set.issubset(archive_set):
+        missing = sorted(runtime_set - archive_set)
+        errors.append(f".github/workflows/release.yml: runtime_paths not in archive_paths: {missing}")
+    required_roots = contract_required_runtime_roots(contract, manifest)
     for root in sorted(required_roots):
         if root not in archive_set:
             errors.append(f".github/workflows/release.yml: archive_paths missing {root}")
