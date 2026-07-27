@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import importlib.util
 import os
 import re
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -140,6 +143,9 @@ SUPPORTED_PLATFORMS = [
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 LOCK_ROOT_REF = "target/.nddev-runtime/locks/setup-manager.lock"
 LOCK_MECHANISM = "fcntl-flock-persistent-file"
+EXTERNAL_LOCK_MECHANISM = "fixed-system-temp-fcntl-flock-persistent-file"
+EXTERNAL_LOCK_ROOT_REF = "fixed-system-temp/nddev-kiro-cli-app-uid"
+EXTERNAL_LOCK_FILENAME_REF = "sha256(product namespace + canonical absolute target).lock"
 LOCK_FILE_MODE = "0600"
 LOCK_DIRECTORY_IDLE_MODE = "0700"
 LOCK_DIRECTORY_HELD_MODE = "0500"
@@ -199,7 +205,17 @@ DISALLOWED_MANAGER_SOURCE_TOKENS = [
     "local software manifest",
     "local software artifact",
     "non-official software",
+    "NDDEV_KIRO_BOOTSTRAP_ROOT",
+    "NDDEV_KIRO_CLI_BOOTSTRAP_ROOT",
+    "KIRO_BOOTSTRAP_ROOT",
+    "BOOTSTRAP_ROOT_OVERRIDE",
+    "bootstrap_root_override",
+    'os.environ.get("TMPDIR"',
+    "os.environ.get('TMPDIR'",
+    "tempfile.gettempdir(",
 ]
+BOOTSTRAP_SNAPSHOT_MAX_FILES = 200
+BOOTSTRAP_SNAPSHOT_MAX_BYTES = 1024 * 1024
 
 
 def load_json(relative: str, errors: list[str]) -> dict[str, Any] | None:
@@ -339,6 +355,30 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
         errors.append(f"{label}: launch lock lifetime mismatch")
     if runtime.get("lock_mechanism") != LOCK_MECHANISM:
         errors.append(f"{label}: launch lock mechanism mismatch")
+    if runtime.get("external_lock_mechanism") != EXTERNAL_LOCK_MECHANISM:
+        errors.append(f"{label}: external bootstrap lock mechanism mismatch")
+    if runtime.get("external_lock_root") != EXTERNAL_LOCK_ROOT_REF:
+        errors.append(f"{label}: external bootstrap lock root mismatch")
+    if runtime.get("external_lock_filename") != EXTERNAL_LOCK_FILENAME_REF:
+        errors.append(f"{label}: external bootstrap lock filename mismatch")
+    if runtime.get("external_lock_file_persistent") is not True:
+        errors.append(f"{label}: persistent external lock file contract missing")
+    if runtime.get("external_lock_file_mode") != LOCK_FILE_MODE:
+        errors.append(f"{label}: external lock file mode mismatch")
+    if runtime.get("external_lock_binding_schema") != 1:
+        errors.append(f"{label}: external lock binding schema mismatch")
+    if runtime.get("external_lock_acquired_before_target_inspection") is not True:
+        errors.append(f"{label}: external lock preflight ordering mismatch")
+    if runtime.get("external_lock_never_unlinked") is not True:
+        errors.append(f"{label}: external lock unlink policy mismatch")
+    if runtime.get("external_lock_not_exposed_to_child") is not True:
+        errors.append(f"{label}: external lock child boundary mismatch")
+    if runtime.get("fixed_system_temp_root_for_external_lock") is not True:
+        errors.append(f"{label}: fixed system temp root contract missing")
+    if runtime.get("lock_acquisition_order") != ["external", "internal"]:
+        errors.append(f"{label}: lock acquisition order mismatch")
+    if runtime.get("lock_release_order") != ["internal", "external"]:
+        errors.append(f"{label}: lock release order mismatch")
     if runtime.get("lock_file_persistent") is not True:
         errors.append(f"{label}: persistent lock file contract missing")
     if runtime.get("lock_file_mode") != LOCK_FILE_MODE:
@@ -688,6 +728,26 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: launch_allowed software precondition missing")
     if software.get("stamp_provenance_bound_to_current_baseline") is not True:
         errors.append(f"{label}: software stamp provenance baseline binding missing")
+    if software.get("external_lock_mechanism") != EXTERNAL_LOCK_MECHANISM:
+        errors.append(f"{label}: external lock mechanism mismatch")
+    if software.get("external_lock_root") != EXTERNAL_LOCK_ROOT_REF:
+        errors.append(f"{label}: external lock root mismatch")
+    if software.get("external_lock_filename") != EXTERNAL_LOCK_FILENAME_REF:
+        errors.append(f"{label}: external lock filename mismatch")
+    if software.get("external_lock_file_persistent") is not True:
+        errors.append(f"{label}: persistent external lock file missing")
+    if software.get("external_lock_file_mode") != LOCK_FILE_MODE:
+        errors.append(f"{label}: external lock file mode mismatch")
+    if software.get("external_lock_binding_schema") != 1:
+        errors.append(f"{label}: external lock binding schema mismatch")
+    if software.get("external_lock_acquired_before_target_inspection") is not True:
+        errors.append(f"{label}: external lock preflight ordering mismatch")
+    if software.get("external_lock_never_unlinked") is not True:
+        errors.append(f"{label}: external lock unlink policy mismatch")
+    if software.get("lock_acquisition_order") != ["external", "internal"]:
+        errors.append(f"{label}: lock acquisition order mismatch")
+    if software.get("lock_release_order") != ["internal", "external"]:
+        errors.append(f"{label}: lock release order mismatch")
     if software.get("software_launcher_artifact_immutable") is not True:
         errors.append(f"{label}: immutable launcher artifact contract missing")
     if software.get("software_parent_mode") != SOFTWARE_IMMUTABLE_DIR_MODE:
@@ -751,6 +811,26 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         errors.append("config/nddev-contract.json: lock root mismatch")
     if managed_state.get("lock_mechanism") != LOCK_MECHANISM:
         errors.append("config/nddev-contract.json: lock mechanism mismatch")
+    if managed_state.get("external_lock_mechanism") != EXTERNAL_LOCK_MECHANISM:
+        errors.append("config/nddev-contract.json: external lock mechanism mismatch")
+    if managed_state.get("external_lock_root") != EXTERNAL_LOCK_ROOT_REF:
+        errors.append("config/nddev-contract.json: external lock root mismatch")
+    if managed_state.get("external_lock_filename") != EXTERNAL_LOCK_FILENAME_REF:
+        errors.append("config/nddev-contract.json: external lock filename mismatch")
+    if managed_state.get("external_lock_file_persistent") is not True:
+        errors.append("config/nddev-contract.json: persistent external lock file missing")
+    if managed_state.get("external_lock_file_mode") != LOCK_FILE_MODE:
+        errors.append("config/nddev-contract.json: external lock file mode mismatch")
+    if managed_state.get("external_lock_binding_schema") != 1:
+        errors.append("config/nddev-contract.json: external lock binding schema mismatch")
+    if managed_state.get("external_lock_acquired_before_target_inspection") is not True:
+        errors.append("config/nddev-contract.json: external lock preflight ordering mismatch")
+    if managed_state.get("external_lock_never_unlinked") is not True:
+        errors.append("config/nddev-contract.json: external lock unlink policy mismatch")
+    if managed_state.get("lock_acquisition_order") != ["external", "internal"]:
+        errors.append("config/nddev-contract.json: lock acquisition order mismatch")
+    if managed_state.get("lock_release_order") != ["internal", "external"]:
+        errors.append("config/nddev-contract.json: lock release order mismatch")
     if managed_state.get("lock_file_persistent") is not True:
         errors.append("config/nddev-contract.json: persistent lock file missing")
     if managed_state.get("lock_file_mode") != LOCK_FILE_MODE:
@@ -838,6 +918,11 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         "persistent_kernel_lock_file",
         "lock_parent_not_writable_while_held",
         "ordinary_child_lock_cleanup_denied",
+        "external_bootstrap_lock_outside_target_parent",
+        "external_lock_acquired_before_target_inspection",
+        "external_lock_never_unlinked",
+        "external_lock_not_exposed_to_child",
+        "fixed_system_temp_root_for_external_lock",
         "runtime_mutable_directories_remain_writable",
         "mutable_runtime_ancestors_not_chmod_read_only",
         "software_launcher_artifact_immutable",
@@ -893,6 +978,16 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: launch lock lifetime mismatch")
     if authentication.get("lock_mechanism") != LOCK_MECHANISM:
         errors.append("references/kiro-cli-baseline.json: launch lock mechanism mismatch")
+    if authentication.get("external_lock_mechanism") != EXTERNAL_LOCK_MECHANISM:
+        errors.append("references/kiro-cli-baseline.json: external lock mechanism mismatch")
+    if authentication.get("external_lock_root") != EXTERNAL_LOCK_ROOT_REF:
+        errors.append("references/kiro-cli-baseline.json: external lock root mismatch")
+    if authentication.get("external_lock_acquired_before_target_inspection") is not True:
+        errors.append("references/kiro-cli-baseline.json: external lock preflight ordering missing")
+    if authentication.get("external_lock_never_unlinked") is not True:
+        errors.append("references/kiro-cli-baseline.json: external lock unlink policy missing")
+    if authentication.get("external_lock_not_exposed_to_child") is not True:
+        errors.append("references/kiro-cli-baseline.json: external lock child boundary missing")
     if authentication.get("lock_file_persistent") is not True:
         errors.append("references/kiro-cli-baseline.json: persistent lock file missing")
     if authentication.get("ordinary_child_lock_cleanup_denied") is not True:
@@ -926,6 +1021,26 @@ def check_baseline(
             errors.append("references/kiro-cli-baseline.json: lock root mismatch")
         if software.get("lock_mechanism") != LOCK_MECHANISM:
             errors.append("references/kiro-cli-baseline.json: lock mechanism mismatch")
+        if software.get("external_lock_mechanism") != EXTERNAL_LOCK_MECHANISM:
+            errors.append("references/kiro-cli-baseline.json: external lock mechanism mismatch")
+        if software.get("external_lock_root") != EXTERNAL_LOCK_ROOT_REF:
+            errors.append("references/kiro-cli-baseline.json: external lock root mismatch")
+        if software.get("external_lock_filename") != EXTERNAL_LOCK_FILENAME_REF:
+            errors.append("references/kiro-cli-baseline.json: external lock filename mismatch")
+        if software.get("external_lock_file_persistent") is not True:
+            errors.append("references/kiro-cli-baseline.json: persistent external lock file missing")
+        if software.get("external_lock_file_mode") != LOCK_FILE_MODE:
+            errors.append("references/kiro-cli-baseline.json: external lock file mode mismatch")
+        if software.get("external_lock_binding_schema") != 1:
+            errors.append("references/kiro-cli-baseline.json: external lock binding schema mismatch")
+        if software.get("external_lock_acquired_before_target_inspection") is not True:
+            errors.append("references/kiro-cli-baseline.json: external lock preflight ordering mismatch")
+        if software.get("external_lock_never_unlinked") is not True:
+            errors.append("references/kiro-cli-baseline.json: external lock unlink policy mismatch")
+        if software.get("lock_acquisition_order") != ["external", "internal"]:
+            errors.append("references/kiro-cli-baseline.json: lock acquisition order mismatch")
+        if software.get("lock_release_order") != ["internal", "external"]:
+            errors.append("references/kiro-cli-baseline.json: lock release order mismatch")
         if software.get("lock_file_persistent") is not True:
             errors.append("references/kiro-cli-baseline.json: persistent lock file missing")
         if software.get("lock_file_mode") != LOCK_FILE_MODE:
@@ -987,6 +1102,8 @@ def check_manager_source(text: str, errors: list[str]) -> None:
     for token in DISALLOWED_MANAGER_SOURCE_TOKENS:
         if token in text:
             errors.append(f"cli-tools/nddev_kiro_cli.py: disallowed test/source switch {token!r}")
+    if "def write_complete(" not in text or "written <= 0" not in text:
+        errors.append("cli-tools/nddev_kiro_cli.py: complete write loop must reject no-progress writes")
 
 
 def load_manager_for_regressions(errors: list[str]) -> Any | None:
@@ -1086,6 +1203,139 @@ def prepare_managed_target(manager: Any, target: Path) -> None:
         manager.DEFAULT_PERMISSION_PROFILE_ID,
         "install",
     )
+
+
+def wait_for_path(path: Path, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.05)
+    return path.exists()
+
+
+def status_returncode(status: int) -> int:
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return -os.WTERMSIG(status)
+    return 125
+
+
+def wait_for_child(pid: int, timeout: float, errors: list[str], label: str) -> int | None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        finished, status = os.waitpid(pid, os.WNOHANG)
+        if finished == pid:
+            return status_returncode(status)
+        time.sleep(0.05)
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGTERM)
+    time.sleep(0.2)
+    finished, status = os.waitpid(pid, os.WNOHANG)
+    if finished == pid:
+        errors.append(f"{label}: child timed out and exited after SIGTERM")
+        return status_returncode(status)
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
+    _, status = os.waitpid(pid, 0)
+    errors.append(f"{label}: child timed out and required SIGKILL")
+    return status_returncode(status)
+
+
+def fork_launch(manager: Any, target: Path, error_file: Path) -> int:
+    pid = os.fork()
+    if pid == 0:
+        try:
+            code = manager.launch(target, [])
+            if not isinstance(code, int) or code < 0 or code > 120:
+                code = 1
+        except BaseException as exc:
+            with contextlib.suppress(Exception):
+                error_file.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            code = 125
+        os._exit(code)
+    return pid
+
+
+def assert_locked_mutations_denied(
+    manager: Any,
+    target: Path,
+    errors: list[str],
+    label: str,
+) -> None:
+    actions = [
+        (
+            "switch",
+            lambda: manager.mutate_setup(target, manager.CONTENT_SETUP_ID, "safe", "switch"),
+        ),
+        ("remove", lambda: manager.remove_setup(target)),
+        (
+            "install",
+            lambda: manager.mutate_setup(
+                target,
+                manager.CONTENT_SETUP_ID,
+                manager.DEFAULT_PERMISSION_PROFILE_ID,
+                "install",
+            ),
+        ),
+    ]
+    for action, callback in actions:
+        try:
+            callback()
+            errors.append(f"{label}: {action} succeeded while child held lifecycle lock")
+        except manager.ManagerError as exc:
+            if "target is already locked" not in str(exc):
+                errors.append(f"{label}: {action} failed for wrong reason: {exc}")
+
+
+def write_external_lock_seed(manager: Any, lock: Path, content: bytes) -> None:
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock, flags, manager.OWNER_FILE_MODE)
+    try:
+        os.fchmod(descriptor, manager.OWNER_FILE_MODE)
+        manager.write_complete(descriptor, content, "public validator external lock seed")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    cases = [
+        ("malformed", b'{"schema_version": '),
+        ("non-object", b'[]\n'),
+    ]
+    for label, content in cases:
+        target = (tmp / f"external-lock-binding-{label}").resolve(strict=False)
+        lock = manager.external_lock_path(target)
+        write_external_lock_seed(manager, lock, content)
+        try:
+            with manager.external_target_lock(target):
+                errors.append(f"external lock binding {label}: invalid binding was accepted")
+        except manager.ManagerError as exc:
+            expected = (
+                "cannot read valid JSON"
+                if label == "malformed"
+                else "must contain a JSON object"
+            )
+            if expected not in str(exc):
+                errors.append(f"external lock binding {label}: wrong rejection: {exc}")
+
+    target = (tmp / "external-lock-binding-mismatch").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    wrong = manager.external_lock_binding(target)
+    wrong["canonical_target"] = str(tmp / "other-target")
+    write_external_lock_seed(manager, lock, manager.canonical_json(wrong))
+    try:
+        with manager.external_target_lock(target):
+            errors.append("external lock binding mismatch: mismatched binding was accepted")
+    except manager.ManagerError as exc:
+        if "external target lock binding mismatch" not in str(exc):
+            errors.append(f"external lock binding mismatch: wrong rejection: {exc}")
 
 
 def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -1211,44 +1461,27 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
         "printf settings > \"$KIRO_HOME/settings/session/nddev-runtime-write\"\n"
         f"rm -f {shlex.quote(str(lock_file))} 2>/dev/null || true\n"
         f"rmdir {shlex.quote(str(lock_root))} 2>/dev/null || true\n"
-        f"if printf replace > {shlex.quote(str(executable))} 2>/dev/null; then "
+        f"if (printf replace > {shlex.quote(str(executable))}) 2>/dev/null; then "
         f"printf ok > {shlex.quote(str(executable_write_marker))}; fi\n"
-        f"if rm -f {shlex.quote(str(executable))} 2>/dev/null; then "
+        f"if (rm -f {shlex.quote(str(executable))}) 2>/dev/null; then "
         f"printf ok > {shlex.quote(str(executable_remove_marker))}; fi\n"
         f"printf started > {shlex.quote(str(started))}\n"
         f"while [ ! -f {shlex.quote(str(stop))} ]; do sleep 0.05; done\n"
         "exit 0\n"
     )
     install_fake_software(manager, target, script)
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            str(ROOT / "cli-tools/nddev_kiro_cli.py"),
-            "launch",
-            "--target",
-            str(target),
-            "--",
-        ],
-        cwd=str(ROOT),
-        env=regression_env(),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    communicated = False
+    child_error = tmp / "launch-lock-child-error"
+    child = fork_launch(manager, target, child_error)
     try:
-        deadline = time.time() + 5
-        while time.time() < deadline and not started.exists() and process.poll() is None:
-            time.sleep(0.05)
-        if not started.exists():
-            if process.poll() is None:
-                process.kill()
-            stdout, stderr = process.communicate(timeout=5)
-            communicated = True
+        if not wait_for_path(started, 5):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child, signal.SIGTERM)
             errors.append(
                 "launch lock regression: child did not start "
-                f"(rc={process.returncode}, stdout={stdout!r}, stderr={stderr!r})"
+                f"(error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
             )
+            return
+        if not started.exists():
             return
         if not lock_file.is_file() or not lock_root.is_dir():
             errors.append("launch lock regression: child removed the persistent lock path")
@@ -1264,49 +1497,15 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
             errors.append("launch executable regression: child overwrote the launcher artifact")
         if executable_remove_marker.exists() or not executable.is_file():
             errors.append("launch executable regression: child removed the launcher artifact")
-        commands = [
-            ["switch", "--profile", "safe", "--target", str(target), "--json"],
-            ["remove", "--target", str(target), "--json"],
-            ["install", "--target", str(target), "--json"],
-        ]
-        for command in commands:
-            mutation = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "cli-tools/nddev_kiro_cli.py"),
-                    *command,
-                ],
-                cwd=str(ROOT),
-                env=regression_env(),
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=5,
-            )
-            if mutation.returncode == 0:
-                errors.append(
-                    "launch lock regression: "
-                    f"{command[0]} succeeded while child ran"
-                )
-            if "target is already locked" not in mutation.stderr:
-                errors.append(
-                    "launch lock regression: "
-                    f"{command[0]} did not fail on the held target lock"
-                )
+        assert_locked_mutations_denied(manager, target, errors, "launch lock regression")
     finally:
         stop.write_text("stop\n", encoding="utf-8")
-        if not communicated:
-            try:
-                stdout, stderr = process.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                stdout, stderr = process.communicate(timeout=5)
-                errors.append("launch lock regression: child did not exit after stop signal")
-            if process.returncode not in (0, None):
-                errors.append(
-                    "launch lock regression: launch process failed "
-                    f"(rc={process.returncode}, stdout={stdout!r}, stderr={stderr!r})"
-                )
+        code = wait_for_child(child, 5, errors, "launch lock regression")
+        if code not in (0, None):
+            errors.append(
+                "launch lock regression: launch process failed "
+                f"(rc={code}, error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
+            )
     if not lock_file.is_file() or not lock_root.is_dir():
         errors.append("launch lock regression: persistent lock path missing after child exit")
     else:
@@ -1345,43 +1544,403 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
         executable_mode = stat.S_IMODE(executable.lstat().st_mode)
         if executable_mode != manager.SOFTWARE_IMMUTABLE_EXECUTABLE_MODE:
             errors.append("launch executable regression: launcher mode is not immutable executable")
-    switch_after_exit = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "cli-tools/nddev_kiro_cli.py"),
-            "switch",
-            "--profile",
-            "safe",
-            "--target",
-            str(target),
-            "--json",
-        ],
-        cwd=str(ROOT),
-        env=regression_env(),
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=5,
+    try:
+        manager.mutate_setup(target, manager.CONTENT_SETUP_ID, "safe", "switch")
+    except manager.ManagerError as exc:
+        errors.append(f"launch lock regression: lifecycle mutation failed after child exit: {exc}")
+
+
+def run_external_lock_internal_rename_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "external-lock-internal-rename").resolve(strict=False)
+    prepare_managed_target(manager, target)
+    started = tmp / "internal-rename-child-started"
+    stop = tmp / "internal-rename-child-stop"
+    rename_marker = tmp / "internal-rename-done"
+    child_error = tmp / "internal-rename-child-error"
+    lock_root = target / manager.LOCK_RUNTIME_DIR
+    renamed = target / manager.NDDEV_RUNTIME_DIR / "locks-renamed-by-child"
+    script = (
+        "#!/bin/sh\n"
+        f"rm -rf {shlex.quote(str(renamed))} 2>/dev/null || true\n"
+        f"if mv {shlex.quote(str(lock_root))} {shlex.quote(str(renamed))} 2>/dev/null; then "
+        f"printf renamed > {shlex.quote(str(rename_marker))}; "
+        f"else printf failed > {shlex.quote(str(rename_marker))}; fi\n"
+        f"printf started > {shlex.quote(str(started))}\n"
+        f"while [ ! -f {shlex.quote(str(stop))} ]; do sleep 0.05; done\n"
+        f"if [ -d {shlex.quote(str(renamed))} ] && "
+        f"[ ! -e {shlex.quote(str(lock_root))} ]; then "
+        f"mv {shlex.quote(str(renamed))} {shlex.quote(str(lock_root))}; fi\n"
+        "exit 0\n"
     )
-    if switch_after_exit.returncode != 0:
-        errors.append(
-            "launch lock regression: lifecycle mutation failed after child exit "
-            f"(stderr={switch_after_exit.stderr!r})"
+    install_fake_software(manager, target, script)
+    child = fork_launch(manager, target, child_error)
+    try:
+        if not wait_for_path(started, 5):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child, signal.SIGTERM)
+            errors.append(
+                "internal lock rename regression: child did not start "
+                f"(error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
+            )
+            return
+        if rename_marker.read_text(encoding="utf-8") != "renamed":
+            errors.append("internal lock rename regression: child could not rename lock root")
+        if lock_root.exists():
+            errors.append("internal lock rename regression: lock root was not renamed during launch")
+        assert_locked_mutations_denied(manager, target, errors, "internal lock rename regression")
+    finally:
+        stop.write_text("stop\n", encoding="utf-8")
+        code = wait_for_child(child, 5, errors, "internal lock rename regression")
+        if code not in (0, None):
+            errors.append(
+                "internal lock rename regression: launch process failed "
+                f"(rc={code}, error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
+            )
+    if not lock_root.is_dir():
+        errors.append("internal lock rename regression: lock root was not restored after launch")
+    try:
+        manager.mutate_setup(target, manager.CONTENT_SETUP_ID, "safe", "switch")
+    except manager.ManagerError as exc:
+        errors.append(f"internal lock rename regression: mutation failed after child exit: {exc}")
+
+
+def fork_external_lock_holder(
+    manager: Any,
+    target: Path,
+    ready: Path,
+    release: Path,
+    error_file: Path,
+    *,
+    waiting: Path | None = None,
+) -> int:
+    pid = os.fork()
+    if pid == 0:
+        try:
+            if waiting is not None:
+                waiting.write_text("waiting\n", encoding="utf-8")
+            with manager.external_target_lock(target, blocking=True) as lock:
+                info = lock.lstat()
+                ready.write_text(f"{info.st_dev}:{info.st_ino}\n", encoding="utf-8")
+                while not release.exists():
+                    time.sleep(0.05)
+        except BaseException as exc:
+            with contextlib.suppress(Exception):
+                error_file.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            os._exit(125)
+        os._exit(0)
+    return pid
+
+
+def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "external-lock-handover").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    a_ready = tmp / "handover-a-ready"
+    b_waiting = tmp / "handover-b-waiting"
+    b_ready = tmp / "handover-b-ready"
+    release_a = tmp / "handover-release-a"
+    release_b = tmp / "handover-release-b"
+    a_error = tmp / "handover-a-error"
+    b_error = tmp / "handover-b-error"
+    child_a = fork_external_lock_holder(manager, target, a_ready, release_a, a_error)
+    child_b: int | None = None
+    child_a_reaped = False
+    try:
+        if not wait_for_path(a_ready, 5):
+            errors.append(
+                "external lock handover regression: first holder did not acquire lock "
+                f"(error={a_error.read_text(encoding='utf-8') if a_error.exists() else ''!r})"
+            )
+            return
+        first_inode = a_ready.read_text(encoding="utf-8").strip()
+        if not lock.is_file():
+            errors.append("external lock handover regression: lock file missing under first holder")
+        child_b = fork_external_lock_holder(
+            manager,
+            target,
+            b_ready,
+            release_b,
+            b_error,
+            waiting=b_waiting,
         )
+        if not wait_for_path(b_waiting, 5):
+            errors.append("external lock handover regression: second holder did not attempt lock")
+            return
+        release_a.write_text("release\n", encoding="utf-8")
+        code_a = wait_for_child(child_a, 5, errors, "external lock handover regression first holder")
+        child_a_reaped = True
+        if code_a not in (0, None):
+            errors.append(
+                "external lock handover regression: first holder failed "
+                f"(rc={code_a}, error={a_error.read_text(encoding='utf-8') if a_error.exists() else ''!r})"
+            )
+        if not wait_for_path(b_ready, 5):
+            errors.append(
+                "external lock handover regression: second holder did not acquire after release "
+                f"(error={b_error.read_text(encoding='utf-8') if b_error.exists() else ''!r})"
+            )
+            return
+        second_inode = b_ready.read_text(encoding="utf-8").strip()
+        if second_inode != first_inode:
+            errors.append(
+                "external lock handover regression: lock inode changed across handoff "
+                f"({first_inode} -> {second_inode})"
+            )
+        try:
+            with manager.external_target_lock(target):
+                errors.append("external lock handover regression: third process acquired while second held lock")
+        except manager.ManagerError as exc:
+            if "target is already locked" not in str(exc):
+                errors.append(f"external lock handover regression: third process wrong rejection: {exc}")
+        if not lock.is_file():
+            errors.append("external lock handover regression: lock file was unlinked while held")
+    finally:
+        release_a.write_text("release\n", encoding="utf-8")
+        release_b.write_text("release\n", encoding="utf-8")
+        if child_b is not None:
+            code_b = wait_for_child(child_b, 5, errors, "external lock handover regression second holder")
+            if code_b not in (0, None):
+                errors.append(
+                    "external lock handover regression: second holder failed "
+                    f"(rc={code_b}, error={b_error.read_text(encoding='utf-8') if b_error.exists() else ''!r})"
+                )
+        if not child_a_reaped:
+            wait_for_child(child_a, 5, errors, "external lock handover regression first holder")
+    if not lock.is_file():
+        errors.append("external lock handover regression: persistent lock file missing after release")
+    else:
+        final_inode = f"{lock.lstat().st_dev}:{lock.lstat().st_ino}"
+        if a_ready.exists() and final_inode != a_ready.read_text(encoding="utf-8").strip():
+            errors.append("external lock handover regression: persistent lock inode changed after release")
+    try:
+        with manager.external_target_lock(target):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock handover regression: final lock acquire failed: {exc}")
+
+
+def fd_open_flags(*, directory: bool = False) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if directory and hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    return flags
+
+
+def stat_type(info: os.stat_result) -> str:
+    mode = info.st_mode
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        return "regular"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISFIFO(mode):
+        return "fifo"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISCHR(mode):
+        return "character"
+    if stat.S_ISBLK(mode):
+        return "block"
+    return "unknown"
+
+
+def bootstrap_snapshot_entry(
+    relative: str,
+    info: os.stat_result,
+    content_sha256: str | None,
+) -> tuple[Any, ...]:
+    return (
+        relative,
+        info.st_dev,
+        info.st_ino,
+        stat_type(info),
+        info.st_uid if hasattr(info, "st_uid") else None,
+        stat.S_IMODE(info.st_mode),
+        info.st_nlink,
+        info.st_size,
+        content_sha256,
+    )
+
+
+def digest_bounded_fd(
+    descriptor: int,
+    label: str,
+    expected: os.stat_result | None = None,
+) -> str:
+    before = os.fstat(descriptor)
+    if expected is not None and (before.st_dev, before.st_ino) != (
+        expected.st_dev,
+        expected.st_ino,
+    ):
+        return f"identity-mismatch:{label}"
+    if not stat.S_ISREG(before.st_mode):
+        return "not-regular-after-open"
+    if before.st_size > BOOTSTRAP_SNAPSHOT_MAX_BYTES:
+        return f"unbounded:{before.st_size}"
+    digest = hashlib.sha256()
+    total = 0
+    while True:
+        block = os.read(descriptor, 65536)
+        if not block:
+            break
+        total += len(block)
+        if total > BOOTSTRAP_SNAPSHOT_MAX_BYTES:
+            return f"unbounded:{total}"
+        digest.update(block)
+    after = os.fstat(descriptor)
+    if (before.st_dev, before.st_ino, before.st_size) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+    ):
+        return f"changed-while-reading:{label}"
+    return digest.hexdigest()
+
+
+def digest_bounded_regular_path(
+    path: Path,
+    expected: os.stat_result | None = None,
+) -> str | None:
+    try:
+        descriptor = os.open(path, fd_open_flags())
+    except OSError as exc:
+        return f"open-error:{exc.errno}"
+    try:
+        return digest_bounded_fd(descriptor, path.as_posix(), expected)
+    finally:
+        os.close(descriptor)
+
+
+def digest_bounded_regular_at(
+    parent_descriptor: int,
+    name: str,
+    label: str,
+    expected: os.stat_result,
+) -> str | None:
+    try:
+        descriptor = os.open(name, fd_open_flags(), dir_fd=parent_descriptor)
+    except OSError as exc:
+        return f"open-error:{exc.errno}"
+    try:
+        return digest_bounded_fd(descriptor, label, expected)
+    finally:
+        os.close(descriptor)
+
+
+def snapshot_bootstrap_tree(root: Path) -> tuple[Any, ...]:
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError:
+        return ("missing", str(root))
+    except OSError as exc:
+        return ("root-lstat-error", str(root), str(exc))
+    entries: list[tuple[Any, ...]] = [
+        bootstrap_snapshot_entry(
+            ".",
+            root_info,
+            digest_bounded_regular_path(root, root_info)
+            if stat.S_ISREG(root_info.st_mode)
+            else None,
+        )
+    ]
+    if not stat.S_ISDIR(root_info.st_mode):
+        return (str(root), tuple(entries))
+    try:
+        root_descriptor = os.open(root, fd_open_flags(directory=True))
+    except OSError as exc:
+        return (str(root), tuple(entries), ("root-open-error", exc.errno))
+    count = 1
+
+    def walk(parent_descriptor: int, relative_parent: str) -> None:
+        nonlocal count
+        try:
+            names = sorted(os.listdir(parent_descriptor))
+        except OSError as exc:
+            entries.append((relative_parent, "list-error", exc.errno))
+            return
+        for name in names:
+            if name in {".", ".."}:
+                continue
+            count += 1
+            if count > BOOTSTRAP_SNAPSHOT_MAX_FILES:
+                entries.append(("snapshot-truncated", count))
+                return
+            child_relative = name if relative_parent == "." else f"{relative_parent}/{name}"
+            try:
+                info = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+            except OSError as exc:
+                entries.append((child_relative, "lstat-error", exc.errno))
+                continue
+            content_sha256 = (
+                digest_bounded_regular_at(parent_descriptor, name, child_relative, info)
+                if stat.S_ISREG(info.st_mode)
+                else None
+            )
+            entries.append(bootstrap_snapshot_entry(child_relative, info, content_sha256))
+            if stat.S_ISDIR(info.st_mode):
+                try:
+                    child_descriptor = os.open(
+                        name,
+                        fd_open_flags(directory=True),
+                        dir_fd=parent_descriptor,
+                    )
+                except OSError as exc:
+                    entries.append((child_relative, "open-dir-error", exc.errno))
+                    continue
+                try:
+                    walk(child_descriptor, child_relative)
+                finally:
+                    os.close(child_descriptor)
+
+    try:
+        walk(root_descriptor, ".")
+    finally:
+        os.close(root_descriptor)
+    return (str(root), tuple(entries))
+
+
+def system_bootstrap_snapshot(manager: Any, resolver: Any) -> tuple[Any, ...]:
+    uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+    try:
+        system_root = manager.require_bootstrap_system_root(resolver())
+    except Exception as exc:
+        return ("system-root-error", str(exc))
+    root = system_root / f"{manager.PRODUCT_NAME}-{uid}"
+    return snapshot_bootstrap_tree(root)
 
 
 def run_public_manager_regressions(errors: list[str]) -> None:
     manager = load_manager_for_regressions(errors)
     if manager is None:
         return
+    original_bootstrap_root = manager.bootstrap_system_temp_root
+    real_before = system_bootstrap_snapshot(manager, original_bootstrap_root)
     try:
         with tempfile.TemporaryDirectory(prefix="nddev-kiro-public-validator-") as tmp_name:
             tmp = Path(tmp_name).resolve(strict=False)
+            injected_system_root = tmp / "system-temp"
+            injected_system_root.mkdir()
+            os.chmod(injected_system_root, 0o1777)
+            if stat.S_IMODE(injected_system_root.lstat().st_mode) != 0o1777:
+                errors.append("public manager regressions: injected bootstrap root must be 01777")
+            manager.bootstrap_system_temp_root = lambda: injected_system_root
+            run_external_lock_binding_regressions(manager, tmp, errors)
             run_stamp_provenance_regressions(manager, tmp, errors)
             run_launch_runtime_symlink_regressions(manager, tmp, errors)
             run_launch_lock_regression(manager, tmp, errors)
+            run_external_lock_internal_rename_regression(manager, tmp, errors)
+            run_external_lock_handover_regression(manager, tmp, errors)
     except Exception as exc:
         errors.append(f"public manager regressions failed: {exc}")
+    finally:
+        manager.bootstrap_system_temp_root = original_bootstrap_root
+    real_after = system_bootstrap_snapshot(manager, original_bootstrap_root)
+    if real_after != real_before:
+        errors.append("public manager regressions changed the real system bootstrap lock root")
 
 
 def main() -> int:

@@ -94,6 +94,8 @@ SOFTWARE_STAMP_NAME = "NDDEV-KIRO-CLI-SOFTWARE.json"
 SOFTWARE_STAMP_SCHEMA = 1
 LOCK_RUNTIME_DIR = ".nddev-runtime/locks"
 LOCK_DIR_NAME = "setup-manager.lock"
+EXTERNAL_LOCK_SCHEMA = 1
+EXTERNAL_LOCK_NAME_SUFFIX = ".lock"
 BACKUP_RUNTIME_DIR = ".nddev-runtime/backups/setup"
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 TRUSTED_BASH = "/bin/bash"
@@ -272,6 +274,15 @@ def fail(message: str) -> NoReturn:
 
 def canonical_json(value: Any) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def write_complete(descriptor: int, content: bytes, label: str) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            fail(f"{label} write made no progress")
+        remaining = remaining[written:]
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -1266,7 +1277,7 @@ def software_stamp_provenance_drift(stamp: dict[str, Any]) -> list[str]:
     return drift
 
 
-def software_status(target: Path) -> dict[str, Any]:
+def software_status_body(target: Path) -> dict[str, Any]:
     presence = software_root_presence(target)
     if presence == "missing":
         return {
@@ -1334,10 +1345,15 @@ def software_status(target: Path) -> dict[str, Any]:
 
 def preflight_software_target(target: Path, *, allow_partial: bool) -> dict[str, Any]:
     validated_transaction_parent(target)
-    status = software_status(target)
+    status = software_status_body(target)
     if status["state"] in {"partial", "drift", "needs-update"} and not allow_partial:
         fail("software target needs update or repair; run software-update")
     return status
+
+
+def software_status(target: Path) -> dict[str, Any]:
+    with external_target_lock(target):
+        return software_status_body(target)
 
 
 def validated_transaction_parent(target: Path) -> Path:
@@ -1708,31 +1724,32 @@ def software_probe(
     architecture_arg: str | None,
     libc_arg: str | None,
 ) -> dict[str, Any]:
-    preflight_software_target(target, allow_partial=True)
-    package = select_software_package(
-        platform_arg,
-        architecture_arg,
-        libc_arg,
-    )
-    with software_stage(target) as stage:
-        artifact = stage_artifact(stage, package)
-        prepared, executable_relative = prepare_software_root(stage, artifact, package)
-        finalize_prepared_software(prepared, target, package, executable_relative)
-        stamp = parse_json_object(
-            (prepared / SOFTWARE_STAMP_NAME).read_bytes(),
-            "prepared software stamp",
+    with external_target_lock(target):
+        preflight_software_target(target, allow_partial=True)
+        package = select_software_package(
+            platform_arg,
+            architecture_arg,
+            libc_arg,
         )
-        return {
-            "operation": "software-probe",
-            "target": str(target),
-            "mutates": False,
-            "stage_only": True,
-            "version": stamp["version"],
-            "package": stamp["package"],
-            "executable": stamp["executable"],
-            "tree": stamp["tree"],
-            "official_vendor_installer": official_vendor_installer_record(),
-        }
+        with software_stage(target) as stage:
+            artifact = stage_artifact(stage, package)
+            prepared, executable_relative = prepare_software_root(stage, artifact, package)
+            finalize_prepared_software(prepared, target, package, executable_relative)
+            stamp = parse_json_object(
+                (prepared / SOFTWARE_STAMP_NAME).read_bytes(),
+                "prepared software stamp",
+            )
+            return {
+                "operation": "software-probe",
+                "target": str(target),
+                "mutates": False,
+                "stage_only": True,
+                "version": stamp["version"],
+                "package": stamp["package"],
+                "executable": stamp["executable"],
+                "tree": stamp["tree"],
+                "official_vendor_installer": official_vendor_installer_record(),
+            }
 
 
 def software_install(
@@ -1742,24 +1759,24 @@ def software_install(
     architecture_arg: str | None,
     libc_arg: str | None,
 ) -> dict[str, Any]:
-    status = preflight_software_target(target, allow_partial=False)
-    if status["state"] == "installed":
-        fail("Kiro CLI software is already installed")
-    package = select_software_package(
-        platform_arg,
-        architecture_arg,
-        libc_arg,
-    )
-    prepared, stage = prepare_software_from_package(target, package)
-    try:
-        with target_lock(target, create_target=True):
+    with target_lock(target, create_target=True):
+        status = preflight_software_target(target, allow_partial=False)
+        if status["state"] == "installed":
+            fail("Kiro CLI software is already installed")
+        package = select_software_package(
+            platform_arg,
+            architecture_arg,
+            libc_arg,
+        )
+        prepared, stage = prepare_software_from_package(target, package)
+        try:
             race_status = preflight_software_target(target, allow_partial=False)
             if race_status["state"] == "installed":
                 fail("Kiro CLI software is already installed")
             result = install_prepared_software_root(target, prepared, allow_existing=False)
-    finally:
-        shutil.rmtree(prepared, ignore_errors=True)
-        shutil.rmtree(stage, ignore_errors=True)
+        finally:
+            shutil.rmtree(prepared, ignore_errors=True)
+            shutil.rmtree(stage, ignore_errors=True)
     return {
         "operation": "software-install",
         "changed": True,
@@ -1775,28 +1792,28 @@ def software_update(
     architecture_arg: str | None,
     libc_arg: str | None,
 ) -> dict[str, Any]:
-    status = preflight_software_target(target, allow_partial=True)
-    if status["state"] in {"missing", "absent"}:
-        fail("Kiro CLI software is absent; run software-install first")
-    if status["state"] == "installed":
-        return {
-            "operation": "software-update",
-            "target": str(target),
-            "changed": False,
-            "version": status["version"],
-            "package": status["package"],
-            "executable": status["executable"],
-            "rollback": {"mode": "none", "created_dirs": []},
-            "official_vendor_installer": official_vendor_installer_record(),
-        }
-    package = select_software_package(
-        platform_arg,
-        architecture_arg,
-        libc_arg,
-    )
-    prepared, stage = prepare_software_from_package(target, package)
-    try:
-        with target_lock(target, create_target=False):
+    with target_lock(target, create_target=False):
+        status = preflight_software_target(target, allow_partial=True)
+        if status["state"] in {"missing", "absent"}:
+            fail("Kiro CLI software is absent; run software-install first")
+        if status["state"] == "installed":
+            return {
+                "operation": "software-update",
+                "target": str(target),
+                "changed": False,
+                "version": status["version"],
+                "package": status["package"],
+                "executable": status["executable"],
+                "rollback": {"mode": "none", "created_dirs": []},
+                "official_vendor_installer": official_vendor_installer_record(),
+            }
+        package = select_software_package(
+            platform_arg,
+            architecture_arg,
+            libc_arg,
+        )
+        prepared, stage = prepare_software_from_package(target, package)
+        try:
             race_status = preflight_software_target(target, allow_partial=True)
             if race_status["state"] == "installed":
                 return {
@@ -1810,9 +1827,9 @@ def software_update(
                     "official_vendor_installer": official_vendor_installer_record(),
                 }
             result = install_prepared_software_root(target, prepared, allow_existing=True)
-    finally:
-        shutil.rmtree(prepared, ignore_errors=True)
-        shutil.rmtree(stage, ignore_errors=True)
+        finally:
+            shutil.rmtree(prepared, ignore_errors=True)
+            shutil.rmtree(stage, ignore_errors=True)
     return {
         "operation": "software-update",
         "changed": True,
@@ -1823,7 +1840,7 @@ def software_update(
 
 def software_remove(target: Path) -> dict[str, Any]:
     with target_lock(target, create_target=False):
-        status = software_status(target)
+        status = software_status_body(target)
         root = software_root(target)
         if status["state"] in {"missing", "absent"}:
             return {
@@ -2049,26 +2066,33 @@ def list_permission_profiles() -> list[dict[str, Any]]:
     return result
 
 
+def require_real_directory_ancestors(path: Path, label: str) -> None:
+    if not path.is_absolute():
+        fail(f"{label} must be absolute")
+    current = Path(path.anchor)
+    require_directory(current, f"{label} filesystem root")
+    for part in path.parts[1:]:
+        current = current / part
+        require_directory(current, f"{label} ancestor {current}")
+
+
+def canonical_target_identity(path: Path) -> Path:
+    if not path.is_absolute():
+        fail("--target must be an absolute path")
+    if path.name in {"", ".", ".."} or any(part in {".", ".."} for part in path.parts):
+        fail("--target must have a stable literal basename")
+    require_real_directory_ancestors(path.parent, "canonical --target parent")
+    parent = path.parent.resolve(strict=True)
+    return parent / path.name
+
+
 def resolve_target(raw_target: str | None) -> Path:
     if not raw_target:
         fail("--target is required")
     expanded = Path(raw_target).expanduser()
-    if not expanded.is_absolute():
-        fail("--target must be an absolute path")
-    try:
-        raw_info = expanded.lstat()
-    except FileNotFoundError:
-        raw_info = None
-    if raw_info is not None and stat.S_ISLNK(raw_info.st_mode):
-        fail("--target must not be a symlink")
-    target = expanded.resolve(strict=False)
+    target = canonical_target_identity(expanded)
     if target == Path(target.anchor):
         fail("filesystem root cannot be a target")
-    parent_info = require_directory(target.parent, "canonical --target parent")
-    if stat.S_ISLNK(parent_info.st_mode):
-        fail("canonical --target parent must be a real directory")
-    if target.exists():
-        require_directory(target, "--target")
     return target
 
 
@@ -2496,6 +2520,166 @@ def lock_path(target: Path) -> Path:
     return lock_root(target) / LOCK_DIR_NAME
 
 
+def bootstrap_system_temp_root() -> Path:
+    if sys.platform == "darwin":
+        return Path("/private/tmp")
+    return Path("/tmp")
+
+
+def require_bootstrap_system_root(path: Path) -> Path:
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError:
+        fail("bootstrap system temp root is missing")
+    info = require_directory(resolved, "bootstrap system temp root")
+    if not stat.S_IMODE(info.st_mode) & stat.S_ISVTX:
+        fail("bootstrap system temp root must be sticky")
+    return resolved
+
+
+def bootstrap_product_root() -> Path:
+    system_root = require_bootstrap_system_root(bootstrap_system_temp_root())
+    uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+    root = system_root / f"{PRODUCT_NAME}-{uid}"
+    info = lstat_optional(root)
+    created = False
+    if info is None:
+        try:
+            root.mkdir(mode=OWNER_DIR_MODE)
+            created = True
+        except FileExistsError:
+            pass
+    if created:
+        os.chmod(root, OWNER_DIR_MODE)
+    require_owner_private_directory(root, "bootstrap product lock root")
+    return root
+
+
+def external_lock_digest(target: Path) -> str:
+    canonical_target = canonical_target_identity(target)
+    return sha256_bytes(f"{PRODUCT_NAME}\0{canonical_target}".encode("utf-8"))
+
+
+def external_lock_path(target: Path) -> Path:
+    return bootstrap_product_root() / f"{external_lock_digest(target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
+
+
+def external_lock_binding(target: Path) -> dict[str, Any]:
+    canonical_target = canonical_target_identity(target)
+    return {
+        "schema_version": EXTERNAL_LOCK_SCHEMA,
+        "product_name": PRODUCT_NAME,
+        "canonical_target": str(canonical_target),
+        "lock_digest": external_lock_digest(canonical_target),
+    }
+
+
+def open_external_lock_file(lock: Path) -> int:
+    flags = os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock, flags)
+        created = False
+    except FileNotFoundError:
+        try:
+            descriptor = os.open(lock, flags | os.O_CREAT | os.O_EXCL, OWNER_FILE_MODE)
+            created = True
+        except FileExistsError:
+            try:
+                descriptor = os.open(lock, flags)
+                created = False
+            except OSError as exc:
+                fail(f"cannot open external target lock file: {exc}")
+        except OSError as exc:
+            fail(f"cannot create external target lock file: {exc}")
+    except OSError as exc:
+        fail(f"cannot open external target lock file: {exc}")
+    try:
+        if created:
+            os.fchmod(descriptor, OWNER_FILE_MODE)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def require_external_lock_descriptor(lock: Path, descriptor: int) -> None:
+    opened = os.fstat(descriptor)
+    if not stat.S_ISREG(opened.st_mode):
+        fail("external target lock must be a regular file")
+    if opened.st_nlink != 1:
+        fail("external target lock must have exactly one link")
+    require_current_user_owned(opened, "external target lock")
+    require_exact_mode(opened, "external target lock", OWNER_FILE_MODE)
+    final = require_owner_private_file(lock, "external target lock")
+    if final.st_nlink != 1:
+        fail("external target lock path must have exactly one link")
+    if identity_of(opened) != identity_of(final):
+        raise ConcurrentTargetChange("external target lock changed while it was opened")
+
+
+def read_external_lock_binding(descriptor: int) -> dict[str, Any] | None:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(descriptor, 65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > METADATA_MAX_BYTES:
+            fail("external target lock binding is too large")
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    if not content:
+        return None
+    return parse_json_object(content, "external target lock binding")
+
+
+def ensure_external_lock_binding(descriptor: int, target: Path) -> None:
+    expected = external_lock_binding(target)
+    existing = read_external_lock_binding(descriptor)
+    if existing is None:
+        content = canonical_json(expected)
+        os.ftruncate(descriptor, 0)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        write_complete(descriptor, content, "external target lock binding")
+        os.fsync(descriptor)
+        return
+    if existing != expected:
+        fail("external target lock binding mismatch")
+
+
+@contextlib.contextmanager
+def external_target_lock(target: Path, *, blocking: bool = False) -> Iterator[Path]:
+    canonical_target = canonical_target_identity(target)
+    lock = external_lock_path(canonical_target)
+    descriptor = open_external_lock_file(lock)
+    locked = False
+    try:
+        operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+        try:
+            fcntl.flock(descriptor, operation)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                fail(f"target is already locked: {lock}")
+            fail(f"cannot lock target externally: {exc}")
+        locked = True
+        require_external_lock_descriptor(lock, descriptor)
+        ensure_external_lock_binding(descriptor, canonical_target)
+        require_external_lock_descriptor(lock, descriptor)
+        yield lock
+    finally:
+        if locked:
+            with contextlib.suppress(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+
+
 def require_lock_root_directory(path: Path, label: str) -> os.stat_result:
     info = require_directory(path, label)
     require_current_user_owned(info, label)
@@ -2622,7 +2806,7 @@ def open_lock_file(lock: Path) -> int:
 
 
 @contextlib.contextmanager
-def target_lock(target: Path, *, create_target: bool) -> Iterator[None]:
+def internal_target_lock(target: Path, *, create_target: bool) -> Iterator[None]:
     if not ensure_target_directory(target, create=create_target):
         fail("--target is missing")
     root = ensure_lock_root(target)
@@ -2676,6 +2860,13 @@ def target_lock(target: Path, *, create_target: bool) -> Iterator[None]:
             os.close(root_descriptor)
         if cleanup_error is not None:
             raise cleanup_error
+
+
+@contextlib.contextmanager
+def target_lock(target: Path, *, create_target: bool) -> Iterator[None]:
+    with external_target_lock(target):
+        with internal_target_lock(target, create_target=create_target):
+            yield
 
 
 def backup_pool(target: Path) -> Path:
@@ -2853,9 +3044,9 @@ def load_backup(
     return envelope, files, backup_managed_files
 
 
-def current_status(target: Path) -> dict[str, Any]:
+def current_status_body(target: Path) -> dict[str, Any]:
     if not ensure_target_directory(target, create=False):
-        software = software_status(target)
+        software = software_status_body(target)
         return {
             "state": "missing",
             "target": str(target),
@@ -2870,7 +3061,7 @@ def current_status(target: Path) -> dict[str, Any]:
         }
     stamp = load_stamp(target)
     if stamp is None:
-        software = software_status(target)
+        software = software_status_body(target)
         return {
             "state": "unmanaged",
             "target": str(target),
@@ -2884,7 +3075,7 @@ def current_status(target: Path) -> dict[str, Any]:
             "software": software,
         }
     drift = detect_drift(target, stamp)
-    software = software_status(target)
+    software = software_status_body(target)
     if not stamp_is_current(stamp):
         return {
             "state": "legacy-managed",
@@ -2918,6 +3109,11 @@ def current_status(target: Path) -> dict[str, Any]:
         },
         "software": software,
     }
+
+
+def current_status(target: Path) -> dict[str, Any]:
+    with external_target_lock(target):
+        return current_status_body(target)
 
 
 def plan_setup(target: Path, setup_id: str, permission_profile_id: str) -> dict[str, Any]:
@@ -3257,7 +3453,7 @@ def revalidate_software_executable(target: Path) -> Path:
 
 
 def require_clean_software(target: Path) -> Path:
-    status = software_status(target)
+    status = software_status_body(target)
     if status["state"] != "installed":
         fail(f"Kiro CLI software is not installed cleanly in target: {status['state']}")
     return revalidate_software_executable(target)
