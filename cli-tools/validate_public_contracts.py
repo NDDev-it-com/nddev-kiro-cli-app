@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ SETUP_IDS = ["nddev-builder"]
 PROFILE_IDS = ["safe", "full-auto"]
 DEFAULT_PROFILE_ID = "full-auto"
 LEGACY_SETUP_IDS = ["safe", "balanced", "full-auto"]
+BUILD_VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
 REFERENCE_FILES = [
     "skills/nddev-builder/references/agents-subagents.md",
     "skills/nddev-builder/references/configuration-profiles.md",
@@ -583,8 +585,8 @@ def main() -> int:
     contract = load_json("config/nddev-contract.json", errors)
     baseline = load_json("references/kiro-cli-baseline.json", errors)
 
-    if version_text != "0.2.0":
-        errors.append("VERSION must be 0.2.0")
+    if not BUILD_VERSION_PATTERN.fullmatch(version_text):
+        errors.append("VERSION must be a MAJOR.MINOR.PATCH build version")
     if f"## {version_text}\n" not in changelog_text:
         errors.append("CHANGELOG.md: missing current VERSION heading")
     if version is not None:
