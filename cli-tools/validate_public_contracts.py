@@ -338,6 +338,108 @@ def check_manifest(manifest: dict[str, Any], version_text: str, errors: list[str
     check_builder(manifest.get("builder"), "build/manifest.json", errors)
 
 
+def release_path_roots_from_ref(value: Any) -> set[str]:
+    if not isinstance(value, str) or not value.strip():
+        return set()
+    cleaned = value.split(":", 1)[0]
+    if cleaned in {"target", "/absolute/kiro-home"} or cleaned.startswith("target/"):
+        return set()
+    path = Path(cleaned)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return set()
+    if not path.parts:
+        return set()
+    return {path.parts[0]}
+
+
+def contract_required_runtime_roots(
+    contract: dict[str, Any] | None,
+    manifest: dict[str, Any] | None,
+) -> set[str]:
+    roots = {"VERSION", "build", "cli-tools", "config"}
+    if isinstance(manifest, dict):
+        manager = manifest.get("manager", {})
+        if isinstance(manager, dict):
+            roots.update(release_path_roots_from_ref(manager.get("path")))
+        runtime = manifest.get("runtime", {})
+        if isinstance(runtime, dict):
+            roots.update(release_path_roots_from_ref(runtime.get("baseline")))
+        roots.update(release_path_roots_from_ref(manifest.get("public_validator")))
+    if not isinstance(contract, dict):
+        return roots
+    roots.update(release_path_roots_from_ref(contract.get("manifest_ref")))
+    roots.update(release_path_roots_from_ref(contract.get("version_ref")))
+    setup_system = contract.get("setup_system", {})
+    if isinstance(setup_system, dict):
+        roots.update(release_path_roots_from_ref(setup_system.get("catalog_root")))
+        roots.update(release_path_roots_from_ref(setup_system.get("profile_root")))
+    runtime_compatibility = contract.get("runtime_compatibility", {})
+    if isinstance(runtime_compatibility, dict):
+        roots.update(release_path_roots_from_ref(runtime_compatibility.get("version_ref")))
+        roots.update(release_path_roots_from_ref(runtime_compatibility.get("baseline_ref")))
+    software_distribution = contract.get("software_distribution", {})
+    if isinstance(software_distribution, dict):
+        roots.update(release_path_roots_from_ref(software_distribution.get("current_artifacts_ref")))
+    profiles = contract.get("permission_profiles", {}).get("profiles", {})
+    if isinstance(profiles, dict):
+        for profile in profiles.values():
+            if isinstance(profile, dict):
+                roots.update(release_path_roots_from_ref(profile.get("file")))
+    return roots
+
+
+def parse_release_path_list(text: str, key: str, errors: list[str]) -> list[str]:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(rf"^(\s*){re.escape(key)}:\s*>-\s*$", line)
+        if match is None:
+            continue
+        indent = len(match.group(1))
+        result: list[str] = []
+        for item in lines[index + 1 :]:
+            if not item.strip():
+                continue
+            item_indent = len(item) - len(item.lstrip(" "))
+            if item_indent <= indent:
+                break
+            result.extend(item.strip().split())
+        if not result:
+            errors.append(f".github/workflows/release.yml: {key} must not be empty")
+        return result
+    errors.append(f".github/workflows/release.yml: missing {key}")
+    return []
+
+
+def check_release_path_entry(relative: str, label: str, errors: list[str]) -> None:
+    path = Path(relative)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        errors.append(f".github/workflows/release.yml: {label} path is unsafe: {relative}")
+        return
+    if not (ROOT / path).exists():
+        errors.append(f".github/workflows/release.yml: {label} path does not exist: {relative}")
+
+
+def check_release_workflow(
+    contract: dict[str, Any] | None,
+    manifest: dict[str, Any] | None,
+    errors: list[str],
+) -> None:
+    text = check_text(".github/workflows/release.yml", errors)
+    archive_paths = parse_release_path_list(text, "archive_paths", errors)
+    runtime_paths = parse_release_path_list(text, "runtime_paths", errors)
+    for label, paths in (("archive_paths", archive_paths), ("runtime_paths", runtime_paths)):
+        for relative in paths:
+            check_release_path_entry(relative, label, errors)
+    required_roots = contract_required_runtime_roots(contract, manifest)
+    archive_set = set(archive_paths)
+    runtime_set = set(runtime_paths)
+    for root in sorted(required_roots):
+        if root not in archive_set:
+            errors.append(f".github/workflows/release.yml: archive_paths missing {root}")
+        if root not in runtime_set:
+            errors.append(f".github/workflows/release.yml: runtime_paths missing {root}")
+
+
 def check_software(software: Any, label: str, errors: list[str]) -> None:
     if not isinstance(software, dict):
         errors.append(f"{label}: software_distribution required")
@@ -892,6 +994,7 @@ def main() -> int:
         check_contract(contract, errors)
     if baseline is not None:
         check_baseline(baseline, version, errors)
+    check_release_workflow(contract, manifest, errors)
 
     check_setup(errors)
     for profile_id in PROFILE_IDS:
