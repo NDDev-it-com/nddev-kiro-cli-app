@@ -8,6 +8,7 @@ import importlib.util
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -137,6 +138,11 @@ SUPPORTED_PLATFORMS = [
     "linux-aarch64-musl-zip",
 ]
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+LOCK_ROOT_REF = "target/.nddev-runtime/locks/setup-manager.lock"
+LOCK_MECHANISM = "fcntl-flock-persistent-file"
+LOCK_FILE_MODE = "0600"
+LOCK_DIRECTORY_IDLE_MODE = "0700"
+LOCK_DIRECTORY_HELD_MODE = "0500"
 MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
 RELEASE_WORKFLOW_USES = (
@@ -317,6 +323,20 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
         errors.append(f"{label}: trusted system PATH mismatch")
     if runtime.get("launch_lock_held_until_child_exit") is not True:
         errors.append(f"{label}: launch lock lifetime mismatch")
+    if runtime.get("lock_mechanism") != LOCK_MECHANISM:
+        errors.append(f"{label}: launch lock mechanism mismatch")
+    if runtime.get("lock_file_persistent") is not True:
+        errors.append(f"{label}: persistent lock file contract missing")
+    if runtime.get("lock_file_mode") != LOCK_FILE_MODE:
+        errors.append(f"{label}: lock file mode mismatch")
+    if runtime.get("lock_directory_idle_mode") != LOCK_DIRECTORY_IDLE_MODE:
+        errors.append(f"{label}: idle lock directory mode mismatch")
+    if runtime.get("lock_directory_held_mode") != LOCK_DIRECTORY_HELD_MODE:
+        errors.append(f"{label}: held lock directory mode mismatch")
+    if runtime.get("directory_lock_used") is not False:
+        errors.append(f"{label}: removable directory lock must not be used")
+    if runtime.get("ordinary_child_lock_cleanup_denied") is not True:
+        errors.append(f"{label}: child lock cleanup guard missing")
     if runtime.get("launch_executable_revalidated_before_handoff") is not True:
         errors.append(f"{label}: executable revalidation contract missing")
     if runtime.get("launch_runtime_directories_target_relative_owner_private") is not True:
@@ -636,8 +656,20 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         errors.append("config/nddev-contract.json: existing target mode mismatch")
     if managed_state.get("runtime_state_root") != ".nddev-runtime":
         errors.append("config/nddev-contract.json: runtime state root mismatch")
-    if managed_state.get("lock_root") != "target/.nddev-runtime/locks/setup-manager.lock":
+    if managed_state.get("lock_root") != LOCK_ROOT_REF:
         errors.append("config/nddev-contract.json: lock root mismatch")
+    if managed_state.get("lock_mechanism") != LOCK_MECHANISM:
+        errors.append("config/nddev-contract.json: lock mechanism mismatch")
+    if managed_state.get("lock_file_persistent") is not True:
+        errors.append("config/nddev-contract.json: persistent lock file missing")
+    if managed_state.get("lock_file_mode") != LOCK_FILE_MODE:
+        errors.append("config/nddev-contract.json: lock file mode mismatch")
+    if managed_state.get("lock_directory_idle_mode") != LOCK_DIRECTORY_IDLE_MODE:
+        errors.append("config/nddev-contract.json: idle lock directory mode mismatch")
+    if managed_state.get("lock_directory_held_mode") != LOCK_DIRECTORY_HELD_MODE:
+        errors.append("config/nddev-contract.json: held lock directory mode mismatch")
+    if managed_state.get("directory_lock_used") is not False:
+        errors.append("config/nddev-contract.json: directory lock must be disabled")
     if managed_state.get("backup_root") != "target/.nddev-runtime/backups/setup":
         errors.append("config/nddev-contract.json: backup root mismatch")
     if managed_state.get("managed_files") != MANAGED_FILES:
@@ -712,10 +744,16 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         "launch_runtime_directories_target_relative_owner_private",
         "reject_symlink_runtime_directories",
         "launch_lock_held_until_child_exit",
+        "persistent_kernel_lock_file",
+        "lock_parent_not_writable_while_held",
+        "ordinary_child_lock_cleanup_denied",
+        "same_uid_malicious_process_not_sandboxed",
         "launch_executable_revalidated_before_handoff",
     ):
         if safety.get(key) is not True:
             errors.append(f"config/nddev-contract.json: safety.{key} required")
+    if safety.get("directory_lock_used") is not False:
+        errors.append("config/nddev-contract.json: removable directory lock must be disabled")
 
 
 def check_baseline(
@@ -759,6 +797,14 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: launch PATH boundary mismatch")
     if authentication.get("launch_lock_held_until_child_exit") is not True:
         errors.append("references/kiro-cli-baseline.json: launch lock lifetime mismatch")
+    if authentication.get("lock_mechanism") != LOCK_MECHANISM:
+        errors.append("references/kiro-cli-baseline.json: launch lock mechanism mismatch")
+    if authentication.get("lock_file_persistent") is not True:
+        errors.append("references/kiro-cli-baseline.json: persistent lock file missing")
+    if authentication.get("ordinary_child_lock_cleanup_denied") is not True:
+        errors.append("references/kiro-cli-baseline.json: child lock cleanup guard missing")
+    if authentication.get("same_uid_malicious_process_not_sandboxed") is not True:
+        errors.append("references/kiro-cli-baseline.json: same-UID sandbox caveat missing")
     if authentication.get("launch_executable_revalidated_before_handoff") is not True:
         errors.append("references/kiro-cli-baseline.json: executable revalidation missing")
     if authentication.get("launch_runtime_directories_target_relative_owner_private") is not True:
@@ -776,8 +822,20 @@ def check_baseline(
     else:
         if software.get("manager_install_mode") != "target-owned-official-artifact":
             errors.append("references/kiro-cli-baseline.json: install mode mismatch")
-        if software.get("lock_root") != "target/.nddev-runtime/locks/setup-manager.lock":
+        if software.get("lock_root") != LOCK_ROOT_REF:
             errors.append("references/kiro-cli-baseline.json: lock root mismatch")
+        if software.get("lock_mechanism") != LOCK_MECHANISM:
+            errors.append("references/kiro-cli-baseline.json: lock mechanism mismatch")
+        if software.get("lock_file_persistent") is not True:
+            errors.append("references/kiro-cli-baseline.json: persistent lock file missing")
+        if software.get("lock_file_mode") != LOCK_FILE_MODE:
+            errors.append("references/kiro-cli-baseline.json: lock file mode mismatch")
+        if software.get("lock_directory_idle_mode") != LOCK_DIRECTORY_IDLE_MODE:
+            errors.append("references/kiro-cli-baseline.json: idle lock directory mode mismatch")
+        if software.get("lock_directory_held_mode") != LOCK_DIRECTORY_HELD_MODE:
+            errors.append("references/kiro-cli-baseline.json: held lock directory mode mismatch")
+        if software.get("directory_lock_used") is not False:
+            errors.append("references/kiro-cli-baseline.json: directory lock must be disabled")
         if software.get("backup_root") != "target/.nddev-runtime/backups/setup":
             errors.append("references/kiro-cli-baseline.json: backup root mismatch")
         if software.get("trusted_bash") != "/bin/bash":
@@ -1000,8 +1058,12 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
     prepare_managed_target(manager, target)
     started = tmp / "launch-child-started"
     stop = tmp / "launch-child-stop"
+    lock_file = target / manager.LOCK_RUNTIME_DIR / manager.LOCK_DIR_NAME
+    lock_root = target / manager.LOCK_RUNTIME_DIR
     script = (
         "#!/bin/sh\n"
+        f"rm -f {shlex.quote(str(lock_file))} 2>/dev/null || true\n"
+        f"rmdir {shlex.quote(str(lock_root))} 2>/dev/null || true\n"
         f"printf started > {shlex.quote(str(started))}\n"
         f"while [ ! -f {shlex.quote(str(stop))} ]; do sleep 0.05; done\n"
         "exit 0\n"
@@ -1037,26 +1099,42 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
                 f"(rc={process.returncode}, stdout={stdout!r}, stderr={stderr!r})"
             )
             return
-        mutation = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "cli-tools/nddev_kiro_cli.py"),
-                "switch",
-                "--profile",
-                "safe",
-                "--target",
-                str(target),
-                "--json",
-            ],
-            cwd=str(ROOT),
-            env=regression_env(),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=5,
-        )
-        if mutation.returncode == 0:
-            errors.append("launch lock regression: lifecycle mutation succeeded while child ran")
+        if not lock_file.is_file() or not lock_root.is_dir():
+            errors.append("launch lock regression: child removed the persistent lock path")
+        else:
+            if stat.S_IMODE(lock_file.lstat().st_mode) != manager.OWNER_FILE_MODE:
+                errors.append("launch lock regression: lock file mode changed while child ran")
+            if stat.S_IMODE(lock_root.lstat().st_mode) != manager.LOCK_HELD_DIR_MODE:
+                errors.append("launch lock regression: lock root was writable while child ran")
+        commands = [
+            ["switch", "--profile", "safe", "--target", str(target), "--json"],
+            ["remove", "--target", str(target), "--json"],
+            ["install", "--target", str(target), "--json"],
+        ]
+        for command in commands:
+            mutation = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "cli-tools/nddev_kiro_cli.py"),
+                    *command,
+                ],
+                cwd=str(ROOT),
+                env=regression_env(),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            if mutation.returncode == 0:
+                errors.append(
+                    "launch lock regression: "
+                    f"{command[0]} succeeded while child ran"
+                )
+            if "target is already locked" not in mutation.stderr:
+                errors.append(
+                    "launch lock regression: "
+                    f"{command[0]} did not fail on the held target lock"
+                )
     finally:
         stop.write_text("stop\n", encoding="utf-8")
         if not communicated:
@@ -1071,6 +1149,36 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
                     "launch lock regression: launch process failed "
                     f"(rc={process.returncode}, stdout={stdout!r}, stderr={stderr!r})"
                 )
+    if not lock_file.is_file() or not lock_root.is_dir():
+        errors.append("launch lock regression: persistent lock path missing after child exit")
+    else:
+        if stat.S_IMODE(lock_file.lstat().st_mode) != manager.OWNER_FILE_MODE:
+            errors.append("launch lock regression: lock file mode changed after child exit")
+        if stat.S_IMODE(lock_root.lstat().st_mode) != manager.OWNER_DIR_MODE:
+            errors.append("launch lock regression: lock root did not return to owner-private mode")
+    switch_after_exit = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "cli-tools/nddev_kiro_cli.py"),
+            "switch",
+            "--profile",
+            "safe",
+            "--target",
+            str(target),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        env=regression_env(),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+    if switch_after_exit.returncode != 0:
+        errors.append(
+            "launch lock regression: lifecycle mutation failed after child exit "
+            f"(stderr={switch_after_exit.stderr!r})"
+        )
 
 
 def run_public_manager_regressions(errors: list[str]) -> None:

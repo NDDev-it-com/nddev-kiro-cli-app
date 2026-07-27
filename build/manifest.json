@@ -10,6 +10,13 @@
     "engine_status": "early-access-required",
     "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
     "launch_lock_held_until_child_exit": true,
+    "lock_mechanism": "fcntl-flock-persistent-file",
+    "lock_file_persistent": true,
+    "lock_file_mode": "0600",
+    "lock_directory_idle_mode": "0700",
+    "lock_directory_held_mode": "0500",
+    "directory_lock_used": false,
+    "ordinary_child_lock_cleanup_denied": true,
     "launch_executable_revalidated_before_handoff": true,
     "launch_runtime_directories_target_relative_owner_private": true,
     "managed_launch_blocked_commands": [

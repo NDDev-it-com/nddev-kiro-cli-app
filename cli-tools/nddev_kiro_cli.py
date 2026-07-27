@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -45,6 +47,7 @@ LEGACY_BACKUP_SCHEMA = 1
 MAX_BACKUPS = 10
 OWNER_FILE_MODE = 0o600
 OWNER_DIR_MODE = 0o700
+LOCK_HELD_DIR_MODE = 0o500
 METADATA_MAX_BYTES = 256 * 1024
 MANAGED_PAYLOAD_MAX_BYTES = 1024 * 1024
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -2298,23 +2301,186 @@ def lock_path(target: Path) -> Path:
     return lock_root(target) / LOCK_DIR_NAME
 
 
+def require_lock_root_directory(path: Path, label: str) -> os.stat_result:
+    info = require_directory(path, label)
+    require_current_user_owned(info, label)
+    mode = stat.S_IMODE(info.st_mode)
+    if mode not in {OWNER_DIR_MODE, LOCK_HELD_DIR_MODE}:
+        fail(f"{label} must have mode 0700 or 0500, got {mode:04o}")
+    return info
+
+
+def open_lock_root_directory(path: Path) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open target lock root: {exc}")
+    try:
+        require_lock_root_descriptor(path, descriptor, "target lock root", expected_mode=None)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def require_lock_root_descriptor(
+    path: Path,
+    descriptor: int,
+    label: str,
+    *,
+    expected_mode: int | None,
+) -> None:
+    opened = os.fstat(descriptor)
+    if not stat.S_ISDIR(opened.st_mode):
+        fail(f"{label} must be a real directory")
+    require_current_user_owned(opened, label)
+    if expected_mode is None:
+        mode = stat.S_IMODE(opened.st_mode)
+        if mode not in {OWNER_DIR_MODE, LOCK_HELD_DIR_MODE}:
+            fail(f"{label} must have mode 0700 or 0500, got {mode:04o}")
+    else:
+        require_exact_mode(opened, label, expected_mode)
+    final = require_lock_root_directory(path, label)
+    if identity_of(opened) != identity_of(final):
+        raise ConcurrentTargetChange("target lock root changed while it was opened")
+
+
+def chmod_lock_root(path: Path, mode: int) -> None:
+    descriptor = open_lock_root_directory(path)
+    try:
+        os.fchmod(descriptor, mode)
+        require_lock_root_descriptor(
+            path,
+            descriptor,
+            "target lock root",
+            expected_mode=mode,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def ensure_lock_root(target: Path) -> Path:
+    runtime_root = target / NDDEV_RUNTIME_DIR
+    ensure_owner_private_directory_chain(runtime_root, "target runtime root")
+    root = lock_root(target)
+    info = lstat_optional(root)
+    if info is None:
+        root.mkdir(mode=OWNER_DIR_MODE)
+        os.chmod(root, OWNER_DIR_MODE)
+        require_owner_private_directory(root, "target lock root")
+        return root
+    require_lock_root_directory(root, "target lock root")
+    if (
+        stat.S_IMODE(info.st_mode) == LOCK_HELD_DIR_MODE
+        and lstat_optional(lock_path(target)) is None
+    ):
+        chmod_lock_root(root, OWNER_DIR_MODE)
+        require_owner_private_directory(root, "target lock root")
+    return root
+
+
+def open_lock_file(lock: Path) -> int:
+    flags = os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock, flags)
+        created = False
+    except FileNotFoundError:
+        try:
+            descriptor = os.open(lock, flags | os.O_CREAT | os.O_EXCL, OWNER_FILE_MODE)
+            created = True
+        except FileExistsError:
+            try:
+                descriptor = os.open(lock, flags)
+                created = False
+            except OSError as exc:
+                fail(f"cannot open target lock file: {exc}")
+        except OSError as exc:
+            fail(f"cannot create target lock file: {exc}")
+    except OSError as exc:
+        fail(f"cannot open target lock file: {exc}")
+    try:
+        if created:
+            os.fchmod(descriptor, OWNER_FILE_MODE)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            fail("target lock must be a regular file")
+        require_current_user_owned(opened, "target lock")
+        require_exact_mode(opened, "target lock", OWNER_FILE_MODE)
+        final = require_owner_private_file(lock, "target lock")
+        if identity_of(opened) != identity_of(final):
+            raise ConcurrentTargetChange("target lock changed while it was opened")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 @contextlib.contextmanager
 def target_lock(target: Path, *, create_target: bool) -> Iterator[None]:
     if not ensure_target_directory(target, create=create_target):
         fail("--target is missing")
-    ensure_owner_private_directory_chain(lock_root(target), "target lock root")
+    root = ensure_lock_root(target)
     lock = lock_path(target)
+    root_descriptor = open_lock_root_directory(root)
     try:
-        lock.mkdir(mode=OWNER_DIR_MODE)
-    except FileExistsError:
-        fail(f"target is already locked: {lock}")
-    os.chmod(lock, OWNER_DIR_MODE)
-    require_owner_private_directory(lock, "target lock")
+        descriptor = open_lock_file(lock)
+    except BaseException:
+        os.close(root_descriptor)
+        raise
+    locked = False
+    hardened = False
     try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                fail(f"target is already locked: {lock}")
+            fail(f"cannot lock target: {exc}")
+        locked = True
+        os.fchmod(root_descriptor, LOCK_HELD_DIR_MODE)
+        require_lock_root_descriptor(
+            root,
+            root_descriptor,
+            "target lock root",
+            expected_mode=LOCK_HELD_DIR_MODE,
+        )
+        hardened = True
+        require_owner_private_file(lock, "target lock")
         yield
     finally:
-        with contextlib.suppress(FileNotFoundError):
-            lock.rmdir()
+        cleanup_error: BaseException | None = None
+        if locked and hardened:
+            try:
+                os.fchmod(root_descriptor, OWNER_DIR_MODE)
+                require_lock_root_descriptor(
+                    root,
+                    root_descriptor,
+                    "target lock root",
+                    expected_mode=OWNER_DIR_MODE,
+                )
+                require_owner_private_file(lock, "target lock")
+            except BaseException as exc:
+                cleanup_error = exc
+        if locked:
+            with contextlib.suppress(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        with contextlib.suppress(OSError):
+            os.close(root_descriptor)
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def backup_pool(target: Path) -> Path:

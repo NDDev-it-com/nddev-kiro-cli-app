@@ -86,7 +86,11 @@ credential environment variables, uses a deterministic system `PATH`, and
 invokes the target-installed `kiro-cli --v3`. Launch runtime directories are
 created and validated component-by-component as target-relative owner-private
 real directories, the executable digest is revalidated immediately before
-handoff, and the target lock remains held until the child exits. Arguments that
+handoff, and a target-internal `fcntl.flock` on a persistent `0600` lock file
+remains held until the child exits. The lock directory is owner-private when
+idle and non-writable while held, so ordinary child cleanup cannot unlink or
+rmdir the manager lock path. This is not a sandbox against a deliberately
+malicious same-UID process that changes target state directly. Arguments that
 would override managed engine, agent, trust, auth, settings, integrations, MCP,
 or update scope are rejected before the target lock is taken.
 
