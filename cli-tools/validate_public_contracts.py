@@ -487,11 +487,62 @@ def check_release_path_tracked(
     errors: list[str],
 ) -> None:
     if tracked is None:
-        errors.append(".github/workflows/release.yml: cannot inspect git tracked paths")
         return
     prefix = relative.rstrip("/") + "/"
     if relative not in tracked and not any(path.startswith(prefix) for path in tracked):
         errors.append(f".github/workflows/release.yml: {label} path is not tracked: {relative}")
+
+
+def release_path_covers(relative: str, roots: set[str]) -> bool:
+    return relative in roots or any(relative.startswith(root.rstrip("/") + "/") for root in roots)
+
+
+def check_release_path_private_markers(relative: str, label: str, errors: list[str]) -> None:
+    forbidden = set(Path(relative).parts) & FORBIDDEN_RELEASE_PATH_PARTS
+    if forbidden:
+        errors.append(
+            ".github/workflows/release.yml: "
+            f"{label} contains private marker {sorted(forbidden)}: {relative}"
+        )
+
+
+def check_tracked_archive_closure(
+    tracked: set[str],
+    archive_set: set[str],
+    errors: list[str],
+) -> None:
+    for relative in sorted(tracked):
+        check_release_path_private_markers(relative, "tracked path", errors)
+        if not release_path_covers(relative, archive_set):
+            errors.append(
+                ".github/workflows/release.yml: "
+                f"tracked path is not covered by archive_paths: {relative}"
+            )
+
+
+def extracted_artifact_files() -> list[str]:
+    result: list[str] = []
+    for path in ROOT.rglob("*"):
+        relative = path.relative_to(ROOT).as_posix()
+        parts = Path(relative).parts
+        if ".git" in parts or "__pycache__" in parts:
+            continue
+        if path.is_file():
+            result.append(relative)
+    return sorted(result)
+
+
+def check_extracted_artifact_closure(
+    archive_set: set[str],
+    errors: list[str],
+) -> None:
+    for relative in extracted_artifact_files():
+        check_release_path_private_markers(relative, "extracted artifact path", errors)
+        if not release_path_covers(relative, archive_set):
+            errors.append(
+                ".github/workflows/release.yml: "
+                f"extracted artifact path is not covered by archive_paths: {relative}"
+            )
 
 
 def parse_mapping_block(
@@ -569,6 +620,10 @@ def check_release_workflow(
     if not runtime_set.issubset(archive_set):
         missing = sorted(runtime_set - archive_set)
         errors.append(f".github/workflows/release.yml: runtime_paths not in archive_paths: {missing}")
+    if tracked is None:
+        check_extracted_artifact_closure(archive_set, errors)
+    else:
+        check_tracked_archive_closure(tracked, archive_set, errors)
     required_roots = contract_required_runtime_roots(contract, manifest)
     for root in sorted(required_roots):
         if root not in archive_set:
