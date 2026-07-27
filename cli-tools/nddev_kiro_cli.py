@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from collections.abc import Iterator
@@ -666,6 +667,18 @@ def verify_manifest_package(manifest: dict[str, Any], package: SoftwarePackage) 
         fail(f"Kiro CLI install manifest package identity changed for {package.download}")
 
 
+def artifact_download_url(base_url: str, download: str) -> str:
+    parsed = urllib.parse.urlsplit(base_url.rstrip("/") + "/")
+    if parsed.scheme != "https" or not parsed.netloc:
+        fail("Kiro CLI artifact base URL must use https")
+    if parsed.query or parsed.fragment:
+        fail("Kiro CLI artifact base URL must not include query or fragment")
+    encoded_download = urllib.parse.quote(download, safe="/")
+    base_path = parsed.path.rstrip("/")
+    path = f"{base_path}/{encoded_download}" if base_path else f"/{encoded_download}"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
 def stage_artifact(
     stage: Path,
     package: SoftwarePackage,
@@ -693,9 +706,7 @@ def stage_artifact(
     base_url = artifact_base_url or "https://prod.download.cli.kiro.dev/stable"
     if artifact_base_url and base_url != "https://prod.download.cli.kiro.dev/stable" and not test_sources_enabled():
         fail("non-official software artifact URLs are private-test only")
-    if not base_url.startswith("https://"):
-        fail("Kiro CLI artifact base URL must use https")
-    url = f"{base_url.rstrip('/')}/{package.download}"
+    url = artifact_download_url(base_url, package.download)
     digest = download_bounded_url(
         url,
         artifact,
