@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import hashlib
 import importlib.util
@@ -26,6 +27,12 @@ PROFILE_IDS = ["safe", "full-auto"]
 DEFAULT_PROFILE_ID = "full-auto"
 LEGACY_SETUP_IDS = ["safe", "balanced", "full-auto"]
 BUILD_VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
+PYTHON_REQUIRES = ">=3.9"
+PYTHON_SYNTAX_FEATURE_VERSION = (3, 9)
+PORTABLE_PYTHON_SOURCES = (
+    "cli-tools/nddev_kiro_cli.py",
+    "cli-tools/validate_public_contracts.py",
+)
 REFERENCE_FILES = [
     "skills/nddev-builder/references/agents-subagents.md",
     "skills/nddev-builder/references/configuration-profiles.md",
@@ -2516,15 +2523,29 @@ def system_bootstrap_snapshot(manager: Any, resolver: Any) -> tuple[Any, ...]:
     return snapshot_bootstrap_tree(root)
 
 
+def check_python_portability(errors: list[str]) -> None:
+    for relative in PORTABLE_PYTHON_SOURCES:
+        path = ROOT / relative
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{relative}: cannot read for Python syntax validation: {exc}")
+            continue
+        try:
+            ast.parse(source, filename=str(path), feature_version=PYTHON_SYNTAX_FEATURE_VERSION)
+        except SyntaxError as exc:
+            errors.append(
+                f"{relative}: must parse under Python 3.9 syntax: line {exc.lineno}: {exc.msg}"
+            )
+
+
 def run_side_effect_free_read_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
     target = (tmp / "read-side-effect-free-target").resolve(strict=False)
-    before = system_bootstrap_snapshot(manager, manager.bootstrap_system_temp_root)
     status = manager.current_status(target)
     software_status = manager.software_status(target)
     plan = manager.plan_setup(
         target, manager.CONTENT_SETUP_ID, manager.DEFAULT_PERMISSION_PROFILE_ID
     )
-    after = system_bootstrap_snapshot(manager, manager.bootstrap_system_temp_root)
     if status.get("state") != "missing":
         errors.append("status side-effect regression: missing target state mismatch")
     if software_status.get("state") != "missing":
@@ -2533,8 +2554,81 @@ def run_side_effect_free_read_regressions(manager: Any, tmp: Path, errors: list[
         errors.append("plan side-effect regression: missing target plan mismatch")
     if target.exists():
         errors.append("read side-effect regression: status/plan created the target")
-    if after != before:
-        errors.append("read side-effect regression: status/plan changed bootstrap lock root")
+
+
+def run_lifecycle_order_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "lifecycle-order-target").resolve(strict=False)
+    events: list[str] = []
+    original_bootstrap = manager.external_bootstrap_lock
+    original_canonical = manager.canonical_target_identity
+    original_status_body = manager.current_status_body
+    original_snapshot = manager.setup_transaction_snapshot
+    original_internal = manager.internal_target_lock
+
+    @contextlib.contextmanager
+    def traced_bootstrap(*args: Any, **kwargs: Any) -> Any:
+        events.append("bootstrap-call")
+        with original_bootstrap(*args, **kwargs) as lock:
+            events.append("bootstrap-held")
+            yield lock
+
+    def traced_canonical(path: Path) -> Path:
+        events.append("canonical-target")
+        return original_canonical(path)
+
+    def traced_status_body(path: Path) -> dict[str, Any]:
+        events.append("status-body")
+        return original_status_body(path)
+
+    def traced_snapshot(path: Path) -> dict[str, Any]:
+        events.append("setup-snapshot")
+        return original_snapshot(path)
+
+    @contextlib.contextmanager
+    def traced_internal(*args: Any, **kwargs: Any) -> Any:
+        events.append("internal-call")
+        with original_internal(*args, **kwargs) as locked:
+            events.append("internal-held")
+            yield locked
+
+    try:
+        manager.external_bootstrap_lock = traced_bootstrap
+        manager.canonical_target_identity = traced_canonical
+        manager.current_status_body = traced_status_body
+        manager.current_status(target)
+        if events[:4] != [
+            "bootstrap-call",
+            "bootstrap-held",
+            "canonical-target",
+            "status-body",
+        ]:
+            errors.append(f"status lifecycle order mismatch: {events}")
+
+        events.clear()
+        manager.current_status_body = original_status_body
+        manager.setup_transaction_snapshot = traced_snapshot
+        manager.internal_target_lock = traced_internal
+        try:
+            manager.update_setup(target)
+        except manager.ManagerError:
+            pass
+        else:
+            errors.append("update lifecycle order regression unexpectedly succeeded")
+        required = ["bootstrap-held", "canonical-target", "setup-snapshot", "internal-call"]
+        positions = {event: events.index(event) for event in required if event in events}
+        if set(positions) != set(required) or not (
+            positions["bootstrap-held"]
+            < positions["canonical-target"]
+            < positions["setup-snapshot"]
+            < positions["internal-call"]
+        ):
+            errors.append(f"update lifecycle order mismatch: {events}")
+    finally:
+        manager.external_bootstrap_lock = original_bootstrap
+        manager.canonical_target_identity = original_canonical
+        manager.current_status_body = original_status_body
+        manager.setup_transaction_snapshot = original_snapshot
+        manager.internal_target_lock = original_internal
 
 
 def run_public_manager_regressions(errors: list[str]) -> None:
@@ -2561,6 +2655,7 @@ def run_public_manager_regressions(errors: list[str]) -> None:
             if stat.S_IMODE(injected_system_root.lstat().st_mode) != 0o1777:
                 errors.append("public manager regressions: injected bootstrap root must be 01777")
             manager.bootstrap_system_temp_root = lambda: injected_system_root
+            run_lifecycle_order_regressions(manager, tmp, errors)
             run_side_effect_free_read_regressions(manager, tmp, errors)
             run_external_lock_binding_regressions(manager, tmp, errors)
             run_stamp_provenance_regressions(manager, tmp, errors)
@@ -2595,6 +2690,8 @@ def main() -> int:
             errors.append("VERSION disagrees with build/version.json:build_version")
         if version.get("kiro_cli_current") != "2.15.0":
             errors.append("build/version.json: kiro_cli_current must be 2.15.0")
+        if version.get("python_requires") != PYTHON_REQUIRES:
+            errors.append(f"build/version.json: python_requires must be {PYTHON_REQUIRES}")
     if manifest is not None:
         check_manifest(manifest, version_text, errors)
     if contract is not None:
@@ -2617,6 +2714,7 @@ def main() -> int:
         if relative == "cli-tools/nddev_kiro_cli.py":
             manager_source = text
     check_manager_source(manager_source, errors)
+    check_python_portability(errors)
     check_claude_bridge(errors)
     run_public_manager_regressions(errors)
     for workflow in WORKFLOWS:

@@ -136,6 +136,7 @@ SOFTWARE_STAMP_SCHEMA = 1
 LOCK_RUNTIME_DIR = ".nddev-runtime/locks"
 LOCK_DIR_NAME = "setup-manager.lock"
 EXTERNAL_LOCK_SCHEMA = 1
+EXTERNAL_BOOTSTRAP_LOCK_NAME = "bootstrap-lifecycle.lock"
 EXTERNAL_LOCK_NAME_SUFFIX = ".lock"
 BACKUP_RUNTIME_DIR = ".nddev-runtime/backups/setup"
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
@@ -305,6 +306,10 @@ class TreeSnapshotEntry:
     kind: str
     mode: int
     content: bytes | None
+    size: int | None
+    sha256: str | None
+    inode: int
+    mtime_ns: int
 
 
 @dataclass(frozen=True)
@@ -313,6 +318,8 @@ class TreeManifestEntry:
     mode: int
     size: int | None
     sha256: str | None
+    inode: int
+    mtime_ns: int
 
 
 @dataclass(frozen=True)
@@ -1286,6 +1293,36 @@ def restore_tree_modes(root: Path, modes: dict[str, int]) -> None:
         os.chmod(path, mode)
 
 
+def restore_tree_manifest_metadata(
+    root: Path,
+    manifest: dict[str, TreeManifestEntry] | None,
+) -> None:
+    if manifest is None:
+        return
+    for relative, entry in sorted(
+        manifest.items(),
+        key=lambda item: len(Path(item[0]).parts),
+        reverse=True,
+    ):
+        path = root if relative == "." else root / safe_relative_path(relative)
+        info = path.lstat()
+        if info.st_ino != entry.inode:
+            fail(f"software manifest path identity changed: {relative}")
+        if entry.kind == "dir":
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                fail(f"software manifest directory changed kind: {relative}")
+        elif entry.kind == "file":
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                fail(f"software manifest file changed kind: {relative}")
+        else:
+            fail(f"software manifest entry kind is invalid: {relative}")
+        os.chmod(path, entry.mode)
+        refreshed = path.lstat()
+        os.utime(path, ns=(refreshed.st_atime_ns, entry.mtime_ns), follow_symlinks=False)
+        fsync_existing_path(path, directory=entry.kind == "dir")
+        fsync_directory(path.parent)
+
+
 def tree_relative(path: Path, root: Path) -> str:
     return "." if path == root else path.relative_to(root).as_posix()
 
@@ -1313,7 +1350,15 @@ def snapshot_tree_exact(root: Path) -> dict[str, TreeSnapshotEntry] | None:
             fail(f"snapshot path must not be a symlink: {relative}")
         if stat.S_ISDIR(child.st_mode):
             require_current_user_owned(child, f"snapshot directory {relative}")
-            snapshot[relative] = TreeSnapshotEntry(kind="dir", mode=mode, content=None)
+            snapshot[relative] = TreeSnapshotEntry(
+                kind="dir",
+                mode=mode,
+                content=None,
+                size=None,
+                sha256=None,
+                inode=child.st_ino,
+                mtime_ns=child.st_mtime_ns,
+            )
             continue
         if stat.S_ISREG(child.st_mode):
             if child.st_nlink != 1:
@@ -1323,7 +1368,15 @@ def snapshot_tree_exact(root: Path) -> dict[str, TreeSnapshotEntry] | None:
             if total > MANAGED_PAYLOAD_MAX_BYTES:
                 fail(f"snapshot root is too large: {root}")
             content = path.read_bytes()
-            snapshot[relative] = TreeSnapshotEntry(kind="file", mode=mode, content=content)
+            snapshot[relative] = TreeSnapshotEntry(
+                kind="file",
+                mode=mode,
+                content=content,
+                size=child.st_size,
+                sha256=sha256_bytes(content),
+                inode=child.st_ino,
+                mtime_ns=child.st_mtime_ns,
+            )
             continue
         fail(f"snapshot path must be a regular file or directory: {relative}")
     return snapshot
@@ -1358,6 +1411,8 @@ def snapshot_tree_manifest(
                 mode=mode,
                 size=None,
                 sha256=None,
+                inode=child.st_ino,
+                mtime_ns=child.st_mtime_ns,
             )
             continue
         if stat.S_ISREG(child.st_mode):
@@ -1377,6 +1432,8 @@ def snapshot_tree_manifest(
                     owner_only=False,
                     max_bytes=max_bytes,
                 )[0],
+                inode=child.st_ino,
+                mtime_ns=child.st_mtime_ns,
             )
             continue
         fail(f"manifest path must be a regular file or directory: {relative}")
@@ -1452,43 +1509,107 @@ def tree_matches_snapshot(root: Path, snapshot: dict[str, TreeSnapshotEntry] | N
         return False
 
 
+def tree_snapshot_path(root: Path, relative: str) -> Path:
+    return root if relative == "." else root / safe_relative_path(relative)
+
+
+def fsync_existing_path(path: Path, *, directory: bool) -> None:
+    flags = os.O_RDONLY
+    if directory and hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def restore_tree_entry_metadata(path: Path, entry: TreeSnapshotEntry) -> None:
+    os.chmod(path, entry.mode)
+    refreshed = path.lstat()
+    os.utime(path, ns=(refreshed.st_atime_ns, entry.mtime_ns), follow_symlinks=False)
+    fsync_existing_path(path, directory=entry.kind == "dir")
+    fsync_directory(path.parent)
+
+
+def rewrite_tree_snapshot_file(path: Path, entry: TreeSnapshotEntry, relative: str) -> None:
+    if entry.content is None:
+        fail(f"tree snapshot file has no content: {relative}")
+    os.chmod(path, OWNER_FILE_MODE)
+    descriptor = os.open(path, os.O_WRONLY | os.O_TRUNC)
+    try:
+        write_complete(descriptor, entry.content, f"tree restore {relative}")
+        os.fchmod(descriptor, entry.mode)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    refreshed = path.lstat()
+    os.utime(path, ns=(refreshed.st_atime_ns, entry.mtime_ns), follow_symlinks=False)
+    fsync_existing_path(path, directory=False)
+    fsync_directory(path.parent)
+
+
+def restore_tree_snapshot_entry(root: Path, relative: str, entry: TreeSnapshotEntry) -> None:
+    path = tree_snapshot_path(root, relative)
+    info = lstat_optional(path)
+    if info is None:
+        fail(f"tree snapshot object is missing: {relative}")
+    if info.st_ino != entry.inode:
+        fail(f"tree snapshot object identity changed: {relative}")
+    if entry.kind == "dir":
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            fail(f"tree snapshot directory changed kind: {relative}")
+        restore_tree_entry_metadata(path, entry)
+        return
+    if entry.kind == "file":
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            fail(f"tree snapshot file changed kind: {relative}")
+        current_content = path.read_bytes()
+        if len(current_content) != entry.size or sha256_bytes(current_content) != entry.sha256:
+            rewrite_tree_snapshot_file(path, entry, relative)
+            return
+        restore_tree_entry_metadata(path, entry)
+        return
+    fail(f"tree snapshot entry kind is invalid: {relative}")
+
+
 def restore_tree_exact(root: Path, snapshot: dict[str, TreeSnapshotEntry] | None) -> None:
-    remove_tree_exact(root)
     if snapshot is None:
+        remove_tree_exact(root)
         return
     root_entry = snapshot.get(".")
     if root_entry is None or root_entry.kind != "dir":
         fail("tree snapshot root is invalid")
+    root_info = lstat_optional(root)
+    if root_info is None:
+        fail(f"tree snapshot root is missing: {root}")
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        fail(f"tree snapshot root must still be a real directory: {root}")
+    expected_paths = set(snapshot)
+    for path in sorted_tree_paths(root)[::-1]:
+        relative = tree_relative(path, root)
+        if relative in expected_paths:
+            continue
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            remove_tree_exact(path)
+        elif stat.S_ISREG(info.st_mode):
+            path.unlink()
+            fsync_directory(path.parent)
+        else:
+            fail(f"tree restore found unsupported residue: {relative}")
     for relative, entry in sorted(
         snapshot.items(),
         key=lambda item: (len(Path(item[0]).parts), item[0]),
     ):
-        path = root if relative == "." else root / safe_relative_path(relative)
-        if entry.kind == "dir":
-            path.mkdir(mode=entry.mode, parents=True, exist_ok=True)
-            os.chmod(path, entry.mode)
-            continue
-        if entry.kind == "file":
-            if entry.content is None:
-                fail(f"tree snapshot file has no content: {relative}")
-            path.parent.mkdir(mode=OWNER_DIR_MODE, parents=True, exist_ok=True)
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, entry.mode)
-            try:
-                write_complete(descriptor, entry.content, f"tree restore {relative}")
-                os.fchmod(descriptor, entry.mode)
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            continue
-        fail(f"tree snapshot entry kind is invalid: {relative}")
+        restore_tree_snapshot_entry(root, relative, entry)
     for relative, entry in sorted(
         snapshot.items(),
         key=lambda item: len(Path(item[0]).parts),
         reverse=True,
     ):
         if entry.kind == "dir":
-            path = root if relative == "." else root / safe_relative_path(relative)
-            os.chmod(path, entry.mode)
+            restore_tree_entry_metadata(tree_snapshot_path(root, relative), entry)
     fsync_directory(root.parent)
 
 
@@ -1806,7 +1927,8 @@ def preflight_software_target(target: Path, *, allow_partial: bool) -> dict[str,
 
 def software_status(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
-    return software_status_body(target)
+    with external_target_scope(target) as locked_target:
+        return software_status_body(locked_target)
 
 
 def validated_transaction_parent(target: Path) -> Path:
@@ -2115,6 +2237,8 @@ def software_install_transaction_matches(
     *,
     target_existed: bool,
     target_mode: int | None,
+    target_inode: int | None,
+    target_mtime_ns: int | None,
     software_parent_manifest: dict[str, TreeManifestEntry] | None,
 ) -> bool:
     try:
@@ -2126,6 +2250,8 @@ def software_install_transaction_matches(
             or stat.S_ISLNK(target_info.st_mode)
             or not stat.S_ISDIR(target_info.st_mode)
             or stat.S_IMODE(target_info.st_mode) != target_mode
+            or target_info.st_ino != target_inode
+            or target_info.st_mtime_ns != target_mtime_ns
         ):
             return False
         return tree_matches_manifest(software_parent(target), software_parent_manifest)
@@ -2138,6 +2264,8 @@ def restore_software_install_transaction_once(
     *,
     target_existed: bool,
     target_mode: int | None,
+    target_inode: int | None,
+    target_mtime_ns: int | None,
     software_parent_manifest: dict[str, TreeManifestEntry] | None,
     software_parent_initial_mode: int | None,
     final_root: Path,
@@ -2160,14 +2288,29 @@ def restore_software_install_transaction_once(
             fsync_directory(rollback_parent)
         if existing_root_modes is not None:
             restore_tree_modes(final_root, existing_root_modes)
+        restore_tree_manifest_metadata(software_parent(target), software_parent_manifest)
     elif existing_root_modes is not None and lstat_optional(final_root) is not None:
         restore_tree_modes(final_root, existing_root_modes)
+        restore_tree_manifest_metadata(software_parent(target), software_parent_manifest)
     restore_software_parent_mode(target, software_parent_initial_mode)
     if rollback_parent is not None and lstat_optional(rollback_parent) is not None:
         cleanup_transaction_tree(rollback_parent, "software rollback")
     remove_created_directories(created_dirs)
-    if target_existed and target_mode is not None and lstat_optional(target) is not None:
+    restore_tree_manifest_metadata(software_parent(target), software_parent_manifest)
+    if (
+        target_existed
+        and target_mode is not None
+        and target_inode is not None
+        and target_mtime_ns is not None
+        and lstat_optional(target) is not None
+    ):
+        info = target.lstat()
+        if info.st_ino != target_inode:
+            fail("software transaction target directory identity changed")
         os.chmod(target, target_mode)
+        refreshed = target.lstat()
+        os.utime(target, ns=(refreshed.st_atime_ns, target_mtime_ns))
+        fsync_existing_path(target, directory=True)
         fsync_directory(target.parent)
     if software_parent_manifest is None and lstat_optional(software_parent(target)) is not None:
         remove_tree_exact(software_parent(target))
@@ -2178,6 +2321,8 @@ def restore_software_install_transaction(
     *,
     target_existed: bool,
     target_mode: int | None,
+    target_inode: int | None,
+    target_mtime_ns: int | None,
     software_parent_manifest: dict[str, TreeManifestEntry] | None,
     software_parent_initial_mode: int | None,
     final_root: Path,
@@ -2194,6 +2339,8 @@ def restore_software_install_transaction(
                 target,
                 target_existed=target_existed,
                 target_mode=target_mode,
+                target_inode=target_inode,
+                target_mtime_ns=target_mtime_ns,
                 software_parent_manifest=software_parent_manifest,
                 software_parent_initial_mode=software_parent_initial_mode,
                 final_root=final_root,
@@ -2209,6 +2356,8 @@ def restore_software_install_transaction(
             target,
             target_existed=target_existed,
             target_mode=target_mode,
+            target_inode=target_inode,
+            target_mtime_ns=target_mtime_ns,
             software_parent_manifest=software_parent_manifest,
         ):
             return
@@ -2238,6 +2387,8 @@ def install_prepared_software_root(
     target_info = lstat_optional(target)
     target_existed = target_info is not None
     target_mode = stat.S_IMODE(target_info.st_mode) if target_info is not None else None
+    target_inode = target_info.st_ino if target_info is not None else None
+    target_mtime_ns = target_info.st_mtime_ns if target_info is not None else None
     software_parent_manifest = snapshot_tree_manifest(software_parent(target))
     try:
         if target_info is None:
@@ -2325,6 +2476,8 @@ def install_prepared_software_root(
             target,
             target_existed=target_existed,
             target_mode=target_mode,
+            target_inode=target_inode,
+            target_mtime_ns=target_mtime_ns,
             software_parent_manifest=software_parent_manifest,
             software_parent_initial_mode=software_parent_initial_mode,
             final_root=final_root,
@@ -2390,7 +2543,8 @@ def software_probe(
     libc_arg: str | None,
 ) -> dict[str, Any]:
     validate_software_host_request(platform_arg, architecture_arg, libc_arg)
-    with external_target_lock(target):
+    with external_target_scope(target) as locked_target:
+        target = locked_target
         preflight_software_target(target, allow_partial=True)
         package = select_software_package(
             platform_arg,
@@ -2426,28 +2580,35 @@ def software_install(
     libc_arg: str | None,
 ) -> dict[str, Any]:
     validate_software_host_request(platform_arg, architecture_arg, libc_arg)
-    with target_lock(target, create_target=True):
-        status = preflight_software_target(target, allow_partial=False)
-        if status["state"] == "installed":
-            fail("Kiro CLI software is already installed")
-        package = select_software_package(
-            platform_arg,
-            architecture_arg,
-            libc_arg,
-        )
-        prepared, stage = prepare_software_from_package(target, package)
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        transaction = setup_transaction_snapshot(target)
         try:
-            race_status = preflight_software_target(target, allow_partial=False)
-            if race_status["state"] == "installed":
-                fail("Kiro CLI software is already installed")
-            result = install_prepared_software_root(target, prepared, allow_existing=False)
+            with internal_target_lock(target, create_target=True):
+                status = preflight_software_target(target, allow_partial=False)
+                if status["state"] == "installed":
+                    fail("Kiro CLI software is already installed")
+                package = select_software_package(
+                    platform_arg,
+                    architecture_arg,
+                    libc_arg,
+                )
+                prepared, stage = prepare_software_from_package(target, package)
+                try:
+                    race_status = preflight_software_target(target, allow_partial=False)
+                    if race_status["state"] == "installed":
+                        fail("Kiro CLI software is already installed")
+                    result = install_prepared_software_root(target, prepared, allow_existing=False)
+                except BaseException:
+                    cleanup_transaction_tree(stage, "software stage")
+                    require_no_software_transaction_residue(target, "software stage")
+                    raise
+                else:
+                    cleanup_transaction_tree(stage, "software stage")
+                    require_no_software_transaction_residue(target, "software stage")
         except BaseException:
-            cleanup_transaction_tree(stage, "software stage")
-            require_no_software_transaction_residue(target, "software stage")
+            restore_setup_transaction_if_changed(target, transaction)
             raise
-        else:
-            cleanup_transaction_tree(stage, "software stage")
-            require_no_software_transaction_residue(target, "software stage")
     return {
         "operation": "software-install",
         "changed": True,
@@ -2464,51 +2625,58 @@ def software_update(
     libc_arg: str | None,
 ) -> dict[str, Any]:
     validate_software_host_request(platform_arg, architecture_arg, libc_arg)
-    with target_lock(target, create_target=False):
-        status = preflight_software_target(target, allow_partial=True)
-        if status["state"] in {"missing", "absent"}:
-            fail("Kiro CLI software is absent; run software-install first")
-        if status["state"] == "installed":
-            return {
-                "operation": "software-update",
-                "target": str(target),
-                "changed": False,
-                "version": status["version"],
-                "package": status["package"],
-                "executable": status["executable"],
-                "rollback": {"mode": "none", "created_dirs": []},
-                "official_vendor_installer": official_vendor_installer_record(),
-            }
-        package = select_software_package(
-            platform_arg,
-            architecture_arg,
-            libc_arg,
-        )
-        prepared, stage = prepare_software_from_package(target, package)
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        transaction = setup_transaction_snapshot(target)
         try:
-            race_status = preflight_software_target(target, allow_partial=True)
-            if race_status["state"] == "installed":
-                result = {
-                    "operation": "software-update",
-                    "target": str(target),
-                    "changed": False,
-                    "version": race_status["version"],
-                    "package": race_status["package"],
-                    "executable": race_status["executable"],
-                    "rollback": {"mode": "none", "created_dirs": []},
-                    "official_vendor_installer": official_vendor_installer_record(),
-                }
-                cleanup_transaction_tree(stage, "software stage")
-                require_no_software_transaction_residue(target, "software stage")
-                return result
-            result = install_prepared_software_root(target, prepared, allow_existing=True)
+            with internal_target_lock(target, create_target=False):
+                status = preflight_software_target(target, allow_partial=True)
+                if status["state"] in {"missing", "absent"}:
+                    fail("Kiro CLI software is absent; run software-install first")
+                if status["state"] == "installed":
+                    return {
+                        "operation": "software-update",
+                        "target": str(target),
+                        "changed": False,
+                        "version": status["version"],
+                        "package": status["package"],
+                        "executable": status["executable"],
+                        "rollback": {"mode": "none", "created_dirs": []},
+                        "official_vendor_installer": official_vendor_installer_record(),
+                    }
+                package = select_software_package(
+                    platform_arg,
+                    architecture_arg,
+                    libc_arg,
+                )
+                prepared, stage = prepare_software_from_package(target, package)
+                try:
+                    race_status = preflight_software_target(target, allow_partial=True)
+                    if race_status["state"] == "installed":
+                        result = {
+                            "operation": "software-update",
+                            "target": str(target),
+                            "changed": False,
+                            "version": race_status["version"],
+                            "package": race_status["package"],
+                            "executable": race_status["executable"],
+                            "rollback": {"mode": "none", "created_dirs": []},
+                            "official_vendor_installer": official_vendor_installer_record(),
+                        }
+                        cleanup_transaction_tree(stage, "software stage")
+                        require_no_software_transaction_residue(target, "software stage")
+                        return result
+                    result = install_prepared_software_root(target, prepared, allow_existing=True)
+                except BaseException:
+                    cleanup_transaction_tree(stage, "software stage")
+                    require_no_software_transaction_residue(target, "software stage")
+                    raise
+                else:
+                    cleanup_transaction_tree(stage, "software stage")
+                    require_no_software_transaction_residue(target, "software stage")
         except BaseException:
-            cleanup_transaction_tree(stage, "software stage")
-            require_no_software_transaction_residue(target, "software stage")
+            restore_setup_transaction_if_changed(target, transaction)
             raise
-        else:
-            cleanup_transaction_tree(stage, "software stage")
-            require_no_software_transaction_residue(target, "software stage")
     return {
         "operation": "software-update",
         "changed": True,
@@ -2519,66 +2687,77 @@ def software_update(
 
 def software_remove(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
-    with target_lock(target, create_target=False):
-        status = software_status_body(target)
-        root = software_root(target)
-        if status["state"] in {"missing", "absent"}:
-            return {
-                "operation": "software-remove",
-                "target": str(target),
-                "changed": False,
-                "removed_state": status["state"],
-            }
-        target_info = lstat_optional(target)
-        target_existed = target_info is not None
-        target_mode = stat.S_IMODE(target_info.st_mode) if target_info is not None else None
-        software_parent_initial_mode = stat.S_IMODE(software_parent(target).lstat().st_mode)
-        software_parent_manifest = snapshot_tree_manifest(software_parent(target))
-        rollback_parent: Path | None = None
-        rollback_root: Path | None = None
-        require_owned_directory_modes(
-            root,
-            "software root",
-            {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE},
-        )
-        existing_root_modes = snapshot_tree_modes(root)
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        transaction = setup_transaction_snapshot(target)
         try:
-            make_software_parent_mutable(target)
-            make_software_tree_mutable(root)
-            rollback_parent = create_transaction_dir(target, "software-rollback")
-            rollback_root = rollback_parent / "previous"
-            os.replace(root, rollback_root)
-            fsync_directory(root.parent)
-            fsync_directory(rollback_parent)
-            remove_empty_directory_if_present(root.parent)
-            absent = software_status_body(target)
-            if absent["state"] not in {"missing", "absent"}:
-                fail(f"Kiro CLI software remove postcondition failed: {absent['state']}")
-            make_software_tree_mutable(rollback_root)
-            cleanup_transaction_tree(rollback_parent, "software rollback retirement")
-            rollback_parent = None
-            require_no_software_transaction_residue(target, "software remove")
+            with internal_target_lock(target, create_target=False):
+                status = software_status_body(target)
+                root = software_root(target)
+                if status["state"] in {"missing", "absent"}:
+                    return {
+                        "operation": "software-remove",
+                        "target": str(target),
+                        "changed": False,
+                        "removed_state": status["state"],
+                    }
+                target_info = lstat_optional(target)
+                target_existed = target_info is not None
+                target_mode = stat.S_IMODE(target_info.st_mode) if target_info is not None else None
+                target_inode = target_info.st_ino if target_info is not None else None
+                target_mtime_ns = target_info.st_mtime_ns if target_info is not None else None
+                software_parent_initial_mode = stat.S_IMODE(software_parent(target).lstat().st_mode)
+                software_parent_manifest = snapshot_tree_manifest(software_parent(target))
+                rollback_parent: Path | None = None
+                rollback_root: Path | None = None
+                require_owned_directory_modes(
+                    root,
+                    "software root",
+                    {OWNER_DIR_MODE, SOFTWARE_IMMUTABLE_DIR_MODE},
+                )
+                existing_root_modes = snapshot_tree_modes(root)
+                try:
+                    make_software_parent_mutable(target)
+                    make_software_tree_mutable(root)
+                    rollback_parent = create_transaction_dir(target, "software-rollback")
+                    rollback_root = rollback_parent / "previous"
+                    os.replace(root, rollback_root)
+                    fsync_directory(root.parent)
+                    fsync_directory(rollback_parent)
+                    remove_empty_directory_if_present(root.parent)
+                    absent = software_status_body(target)
+                    if absent["state"] not in {"missing", "absent"}:
+                        fail(f"Kiro CLI software remove postcondition failed: {absent['state']}")
+                    make_software_tree_mutable(rollback_root)
+                    cleanup_transaction_tree(rollback_parent, "software rollback retirement")
+                    rollback_parent = None
+                    require_no_software_transaction_residue(target, "software remove")
+                except BaseException:
+                    restore_software_install_transaction(
+                        target,
+                        target_existed=target_existed,
+                        target_mode=target_mode,
+                        target_inode=target_inode,
+                        target_mtime_ns=target_mtime_ns,
+                        software_parent_manifest=software_parent_manifest,
+                        software_parent_initial_mode=software_parent_initial_mode,
+                        final_root=root,
+                        rollback_parent=rollback_parent,
+                        rollback_root=rollback_root,
+                        installed_new_root=False,
+                        existing_root_modes=existing_root_modes,
+                        created_dirs=[],
+                    )
+                    raise
+                return {
+                    "operation": "software-remove",
+                    "target": str(target),
+                    "changed": True,
+                    "removed_state": status["state"],
+                }
         except BaseException:
-            restore_software_install_transaction(
-                target,
-                target_existed=target_existed,
-                target_mode=target_mode,
-                software_parent_manifest=software_parent_manifest,
-                software_parent_initial_mode=software_parent_initial_mode,
-                final_root=root,
-                rollback_parent=rollback_parent,
-                rollback_root=rollback_root,
-                installed_new_root=False,
-                existing_root_modes=existing_root_modes,
-                created_dirs=[],
-            )
+            restore_setup_transaction_if_changed(target, transaction)
             raise
-        return {
-            "operation": "software-remove",
-            "target": str(target),
-            "changed": True,
-            "removed_state": status["state"],
-        }
 
 
 def validate_setup_id(setup_id: str) -> None:
@@ -2799,14 +2978,21 @@ def canonical_target_identity(path: Path) -> Path:
     return parent / path.name
 
 
+def lexical_target_identity(path: Path) -> Path:
+    if not path.is_absolute():
+        fail("--target must be an absolute path")
+    if path == Path(path.anchor):
+        fail("filesystem root cannot be a target")
+    if path.name in {"", ".", ".."} or any(part in {".", ".."} for part in path.parts):
+        fail("--target must have a stable literal basename")
+    return path
+
+
 def resolve_target(raw_target: str | None) -> Path:
     if not raw_target:
         fail("--target is required")
     expanded = Path(raw_target).expanduser()
-    target = canonical_target_identity(expanded)
-    if target == Path(target.anchor):
-        fail("filesystem root cannot be a target")
-    return target
+    return lexical_target_identity(expanded)
 
 
 def ensure_target_directory(target: Path, *, create: bool) -> bool:
@@ -3726,23 +3912,38 @@ def bootstrap_product_root() -> Path:
     return root
 
 
-def external_lock_digest(target: Path) -> str:
-    canonical_target = canonical_target_identity(target)
+def external_lock_digest_for_canonical_target(canonical_target: Path) -> str:
     return sha256_bytes(f"{PRODUCT_NAME}\0{canonical_target}".encode("utf-8"))
+
+
+def external_lock_digest(target: Path) -> str:
+    return external_lock_digest_for_canonical_target(canonical_target_identity(target))
 
 
 def external_lock_path(target: Path) -> Path:
     return bootstrap_product_root() / f"{external_lock_digest(target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
 
 
-def external_lock_binding(target: Path) -> dict[str, Any]:
-    canonical_target = canonical_target_identity(target)
+def external_lock_path_for_canonical_target(canonical_target: Path) -> Path:
+    digest = external_lock_digest_for_canonical_target(canonical_target)
+    return bootstrap_product_root() / f"{digest}{EXTERNAL_LOCK_NAME_SUFFIX}"
+
+
+def external_lock_binding_for_canonical_target(canonical_target: Path) -> dict[str, Any]:
     return {
         "schema_version": EXTERNAL_LOCK_SCHEMA,
         "product_name": PRODUCT_NAME,
         "canonical_target": str(canonical_target),
-        "lock_digest": external_lock_digest(canonical_target),
+        "lock_digest": external_lock_digest_for_canonical_target(canonical_target),
     }
+
+
+def external_lock_binding(target: Path) -> dict[str, Any]:
+    return external_lock_binding_for_canonical_target(canonical_target_identity(target))
+
+
+def external_bootstrap_lock_path() -> Path:
+    return bootstrap_product_root() / EXTERNAL_BOOTSTRAP_LOCK_NAME
 
 
 def open_external_lock_file(lock: Path) -> int:
@@ -3812,6 +4013,10 @@ def read_external_lock_binding(descriptor: int) -> dict[str, Any] | None:
 
 def ensure_external_lock_binding(descriptor: int, target: Path) -> None:
     expected = external_lock_binding(target)
+    ensure_external_lock_binding_matches(descriptor, expected)
+
+
+def ensure_external_lock_binding_matches(descriptor: int, expected: dict[str, Any]) -> None:
     existing = read_external_lock_binding(descriptor)
     if existing is None:
         content = canonical_json(expected)
@@ -3825,9 +4030,8 @@ def ensure_external_lock_binding(descriptor: int, target: Path) -> None:
 
 
 @contextlib.contextmanager
-def external_target_lock(target: Path, *, blocking: bool = False) -> Iterator[Path]:
-    canonical_target = canonical_target_identity(target)
-    lock = external_lock_path(canonical_target)
+def external_bootstrap_lock(*, blocking: bool = False) -> Iterator[Path]:
+    lock = external_bootstrap_lock_path()
     descriptor = open_external_lock_file(lock)
     locked = False
     try:
@@ -3840,8 +4044,6 @@ def external_target_lock(target: Path, *, blocking: bool = False) -> Iterator[Pa
             fail(f"cannot lock target externally: {exc}")
         locked = True
         require_external_lock_descriptor(lock, descriptor)
-        ensure_external_lock_binding(descriptor, canonical_target)
-        require_external_lock_descriptor(lock, descriptor)
         yield lock
     finally:
         if locked:
@@ -3849,6 +4051,60 @@ def external_target_lock(target: Path, *, blocking: bool = False) -> Iterator[Pa
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
         with contextlib.suppress(OSError):
             os.close(descriptor)
+
+
+@contextlib.contextmanager
+def external_lifecycle_lock(target: Path, *, blocking: bool = False) -> Iterator[tuple[Path, Path]]:
+    descriptor = -1
+    target_locked = False
+    with external_bootstrap_lock(blocking=blocking):
+        canonical_target = canonical_target_identity(target)
+        lock = external_lock_path_for_canonical_target(canonical_target)
+        descriptor = open_external_lock_file(lock)
+        try:
+            operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+            try:
+                fcntl.flock(descriptor, operation)
+            except OSError as exc:
+                if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                    fail(f"target is already locked: {lock}")
+                fail(f"cannot lock target externally: {exc}")
+            target_locked = True
+            require_external_lock_descriptor(lock, descriptor)
+            ensure_external_lock_binding_matches(
+                descriptor,
+                external_lock_binding_for_canonical_target(canonical_target),
+            )
+            require_external_lock_descriptor(lock, descriptor)
+        except BaseException:
+            if target_locked:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            if descriptor >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            raise
+    try:
+        yield canonical_target, lock
+    finally:
+        if target_locked:
+            with contextlib.suppress(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        if descriptor >= 0:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+
+@contextlib.contextmanager
+def external_target_scope(target: Path, *, blocking: bool = False) -> Iterator[Path]:
+    with external_lifecycle_lock(target, blocking=blocking) as (canonical_target, _lock):
+        yield canonical_target
+
+
+@contextlib.contextmanager
+def external_target_lock(target: Path, *, blocking: bool = False) -> Iterator[Path]:
+    with external_lifecycle_lock(target, blocking=blocking) as (_canonical_target, lock):
+        yield lock
 
 
 def require_lock_root_directory(path: Path, label: str) -> os.stat_result:
@@ -4037,10 +4293,10 @@ def internal_target_lock(target: Path, *, create_target: bool) -> Iterator[None]
 
 
 @contextlib.contextmanager
-def target_lock(target: Path, *, create_target: bool) -> Iterator[None]:
-    with external_target_lock(target):
-        with internal_target_lock(target, create_target=create_target):
-            yield
+def target_lock(target: Path, *, create_target: bool) -> Iterator[Path]:
+    with external_target_scope(target) as canonical_target:
+        with internal_target_lock(canonical_target, create_target=create_target):
+            yield canonical_target
 
 
 def backup_pool(target: Path) -> Path:
@@ -4515,11 +4771,17 @@ def setup_transaction_snapshot(target: Path) -> dict[str, Any]:
     managed_files = all_setup_managed_files()
     target_info = lstat_optional(target)
     target_mode: int | None = None
+    target_inode: int | None = None
+    target_mtime_ns: int | None = None
     if target_info is not None:
         target_mode = stat.S_IMODE(target_info.st_mode)
+        target_inode = target_info.st_ino
+        target_mtime_ns = target_info.st_mtime_ns
     return {
         "target_existed": target_info is not None,
         "target_mode": target_mode,
+        "target_inode": target_inode,
+        "target_mtime_ns": target_mtime_ns,
         "managed_files": managed_files,
         "managed": snapshot_managed_files(target, managed_files),
         "backup_pool": snapshot_tree_exact(backup_pool(target)),
@@ -4565,6 +4827,10 @@ def setup_transaction_matches(target: Path, snapshot: dict[str, Any]) -> bool:
             return False
         if stat.S_IMODE(info.st_mode) != snapshot["target_mode"]:
             return False
+        if info.st_ino != snapshot["target_inode"]:
+            return False
+        if info.st_mtime_ns != snapshot["target_mtime_ns"]:
+            return False
         if not managed_snapshot_matches(
             target,
             snapshot["managed"],
@@ -4582,18 +4848,20 @@ def setup_transaction_matches(target: Path, snapshot: dict[str, Any]) -> bool:
     return True
 
 
-def ensure_restored_target_directory(target: Path, mode: int) -> None:
+def ensure_restored_target_directory(target: Path, mode: int, inode: int, mtime_ns: int) -> None:
     info = lstat_optional(target)
-    if info is not None and (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)):
-        remove_tree_exact(target)
-        info = None
     if info is None:
-        target.mkdir(mode=mode)
-        os.chmod(target, mode)
-        fsync_directory(target.parent)
-        return
+        fail("setup transaction target directory is missing")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("setup transaction target directory changed kind")
+    if info.st_ino != inode:
+        fail("setup transaction target directory identity changed")
     require_current_user_owned(info, "--target")
-    os.chmod(target, OWNER_DIR_MODE)
+    os.chmod(target, mode)
+    refreshed = target.lstat()
+    os.utime(target, ns=(refreshed.st_atime_ns, mtime_ns))
+    fsync_existing_path(target, directory=True)
+    fsync_directory(target.parent)
 
 
 def restore_setup_transaction_once(target: Path, snapshot: dict[str, Any]) -> None:
@@ -4601,9 +4869,15 @@ def restore_setup_transaction_once(target: Path, snapshot: dict[str, Any]) -> No
         remove_tree_exact(target)
         return
     target_mode = snapshot["target_mode"]
-    if not isinstance(target_mode, int):
-        fail("setup transaction snapshot target mode is invalid")
-    ensure_restored_target_directory(target, target_mode)
+    target_inode = snapshot["target_inode"]
+    target_mtime_ns = snapshot["target_mtime_ns"]
+    if (
+        not isinstance(target_mode, int)
+        or not isinstance(target_inode, int)
+        or not isinstance(target_mtime_ns, int)
+    ):
+        fail("setup transaction snapshot target identity is invalid")
+    ensure_restored_target_directory(target, target_mode, target_inode, target_mtime_ns)
     restore_snapshot(
         target,
         snapshot["managed"],
@@ -4613,6 +4887,9 @@ def restore_setup_transaction_once(target: Path, snapshot: dict[str, Any]) -> No
     restore_tree_exact_retry(lock_root(target), snapshot["lock_root"], "lock root")
     remove_empty_runtime_dirs(target)
     os.chmod(target, target_mode)
+    refreshed = target.lstat()
+    os.utime(target, ns=(refreshed.st_atime_ns, target_mtime_ns))
+    fsync_existing_path(target, directory=True)
     fsync_directory(target.parent)
 
 
@@ -4626,6 +4903,11 @@ def restore_setup_transaction(target: Path, snapshot: dict[str, Any]) -> None:
         if setup_transaction_matches(target, snapshot):
             return
     raise ManagerError("setup transaction rollback did not restore exact pre-state") from last_error
+
+
+def restore_setup_transaction_if_changed(target: Path, snapshot: dict[str, Any]) -> None:
+    if not setup_transaction_matches(target, snapshot):
+        restore_setup_transaction(target, snapshot)
 
 
 def current_status_body(target: Path) -> dict[str, Any]:
@@ -4697,64 +4979,68 @@ def current_status_body(target: Path) -> dict[str, Any]:
 
 def current_status(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
-    return current_status_body(target)
+    with external_target_scope(target) as locked_target:
+        return current_status_body(locked_target)
 
 
 def plan_setup(target: Path, setup_id: str, permission_profile_id: str) -> dict[str, Any]:
     require_supported_host_preflight()
-    setup = render_setup(setup_id)
-    profile = render_permission_profile(permission_profile_id)
-    status = current_status(target)
-    managed_files = MANAGED_FILES
-    if status["state"] == "missing":
-        operation = "install"
-        backup_required = False
-    elif status["state"] == "unmanaged":
-        operation = "install"
-        backup_required = False
-    elif status["state"] == "legacy-managed":
-        operation = "migrate"
-        backup_required = True
-    elif (
-        status["setup_id"] == setup_id and status["permission_profile_id"] == permission_profile_id
-    ):
-        operation = "update"
-        backup_required = False
-    else:
-        operation = "switch"
-        backup_required = True
-    if operation in {"install", "update", "switch"}:
-        before = snapshot_managed_files(target)
-        desired = desired_for_setup(target, setup, profile)
-        desired[STAMP_NAME] = canonical_json(
-            stamp_payload(target, setup_id, permission_profile_id, desired)
-        )
-    else:
-        stamp = load_stamp(target)
-        if stamp is None:
-            fail("migrate plan requires a managed target")
-        managed_files = tuple(dict.fromkeys((*LEGACY_MANAGED_FILES, *MANAGED_FILES)))
-        before = snapshot_managed_files(target, managed_files)
-        desired = desired_for_setup(target, setup, profile)
-        for relative in managed_files:
-            desired.setdefault(relative, None)
-        desired[STAMP_NAME] = canonical_json(
-            stamp_payload(target, setup.setup_id, profile.profile_id, desired)
-        )
-    changed = changed_managed_paths(before, desired, managed_files)
-    return {
-        "operation": operation,
-        "target": str(target),
-        "setup_id": setup_id,
-        "permission_profile_id": permission_profile_id,
-        "mutates": False,
-        "backup_required": backup_required,
-        "changed": changed,
-        "state": status["state"],
-        "current_setup_id": status["setup_id"],
-        "current_permission_profile_id": status["permission_profile_id"],
-        "drift": status["drift"],
-    }
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        setup = render_setup(setup_id)
+        profile = render_permission_profile(permission_profile_id)
+        status = current_status_body(target)
+        managed_files = MANAGED_FILES
+        if status["state"] == "missing":
+            operation = "install"
+            backup_required = False
+        elif status["state"] == "unmanaged":
+            operation = "install"
+            backup_required = False
+        elif status["state"] == "legacy-managed":
+            operation = "migrate"
+            backup_required = True
+        elif (
+            status["setup_id"] == setup_id
+            and status["permission_profile_id"] == permission_profile_id
+        ):
+            operation = "update"
+            backup_required = False
+        else:
+            operation = "switch"
+            backup_required = True
+        if operation in {"install", "update", "switch"}:
+            before = snapshot_managed_files(target)
+            desired = desired_for_setup(target, setup, profile)
+            desired[STAMP_NAME] = canonical_json(
+                stamp_payload(target, setup_id, permission_profile_id, desired)
+            )
+        else:
+            stamp = load_stamp(target)
+            if stamp is None:
+                fail("migrate plan requires a managed target")
+            managed_files = tuple(dict.fromkeys((*LEGACY_MANAGED_FILES, *MANAGED_FILES)))
+            before = snapshot_managed_files(target, managed_files)
+            desired = desired_for_setup(target, setup, profile)
+            for relative in managed_files:
+                desired.setdefault(relative, None)
+            desired[STAMP_NAME] = canonical_json(
+                stamp_payload(target, setup.setup_id, profile.profile_id, desired)
+            )
+        changed = changed_managed_paths(before, desired, managed_files)
+        return {
+            "operation": operation,
+            "target": str(target),
+            "setup_id": setup_id,
+            "permission_profile_id": permission_profile_id,
+            "mutates": False,
+            "backup_required": backup_required,
+            "changed": changed,
+            "state": status["state"],
+            "current_setup_id": status["setup_id"],
+            "current_permission_profile_id": status["permission_profile_id"],
+            "drift": status["drift"],
+        }
 
 
 def require_clean_managed(target: Path) -> dict[str, Any]:
@@ -4786,299 +5072,289 @@ def mutate_setup(
     action: str,
 ) -> dict[str, Any]:
     require_supported_host_preflight()
-    setup = render_setup(setup_id)
-    profile = render_permission_profile(permission_profile_id)
-    transaction = setup_transaction_snapshot(target)
-    locked = False
-    try:
-        with target_lock(target, create_target=action == "install"):
-            locked = True
-            ensure_target_directory(target, create=True)
-            existing_stamp = load_stamp(target)
-            if existing_stamp is None:
-                if action == "switch":
-                    fail("switch requires a managed target")
-                preflight_unmanaged_target(target)
-            else:
-                if not stamp_is_current(existing_stamp):
-                    fail(
-                        "legacy managed target requires migrate before apply, switch, update, or launch"
-                    )
-                if action == "install":
-                    fail("install requires an absent managed target; use update or switch")
-                drift = detect_drift(target, existing_stamp)
-                if drift:
-                    fail(f"managed target has drift: {drift}")
-            backup_slot: int | None = None
-            backup_transaction: BackupTransaction | None = None
-            before = snapshot_managed_files(target)
-            desired = desired_for_setup(target, setup, profile)
-            desired[STAMP_NAME] = canonical_json(
-                stamp_payload(target, setup_id, permission_profile_id, desired)
-            )
-            if existing_stamp is not None and (
-                existing_stamp["setup_id"] != setup_id
-                or existing_stamp["permission_profile_id"] != permission_profile_id
-            ):
-                backup_transaction = stage_backup(target, existing_stamp)
-            managed_transaction: ManagedStateTransaction | None = None
-            try:
-                managed_transaction = begin_managed_state_transaction(target, desired, before)
-                if backup_transaction is not None:
-                    backup_slot = commit_backup(backup_transaction, target)
-                commit_managed_state_transaction(managed_transaction)
-            except BaseException:
-                if managed_transaction is not None:
-                    rollback_managed_state_transaction(managed_transaction)
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        transaction = setup_transaction_snapshot(target)
+        try:
+            with internal_target_lock(target, create_target=action == "install"):
+                setup = render_setup(setup_id)
+                profile = render_permission_profile(permission_profile_id)
+                ensure_target_directory(target, create=True)
+                existing_stamp = load_stamp(target)
+                if existing_stamp is None:
+                    if action == "switch":
+                        fail("switch requires a managed target")
+                    preflight_unmanaged_target(target)
                 else:
-                    restore_snapshot(target, before)
-                raise
-            changed = changed_managed_paths(before, desired)
-            return {
-                "operation": "install" if existing_stamp is None else action,
-                "target": str(target),
-                "setup_id": setup_id,
-                "permission_profile_id": permission_profile_id,
-                "changed": changed,
-                "backup_slot": backup_slot,
-                "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
-                "engine": {
-                    "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
-                    "status": MANAGED_LAUNCH_ENGINE_STATUS,
-                },
-            }
-    except BaseException:
-        if not locked:
+                    if not stamp_is_current(existing_stamp):
+                        fail(
+                            "legacy managed target requires migrate before apply, switch, update, or launch"
+                        )
+                    if action == "install":
+                        fail("install requires an absent managed target; use update or switch")
+                    drift = detect_drift(target, existing_stamp)
+                    if drift:
+                        fail(f"managed target has drift: {drift}")
+                backup_slot: int | None = None
+                backup_transaction: BackupTransaction | None = None
+                before = snapshot_managed_files(target)
+                desired = desired_for_setup(target, setup, profile)
+                desired[STAMP_NAME] = canonical_json(
+                    stamp_payload(target, setup_id, permission_profile_id, desired)
+                )
+                if existing_stamp is not None and (
+                    existing_stamp["setup_id"] != setup_id
+                    or existing_stamp["permission_profile_id"] != permission_profile_id
+                ):
+                    backup_transaction = stage_backup(target, existing_stamp)
+                managed_transaction: ManagedStateTransaction | None = None
+                try:
+                    managed_transaction = begin_managed_state_transaction(target, desired, before)
+                    if backup_transaction is not None:
+                        backup_slot = commit_backup(backup_transaction, target)
+                    commit_managed_state_transaction(managed_transaction)
+                except BaseException:
+                    if managed_transaction is not None:
+                        rollback_managed_state_transaction(managed_transaction)
+                    else:
+                        restore_snapshot(target, before)
+                    raise
+                changed = changed_managed_paths(before, desired)
+                return {
+                    "operation": "install" if existing_stamp is None else action,
+                    "target": str(target),
+                    "setup_id": setup_id,
+                    "permission_profile_id": permission_profile_id,
+                    "changed": changed,
+                    "backup_slot": backup_slot,
+                    "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
+                    "engine": {
+                        "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
+                        "status": MANAGED_LAUNCH_ENGINE_STATUS,
+                    },
+                }
+        except BaseException:
+            restore_setup_transaction_if_changed(target, transaction)
             raise
-        restore_setup_transaction(target, transaction)
-        raise
 
 
 def update_setup(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
-    transaction = setup_transaction_snapshot(target)
-    locked = False
-    try:
-        with target_lock(target, create_target=False):
-            locked = True
-            stamp = load_stamp(target)
-            if stamp is None:
-                fail("update requires a managed target")
-            if not stamp_is_current(stamp):
-                fail("legacy managed target requires migrate before update")
-            setup = render_setup(stamp["setup_id"])
-            profile = render_permission_profile(stamp["permission_profile_id"])
-            before = snapshot_managed_files(target)
-            desired = desired_for_setup(target, setup, profile)
-            desired[STAMP_NAME] = canonical_json(
-                stamp_payload(target, setup.setup_id, profile.profile_id, desired)
-            )
-            managed_transaction: ManagedStateTransaction | None = None
-            try:
-                managed_transaction = begin_managed_state_transaction(target, desired, before)
-                commit_managed_state_transaction(managed_transaction)
-            except BaseException:
-                if managed_transaction is not None:
-                    rollback_managed_state_transaction(managed_transaction)
-                else:
-                    restore_snapshot(target, before)
-                raise
-            changed = changed_managed_paths(before, desired)
-            return {
-                "operation": "update",
-                "target": str(target),
-                "setup_id": setup.setup_id,
-                "permission_profile_id": profile.profile_id,
-                "changed": changed,
-                "backup_slot": None,
-                "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
-                "engine": {
-                    "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
-                    "status": MANAGED_LAUNCH_ENGINE_STATUS,
-                },
-            }
-    except BaseException:
-        if not locked:
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        transaction = setup_transaction_snapshot(target)
+        try:
+            with internal_target_lock(target, create_target=False):
+                stamp = load_stamp(target)
+                if stamp is None:
+                    fail("update requires a managed target")
+                if not stamp_is_current(stamp):
+                    fail("legacy managed target requires migrate before update")
+                setup = render_setup(stamp["setup_id"])
+                profile = render_permission_profile(stamp["permission_profile_id"])
+                before = snapshot_managed_files(target)
+                desired = desired_for_setup(target, setup, profile)
+                desired[STAMP_NAME] = canonical_json(
+                    stamp_payload(target, setup.setup_id, profile.profile_id, desired)
+                )
+                managed_transaction: ManagedStateTransaction | None = None
+                try:
+                    managed_transaction = begin_managed_state_transaction(target, desired, before)
+                    commit_managed_state_transaction(managed_transaction)
+                except BaseException:
+                    if managed_transaction is not None:
+                        rollback_managed_state_transaction(managed_transaction)
+                    else:
+                        restore_snapshot(target, before)
+                    raise
+                changed = changed_managed_paths(before, desired)
+                return {
+                    "operation": "update",
+                    "target": str(target),
+                    "setup_id": setup.setup_id,
+                    "permission_profile_id": profile.profile_id,
+                    "changed": changed,
+                    "backup_slot": None,
+                    "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
+                    "engine": {
+                        "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
+                        "status": MANAGED_LAUNCH_ENGINE_STATUS,
+                    },
+                }
+        except BaseException:
+            restore_setup_transaction_if_changed(target, transaction)
             raise
-        restore_setup_transaction(target, transaction)
-        raise
 
 
 def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
     require_supported_host_preflight()
-    setup = render_setup(CONTENT_SETUP_ID)
-    profile = render_permission_profile(permission_profile_id)
-    transaction = setup_transaction_snapshot(target)
-    locked = False
-    try:
-        with target_lock(target, create_target=False):
-            locked = True
-            stamp = load_stamp(target)
-            if stamp is None:
-                fail("migrate requires a managed target")
-            if stamp_is_current(stamp):
-                fail("target already uses the current managed schema")
-            drift = detect_drift(target, stamp)
-            if drift:
-                fail(f"managed target has drift: {drift}")
-            managed_files = all_setup_managed_files()
-            before = snapshot_managed_files(target, managed_files)
-            desired = desired_for_setup(target, setup, profile)
-            for relative in managed_files:
-                desired.setdefault(relative, None)
-            desired[STAMP_NAME] = canonical_json(
-                stamp_payload(target, setup.setup_id, profile.profile_id, desired)
-            )
-            backup_transaction = stage_backup(target, stamp)
-            backup_slot: int | None = None
-            managed_transaction: ManagedStateTransaction | None = None
-            try:
-                managed_transaction = begin_managed_state_transaction(
-                    target,
-                    desired,
-                    before,
-                    managed_files=managed_files,
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        transaction = setup_transaction_snapshot(target)
+        try:
+            with internal_target_lock(target, create_target=False):
+                setup = render_setup(CONTENT_SETUP_ID)
+                profile = render_permission_profile(permission_profile_id)
+                stamp = load_stamp(target)
+                if stamp is None:
+                    fail("migrate requires a managed target")
+                if stamp_is_current(stamp):
+                    fail("target already uses the current managed schema")
+                drift = detect_drift(target, stamp)
+                if drift:
+                    fail(f"managed target has drift: {drift}")
+                managed_files = all_setup_managed_files()
+                before = snapshot_managed_files(target, managed_files)
+                desired = desired_for_setup(target, setup, profile)
+                for relative in managed_files:
+                    desired.setdefault(relative, None)
+                desired[STAMP_NAME] = canonical_json(
+                    stamp_payload(target, setup.setup_id, profile.profile_id, desired)
                 )
-                backup_slot = commit_backup(backup_transaction, target)
-                commit_managed_state_transaction(managed_transaction)
-            except BaseException:
-                if managed_transaction is not None:
-                    rollback_managed_state_transaction(managed_transaction)
-                else:
-                    restore_snapshot(target, before, managed_files=managed_files)
-                raise
-            changed = changed_managed_paths(before, desired, managed_files)
-            return {
-                "operation": "migrate",
-                "target": str(target),
-                "from_schema_version": stamp["schema_version"],
-                "from_setup_id": stamp["setup_id"],
-                "setup_id": setup.setup_id,
-                "permission_profile_id": profile.profile_id,
-                "changed": changed,
-                "backup_slot": backup_slot,
-                "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
-                "engine": {
-                    "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
-                    "status": MANAGED_LAUNCH_ENGINE_STATUS,
-                },
-            }
-    except BaseException:
-        if not locked:
+                backup_transaction = stage_backup(target, stamp)
+                backup_slot: int | None = None
+                managed_transaction: ManagedStateTransaction | None = None
+                try:
+                    managed_transaction = begin_managed_state_transaction(
+                        target,
+                        desired,
+                        before,
+                        managed_files=managed_files,
+                    )
+                    backup_slot = commit_backup(backup_transaction, target)
+                    commit_managed_state_transaction(managed_transaction)
+                except BaseException:
+                    if managed_transaction is not None:
+                        rollback_managed_state_transaction(managed_transaction)
+                    else:
+                        restore_snapshot(target, before, managed_files=managed_files)
+                    raise
+                changed = changed_managed_paths(before, desired, managed_files)
+                return {
+                    "operation": "migrate",
+                    "target": str(target),
+                    "from_schema_version": stamp["schema_version"],
+                    "from_setup_id": stamp["setup_id"],
+                    "setup_id": setup.setup_id,
+                    "permission_profile_id": profile.profile_id,
+                    "changed": changed,
+                    "backup_slot": backup_slot,
+                    "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
+                    "engine": {
+                        "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
+                        "status": MANAGED_LAUNCH_ENGINE_STATUS,
+                    },
+                }
+        except BaseException:
+            restore_setup_transaction_if_changed(target, transaction)
             raise
-        restore_setup_transaction(target, transaction)
-        raise
 
 
 def restore_backup(target: Path, slot: int) -> dict[str, Any]:
     require_supported_host_preflight()
-    transaction = setup_transaction_snapshot(target)
-    locked = False
-    try:
-        with target_lock(target, create_target=False):
-            locked = True
-            stamp = require_clean_any_managed(target)
-            _, files, backup_managed_files = load_backup(target, slot)
-            active_managed_files = stamp_managed_files(stamp)
-            managed_files = tuple(dict.fromkeys((*active_managed_files, *backup_managed_files)))
-            for relative in managed_files:
-                files.setdefault(relative, None)
-            before = snapshot_managed_files(target, managed_files)
-            backup_transaction = stage_backup(target, stamp)
-            backup_slot: int | None = None
-            managed_transaction: ManagedStateTransaction | None = None
-            try:
-                managed_transaction = begin_managed_state_transaction(
-                    target,
-                    files,
-                    before,
-                    managed_files=managed_files,
-                )
-                backup_slot = commit_backup(backup_transaction, target)
-                commit_managed_state_transaction(managed_transaction)
-            except BaseException:
-                if managed_transaction is not None:
-                    rollback_managed_state_transaction(managed_transaction)
-                else:
-                    restore_snapshot(target, before, managed_files=managed_files)
-                raise
-            changed = changed_managed_paths(before, files, managed_files)
-            restored_stamp = load_stamp(target)
-            assert restored_stamp is not None
-            return {
-                "operation": "restore",
-                "target": str(target),
-                "setup_id": restored_stamp["setup_id"],
-                "permission_profile_id": restored_stamp.get("permission_profile_id"),
-                "schema_version": restored_stamp["schema_version"],
-                "changed": changed,
-                "backup_slot": backup_slot,
-                "restored_backup": slot,
-                "migration_required": not stamp_is_current(restored_stamp),
-                "builder": {
-                    "projection": BUILDER_PROJECTION
-                    if stamp_is_current(restored_stamp)
-                    else LEGACY_BUILDER_PROJECTION,
-                    "enabled": True,
-                },
-            }
-    except BaseException:
-        if not locked:
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        transaction = setup_transaction_snapshot(target)
+        try:
+            with internal_target_lock(target, create_target=False):
+                stamp = require_clean_any_managed(target)
+                _, files, backup_managed_files = load_backup(target, slot)
+                active_managed_files = stamp_managed_files(stamp)
+                managed_files = tuple(dict.fromkeys((*active_managed_files, *backup_managed_files)))
+                for relative in managed_files:
+                    files.setdefault(relative, None)
+                before = snapshot_managed_files(target, managed_files)
+                backup_transaction = stage_backup(target, stamp)
+                backup_slot: int | None = None
+                managed_transaction: ManagedStateTransaction | None = None
+                try:
+                    managed_transaction = begin_managed_state_transaction(
+                        target,
+                        files,
+                        before,
+                        managed_files=managed_files,
+                    )
+                    backup_slot = commit_backup(backup_transaction, target)
+                    commit_managed_state_transaction(managed_transaction)
+                except BaseException:
+                    if managed_transaction is not None:
+                        rollback_managed_state_transaction(managed_transaction)
+                    else:
+                        restore_snapshot(target, before, managed_files=managed_files)
+                    raise
+                changed = changed_managed_paths(before, files, managed_files)
+                restored_stamp = load_stamp(target)
+                assert restored_stamp is not None
+                return {
+                    "operation": "restore",
+                    "target": str(target),
+                    "setup_id": restored_stamp["setup_id"],
+                    "permission_profile_id": restored_stamp.get("permission_profile_id"),
+                    "schema_version": restored_stamp["schema_version"],
+                    "changed": changed,
+                    "backup_slot": backup_slot,
+                    "restored_backup": slot,
+                    "migration_required": not stamp_is_current(restored_stamp),
+                    "builder": {
+                        "projection": BUILDER_PROJECTION
+                        if stamp_is_current(restored_stamp)
+                        else LEGACY_BUILDER_PROJECTION,
+                        "enabled": True,
+                    },
+                }
+        except BaseException:
+            restore_setup_transaction_if_changed(target, transaction)
             raise
-        restore_setup_transaction(target, transaction)
-        raise
 
 
 def remove_setup(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
-    transaction = setup_transaction_snapshot(target)
-    locked = False
-    try:
-        with target_lock(target, create_target=False):
-            locked = True
-            stamp = require_clean_any_managed(target)
-            managed_files = stamp_managed_files(stamp)
-            before = snapshot_managed_files(target, managed_files)
-            desired: dict[str, bytes | None] = {relative: None for relative in managed_files}
-            if target_file_exists(target, SETTINGS):
-                current = read_target_settings_if_present(target)
-                stripped = strip_managed_settings(current)
-                desired[SETTINGS] = canonical_json(stripped) if stripped else None
-            desired[STAMP_NAME] = None
-            backup_transaction = stage_backup(target, stamp)
-            backup_slot: int | None = None
-            managed_transaction: ManagedStateTransaction | None = None
-            try:
-                managed_transaction = begin_managed_state_transaction(
-                    target,
-                    desired,
-                    before,
-                    managed_files=managed_files,
-                )
-                backup_slot = commit_backup(backup_transaction, target)
-                commit_managed_state_transaction(managed_transaction)
-            except BaseException:
-                if managed_transaction is not None:
-                    rollback_managed_state_transaction(managed_transaction)
-                else:
-                    restore_snapshot(target, before, managed_files=managed_files)
-                raise
-            changed = changed_managed_paths(before, desired, managed_files)
-            return {
-                "operation": "remove",
-                "target": str(target),
-                "removed_setup_id": stamp["setup_id"],
-                "removed_permission_profile_id": stamp.get("permission_profile_id"),
-                "removed_schema_version": stamp["schema_version"],
-                "changed": changed,
-                "backup_slot": backup_slot,
-                "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
-            }
-    except BaseException:
-        if not locked:
+    with external_target_scope(target) as locked_target:
+        target = locked_target
+        transaction = setup_transaction_snapshot(target)
+        try:
+            with internal_target_lock(target, create_target=False):
+                stamp = require_clean_any_managed(target)
+                managed_files = stamp_managed_files(stamp)
+                before = snapshot_managed_files(target, managed_files)
+                desired: dict[str, bytes | None] = {relative: None for relative in managed_files}
+                if target_file_exists(target, SETTINGS):
+                    current = read_target_settings_if_present(target)
+                    stripped = strip_managed_settings(current)
+                    desired[SETTINGS] = canonical_json(stripped) if stripped else None
+                desired[STAMP_NAME] = None
+                backup_transaction = stage_backup(target, stamp)
+                backup_slot: int | None = None
+                managed_transaction: ManagedStateTransaction | None = None
+                try:
+                    managed_transaction = begin_managed_state_transaction(
+                        target,
+                        desired,
+                        before,
+                        managed_files=managed_files,
+                    )
+                    backup_slot = commit_backup(backup_transaction, target)
+                    commit_managed_state_transaction(managed_transaction)
+                except BaseException:
+                    if managed_transaction is not None:
+                        rollback_managed_state_transaction(managed_transaction)
+                    else:
+                        restore_snapshot(target, before, managed_files=managed_files)
+                    raise
+                changed = changed_managed_paths(before, desired, managed_files)
+                return {
+                    "operation": "remove",
+                    "target": str(target),
+                    "removed_setup_id": stamp["setup_id"],
+                    "removed_permission_profile_id": stamp.get("permission_profile_id"),
+                    "removed_schema_version": stamp["schema_version"],
+                    "changed": changed,
+                    "backup_slot": backup_slot,
+                    "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
+                }
+        except BaseException:
+            restore_setup_transaction_if_changed(target, transaction)
             raise
-        restore_setup_transaction(target, transaction)
-        raise
 
 
 def build_launch_env(target: Path) -> dict[str, str]:
@@ -5177,8 +5453,9 @@ def reject_managed_launch_overrides(child_args: list[str]) -> None:
 
 def launch(target: Path, child_args: list[str]) -> int:
     require_supported_host_preflight()
-    reject_managed_launch_overrides(child_args)
-    with target_lock(target, create_target=False):
+    with target_lock(target, create_target=False) as locked_target:
+        target = locked_target
+        reject_managed_launch_overrides(child_args)
         require_clean_managed(target)
         executable = require_clean_software(target)
         env = build_launch_env(target)
