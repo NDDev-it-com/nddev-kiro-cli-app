@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -141,9 +141,12 @@ EXTERNAL_LOCK_NAME_SUFFIX = ".lock"
 EXTERNAL_LOCK_ALIAS_SCAN_MAX = 128
 BACKUP_RUNTIME_DIR = ".nddev-runtime/backups/setup"
 CLEANUP_PENDING_RUNTIME_DIR = ".nddev-runtime/cleanup-pending"
+CLEANUP_INTENT_NAME = "NDDEV-KIRO-CLI-CLEANUP-INTENT.json"
+CLEANUP_INTENT_SCHEMA = 1
 CLEANUP_JOURNAL_NAME = "NDDEV-KIRO-CLI-CLEANUP.json"
 CLEANUP_JOURNAL_SCHEMA = 1
 CLEANUP_JOURNAL_MAX_BYTES = 16 * 1024 * 1024
+CLEANUP_INTENT_MAX_BYTES = 16 * 1024 * 1024
 CLEANUP_TOMBSTONE_NAME = "tombstone"
 CLEANUP_JOURNAL_ALIAS_SCAN_MAX = 8
 CLEANUP_TOMBSTONE_MAX_FILES = 20000
@@ -235,6 +238,38 @@ CLEANUP_JOURNAL_KEYS = {
     "objects",
 }
 CLEANUP_JOURNAL_BOUNDS_KEYS = {"max_files", "max_bytes"}
+CLEANUP_INTENT_KEYS = {
+    "schema_version",
+    "product_name",
+    "build_version",
+    "canonical_target",
+    "cleanup_parent",
+    "intent_name",
+    "journal_name",
+    "tombstone_name",
+    "kind",
+    "bounds",
+    "source_count",
+    "sources",
+}
+CLEANUP_INTENT_SOURCE_KEYS = {
+    "index",
+    "source_kind",
+    "source_anchor",
+    "source_name",
+    "source_parent",
+    "destination_relative",
+    "objects",
+}
+CLEANUP_INTENT_PARENT_KEYS = {
+    "uid",
+    "mode",
+    "nlink",
+    "dev",
+    "inode",
+    "size",
+    "mtime_ns",
+}
 CLEANUP_JOURNAL_OBJECT_KEYS = {
     "relative",
     "kind",
@@ -403,6 +438,8 @@ class CleanupPendingState:
     objects: dict[str, CleanupJournalEntry]
     children: dict[str, set[str]]
     journal_alias: Path | None = None
+    intent: Path | None = None
+    intent_alias: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1804,6 +1841,10 @@ def cleanup_pending_parent(target: Path) -> Path:
     return target / CLEANUP_PENDING_RUNTIME_DIR
 
 
+def cleanup_intent_path(target: Path) -> Path:
+    return cleanup_pending_parent(target) / CLEANUP_INTENT_NAME
+
+
 def cleanup_journal_path(target: Path) -> Path:
     return cleanup_pending_parent(target) / CLEANUP_JOURNAL_NAME
 
@@ -1812,12 +1853,119 @@ def cleanup_tombstone_path(target: Path) -> Path:
     return cleanup_pending_parent(target) / CLEANUP_TOMBSTONE_NAME
 
 
+def cleanup_intent_alias_prefix(intent: Path) -> str:
+    return f".{intent.name}."
+
+
 def cleanup_journal_alias_prefix(journal: Path) -> str:
     return f".{journal.name}."
 
 
+def cleanup_metadata_alias_prefix(final: Path) -> str:
+    if final.name == CLEANUP_INTENT_NAME:
+        return cleanup_intent_alias_prefix(final)
+    if final.name == CLEANUP_JOURNAL_NAME:
+        return cleanup_journal_alias_prefix(final)
+    fail("cleanup metadata final path is invalid")
+
+
 def cleanup_entry_path(tombstone: Path, relative: str) -> Path:
     return tombstone if relative == "." else tombstone / safe_relative_path(relative)
+
+
+def cleanup_source_parent_payload(path: Path, label: str) -> dict[str, int]:
+    info = require_directory(path, label)
+    require_current_user_owned(info, label)
+    return {
+        "uid": owner_of(info),
+        "mode": stat.S_IMODE(info.st_mode),
+        "nlink": info.st_nlink,
+        "dev": info.st_dev,
+        "inode": info.st_ino,
+        "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
+    }
+
+
+def validate_cleanup_parent_payload(value: Any, label: str) -> dict[str, int]:
+    if not isinstance(value, dict) or set(value) != CLEANUP_INTENT_PARENT_KEYS:
+        fail(f"{label} cleanup source parent has invalid keys")
+    result: dict[str, int] = {}
+    for key in CLEANUP_INTENT_PARENT_KEYS:
+        item = value[key]
+        if not isinstance(item, int) or item < 0:
+            fail(f"{label} cleanup source parent {key} is invalid")
+        result[key] = item
+    return result
+
+
+def cleanup_parent_stable_identity_matches(path: Path, payload: Mapping[str, int]) -> bool:
+    info = lstat_optional(path)
+    if info is None or stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return False
+    return (
+        owner_of(info) == payload["uid"]
+        and stat.S_IMODE(info.st_mode) == payload["mode"]
+        and info.st_dev == payload["dev"]
+        and info.st_ino == payload["inode"]
+    )
+
+
+def cleanup_parent_exact_identity_matches(path: Path, payload: Mapping[str, int]) -> bool:
+    info = lstat_optional(path)
+    if info is None or stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return False
+    return cleanup_parent_stable_identity_matches(path, payload) and (
+        info.st_nlink == payload["nlink"]
+        and info.st_size == payload["size"]
+        and info.st_mtime_ns == payload["mtime_ns"]
+    )
+
+
+def cleanup_source_name_pattern(target: Path, source_kind: str) -> re.Pattern[str]:
+    escaped_target = re.escape(target.name)
+    if source_kind == "managed-rollback-retirement":
+        return re.compile(rf"\A\.{escaped_target}\.nddev-kiro-cli-setup-rollback-[A-Za-z0-9_]+\Z")
+    if source_kind == "software-rollback-retirement":
+        return re.compile(
+            rf"\A\.{escaped_target}\.nddev-kiro-cli-software-rollback-[A-Za-z0-9_]+\Z"
+        )
+    if source_kind == "software-stage-retirement":
+        return re.compile(rf"\A\.{escaped_target}\.nddev-kiro-cli-software-stage-[A-Za-z0-9_]+\Z")
+    if source_kind == "backup-slot-retirement":
+        return re.compile(r"\A\.[0-9]+\.rollback\.[A-Za-z0-9_]+\Z")
+    fail("cleanup retirement kind is invalid")
+
+
+def cleanup_source_anchor(target: Path, source: Path, source_kind: str) -> tuple[str, Path]:
+    if source.parent == target.parent and source_kind in {
+        "managed-rollback-retirement",
+        "software-rollback-retirement",
+        "software-stage-retirement",
+    }:
+        return "target-parent", target.parent
+    if source.parent == backup_pool(target) and source_kind == "backup-slot-retirement":
+        return "backup-pool", backup_pool(target)
+    fail("cleanup source parent is outside the declared manager anchors")
+
+
+def cleanup_anchor_parent(target: Path, anchor: str) -> Path:
+    if anchor == "target-parent":
+        return target.parent
+    if anchor == "backup-pool":
+        return backup_pool(target)
+    fail("cleanup source anchor is invalid")
+
+
+def validate_cleanup_source_name(target: Path, source_name: str, source_kind: str) -> None:
+    if "/" in source_name or source_name in {"", ".", ".."}:
+        fail("cleanup source name is invalid")
+    if not cleanup_source_name_pattern(target, source_kind).fullmatch(source_name):
+        fail("cleanup source name is not a declared manager-generated name")
+
+
+def cleanup_destination_relative(source_kind: str, index: int) -> str:
+    return cleanup_retirement_name(source_kind, index)
 
 
 def cleanup_entry_from_path(path: Path, tombstone: Path, total: list[int]) -> CleanupJournalEntry:
@@ -1869,20 +2017,60 @@ def cleanup_entry_from_path(path: Path, tombstone: Path, total: list[int]) -> Cl
     fail(f"cleanup tombstone path must be a regular file or directory: {relative}")
 
 
-def snapshot_cleanup_tombstone(tombstone: Path) -> dict[str, CleanupJournalEntry]:
-    info = require_directory(tombstone, "cleanup tombstone")
-    require_current_user_owned(info, "cleanup tombstone")
-    paths = sorted_tree_paths(tombstone)
+def snapshot_cleanup_tree(root: Path, label: str) -> dict[str, CleanupJournalEntry]:
+    info = require_directory(root, label)
+    require_current_user_owned(info, label)
+    paths = sorted_tree_paths(root)
     if len(paths) > CLEANUP_TOMBSTONE_MAX_FILES:
-        fail("cleanup tombstone exceeds the object bound")
+        fail(f"{label} exceeds the object bound")
     total = [0]
     entries = {
-        tree_relative(path, tombstone): cleanup_entry_from_path(path, tombstone, total)
-        for path in paths
+        tree_relative(path, root): cleanup_entry_from_path(path, root, total) for path in paths
     }
     if "." not in entries:
-        fail("cleanup tombstone root is missing")
+        fail(f"{label} root is missing")
     return entries
+
+
+def snapshot_cleanup_tombstone(tombstone: Path) -> dict[str, CleanupJournalEntry]:
+    return snapshot_cleanup_tree(tombstone, "cleanup tombstone")
+
+
+def cleanup_entries_for_destination(
+    source_entries: Mapping[str, CleanupJournalEntry],
+    destination_relative: str,
+) -> dict[str, CleanupJournalEntry]:
+    transformed: dict[str, CleanupJournalEntry] = {}
+    safe_relative_path(destination_relative)
+    for relative, entry in source_entries.items():
+        if relative == ".":
+            target_relative = destination_relative
+        else:
+            target_relative = f"{destination_relative}/{relative}"
+        transformed[target_relative] = replace(entry, relative=target_relative)
+    return transformed
+
+
+def cleanup_entries_match_root(
+    root: Path,
+    entries: Mapping[str, CleanupJournalEntry],
+    *,
+    allow_directory_drain_drift: bool,
+) -> bool:
+    try:
+        actual_paths = {tree_relative(path, root): path for path in sorted_tree_paths(root)}
+    except (FileNotFoundError, NotADirectoryError, ManagerError):
+        return False
+    if set(actual_paths) != set(entries):
+        return False
+    for relative, entry in entries.items():
+        if not cleanup_entry_matches_path(
+            actual_paths[relative],
+            entry,
+            allow_directory_drain_drift=allow_directory_drain_drift,
+        ):
+            return False
+    return True
 
 
 def cleanup_entry_to_json(entry: CleanupJournalEntry) -> dict[str, Any]:
@@ -1964,6 +2152,208 @@ def cleanup_journal_payload(
             for relative in sorted(objects, key=lambda item: (len(Path(item).parts), item))
         ],
     }
+
+
+def cleanup_intent_payload(
+    target: Path,
+    kind: str,
+    sources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "schema_version": CLEANUP_INTENT_SCHEMA,
+        "product_name": PRODUCT_NAME,
+        "build_version": VERSION,
+        "canonical_target": str(target),
+        "cleanup_parent": CLEANUP_PENDING_RUNTIME_DIR,
+        "intent_name": CLEANUP_INTENT_NAME,
+        "journal_name": CLEANUP_JOURNAL_NAME,
+        "tombstone_name": CLEANUP_TOMBSTONE_NAME,
+        "kind": kind,
+        "bounds": {
+            "max_files": CLEANUP_TOMBSTONE_MAX_FILES,
+            "max_bytes": CLEANUP_TOMBSTONE_MAX_BYTES,
+        },
+        "source_count": len(sources),
+        "sources": sources,
+    }
+
+
+def cleanup_source_to_json(
+    *,
+    target: Path,
+    source: Path,
+    source_kind: str,
+    index: int,
+    entries: Mapping[str, CleanupJournalEntry],
+) -> dict[str, Any]:
+    anchor, parent = cleanup_source_anchor(target, source, source_kind)
+    validate_cleanup_source_name(target, source.name, source_kind)
+    return {
+        "index": index,
+        "source_kind": source_kind,
+        "source_anchor": anchor,
+        "source_name": source.name,
+        "source_parent": cleanup_source_parent_payload(parent, "cleanup source parent"),
+        "destination_relative": cleanup_destination_relative(source_kind, index),
+        "objects": [
+            cleanup_entry_to_json(entries[relative])
+            for relative in sorted(entries, key=lambda item: (len(Path(item).parts), item))
+        ],
+    }
+
+
+def cleanup_kind_for_retirements(retirements: list[tuple[Path, str]]) -> str:
+    return retirements[0][1] if len(retirements) == 1 else "multi-retirement"
+
+
+def cleanup_intent_source_entries(
+    item: Mapping[str, Any], label: str
+) -> dict[str, CleanupJournalEntry]:
+    objects_value = item["objects"]
+    if not isinstance(objects_value, list):
+        fail(f"{label} cleanup source objects are invalid")
+    entries: dict[str, CleanupJournalEntry] = {}
+    for object_item in objects_value:
+        entry = cleanup_entry_from_json(object_item, label)
+        if entry.relative in entries:
+            fail(f"{label} cleanup source contains duplicate object: {entry.relative}")
+        entries[entry.relative] = entry
+    if "." not in entries:
+        fail(f"{label} cleanup source does not bind its root")
+    return entries
+
+
+def cleanup_intent_sources_from_payload(
+    target: Path,
+    payload: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    sources_value = payload["sources"]
+    source_count = payload["source_count"]
+    if not isinstance(sources_value, list) or not isinstance(source_count, int):
+        fail("cleanup intent source list is invalid")
+    if source_count != len(sources_value) or source_count < 1 or source_count > 4:
+        fail("cleanup intent source count is invalid")
+    sources: list[dict[str, Any]] = []
+    seen_indexes: set[int] = set()
+    seen_destinations: set[str] = set()
+    for raw in sources_value:
+        if not isinstance(raw, dict) or set(raw) != CLEANUP_INTENT_SOURCE_KEYS:
+            fail("cleanup intent source has invalid keys")
+        index = raw["index"]
+        if (
+            not isinstance(index, int)
+            or index < 0
+            or index >= source_count
+            or index in seen_indexes
+        ):
+            fail("cleanup intent source index is invalid")
+        seen_indexes.add(index)
+        source_kind = raw["source_kind"]
+        if source_kind not in {
+            "managed-rollback-retirement",
+            "backup-slot-retirement",
+            "software-rollback-retirement",
+            "software-stage-retirement",
+        }:
+            fail("cleanup intent source kind is invalid")
+        source_anchor = raw["source_anchor"]
+        if source_anchor not in {"target-parent", "backup-pool"}:
+            fail("cleanup intent source anchor is invalid")
+        source_name = raw["source_name"]
+        if not isinstance(source_name, str):
+            fail("cleanup intent source name is invalid")
+        validate_cleanup_source_name(target, source_name, source_kind)
+        source_parent = validate_cleanup_parent_payload(
+            raw["source_parent"],
+            "cleanup intent",
+        )
+        destination_relative = raw["destination_relative"]
+        if not isinstance(destination_relative, str):
+            fail("cleanup intent destination is invalid")
+        safe_relative_path(destination_relative)
+        if destination_relative != cleanup_destination_relative(source_kind, index):
+            fail("cleanup intent destination does not match the source kind")
+        if destination_relative in seen_destinations:
+            fail("cleanup intent contains duplicate destination")
+        seen_destinations.add(destination_relative)
+        entries = cleanup_intent_source_entries(raw, "cleanup intent")
+        source_parent_path = cleanup_anchor_parent(target, source_anchor)
+        if not cleanup_parent_stable_identity_matches(source_parent_path, source_parent):
+            fail("cleanup intent source parent identity changed")
+        sources.append(
+            {
+                "index": index,
+                "source_kind": source_kind,
+                "source_anchor": source_anchor,
+                "source_name": source_name,
+                "source_parent": source_parent,
+                "destination_relative": destination_relative,
+                "objects": entries,
+            }
+        )
+    sources.sort(key=lambda item: item["index"])
+    if [source["index"] for source in sources] != list(range(source_count)):
+        fail("cleanup intent source indexes are not contiguous")
+    return sources
+
+
+def validate_cleanup_intent_payload(
+    target: Path,
+    payload: Any,
+) -> tuple[str, list[dict[str, Any]], dict[str, CleanupJournalEntry], bytes]:
+    if not isinstance(payload, dict) or set(payload) != CLEANUP_INTENT_KEYS:
+        fail("cleanup intent has invalid keys")
+    if (
+        payload["schema_version"] != CLEANUP_INTENT_SCHEMA
+        or payload["product_name"] != PRODUCT_NAME
+    ):
+        fail("cleanup intent identity or schema is invalid")
+    if payload["build_version"] != VERSION or payload["canonical_target"] != str(target):
+        fail("cleanup intent target or build binding is invalid")
+    if payload["cleanup_parent"] != CLEANUP_PENDING_RUNTIME_DIR:
+        fail("cleanup intent parent binding is invalid")
+    if payload["intent_name"] != CLEANUP_INTENT_NAME:
+        fail("cleanup intent name binding is invalid")
+    if payload["journal_name"] != CLEANUP_JOURNAL_NAME:
+        fail("cleanup intent journal binding is invalid")
+    if payload["tombstone_name"] != CLEANUP_TOMBSTONE_NAME:
+        fail("cleanup intent tombstone binding is invalid")
+    kind = payload["kind"]
+    if kind not in {
+        "managed-rollback-retirement",
+        "backup-slot-retirement",
+        "software-rollback-retirement",
+        "software-stage-retirement",
+        "multi-retirement",
+    }:
+        fail("cleanup intent kind is invalid")
+    bounds = payload["bounds"]
+    if not isinstance(bounds, dict) or set(bounds) != CLEANUP_JOURNAL_BOUNDS_KEYS:
+        fail("cleanup intent bounds are invalid")
+    if (
+        bounds["max_files"] != CLEANUP_TOMBSTONE_MAX_FILES
+        or bounds["max_bytes"] != CLEANUP_TOMBSTONE_MAX_BYTES
+    ):
+        fail("cleanup intent bounds do not match the contract")
+    sources = cleanup_intent_sources_from_payload(target, payload)
+    journal_objects: dict[str, CleanupJournalEntry] = {}
+    tombstone = cleanup_tombstone_path(target)
+    if lstat_optional(tombstone) is not None:
+        total = [0]
+        journal_objects["."] = cleanup_entry_from_path(tombstone, tombstone, total)
+    for source in sources:
+        transformed = cleanup_entries_for_destination(
+            source["objects"],
+            source["destination_relative"],
+        )
+        overlap = set(journal_objects) & set(transformed)
+        if overlap:
+            fail(f"cleanup intent destination objects overlap: {sorted(overlap)}")
+        journal_objects.update(transformed)
+    journal_content = canonical_json(cleanup_journal_payload(target, kind, journal_objects))
+    if len(journal_content) > CLEANUP_JOURNAL_MAX_BYTES:
+        fail("cleanup journal exceeds the byte bound")
+    return kind, sources, journal_objects, journal_content
 
 
 def cleanup_declared_children(objects: dict[str, CleanupJournalEntry]) -> dict[str, set[str]]:
@@ -2129,6 +2519,131 @@ def find_cleanup_journal_publication_alias(journal: Path, info: os.stat_result) 
     return matches[0]
 
 
+def cleanup_unpublished_metadata_aliases(final: Path) -> list[Path]:
+    if lstat_optional(final) is not None:
+        return []
+    parent = final.parent
+    if not parent.exists() or parent.is_symlink():
+        return []
+    prefix = cleanup_metadata_alias_prefix(final)
+    matches: list[Path] = []
+    scanned = 0
+    for path in parent.iterdir():
+        if not path.name.startswith(prefix):
+            continue
+        scanned += 1
+        if scanned > CLEANUP_JOURNAL_ALIAS_SCAN_MAX:
+            fail("cleanup metadata has too many temporary aliases")
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            fail("cleanup metadata temporary alias is invalid")
+        require_current_user_owned(info, "cleanup metadata temporary alias")
+        if info.st_nlink != 1:
+            fail("cleanup metadata temporary alias has an unsupported link count")
+        matches.append(path)
+    return sorted(matches)
+
+
+def remove_unpublished_cleanup_metadata_alias(alias: Path) -> None:
+    info = alias.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        fail("cleanup metadata temporary alias is invalid")
+    require_current_user_owned(info, "cleanup metadata temporary alias")
+    if info.st_nlink != 1:
+        fail("cleanup metadata temporary alias has an unsupported link count")
+    alias.unlink()
+    fsync_directory(alias.parent)
+
+
+def find_cleanup_intent_publication_alias(intent: Path, info: os.stat_result) -> Path:
+    prefix = cleanup_intent_alias_prefix(intent)
+    matches: list[Path] = []
+    scanned = 0
+    for path in intent.parent.iterdir():
+        if not path.name.startswith(prefix):
+            continue
+        scanned += 1
+        if scanned > CLEANUP_JOURNAL_ALIAS_SCAN_MAX:
+            fail("cleanup intent has too many publication aliases")
+        alias_info = path.lstat()
+        if stat.S_ISLNK(alias_info.st_mode) or not stat.S_ISREG(alias_info.st_mode):
+            fail("cleanup intent publication alias is invalid")
+        if identity_of(alias_info) != identity_of(info):
+            fail("cleanup intent publication alias does not match the final intent")
+        matches.append(path)
+    if len(matches) != 1:
+        fail("cleanup intent hard-link alias state is invalid")
+    return matches[0]
+
+
+def read_cleanup_intent_file(
+    intent: Path,
+    *,
+    allow_publication_alias: bool,
+) -> tuple[bytes, os.stat_result, Path | None]:
+    try:
+        before = intent.lstat()
+    except FileNotFoundError:
+        fail("cleanup intent is missing")
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        fail("cleanup intent must be a regular non-symlink file")
+    require_current_user_owned(before, "cleanup intent")
+    require_exact_mode(before, "cleanup intent", OWNER_FILE_MODE)
+    if before.st_size > CLEANUP_INTENT_MAX_BYTES:
+        fail("cleanup intent exceeds the byte bound")
+    alias: Path | None = None
+    if before.st_nlink == 2:
+        if not allow_publication_alias:
+            fail("cleanup intent publication is incomplete")
+        alias = find_cleanup_intent_publication_alias(intent, before)
+    elif before.st_nlink != 1:
+        fail("cleanup intent has an unsupported link count")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(intent, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if identity_of(opened) != identity_of(before):
+            raise ConcurrentTargetChange("cleanup intent changed while it was opened")
+        blocks: list[bytes] = []
+        total = 0
+        while True:
+            block = os.read(descriptor, 65536)
+            if not block:
+                break
+            total += len(block)
+            if total > CLEANUP_INTENT_MAX_BYTES:
+                fail("cleanup intent exceeds the byte bound")
+            blocks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    final = intent.lstat()
+    if identity_of(final) != identity_of(before) or identity_of(after) != identity_of(before):
+        raise ConcurrentTargetChange("cleanup intent changed while it was read")
+    return b"".join(blocks), final, alias
+
+
+def validate_cleanup_intent_state(
+    target: Path,
+    *,
+    allow_publication_alias: bool,
+) -> tuple[dict[str, Any], Path | None, bytes] | None:
+    intent = cleanup_intent_path(target)
+    if lstat_optional(intent) is None:
+        return None
+    content, _intent_stat, alias = read_cleanup_intent_file(
+        intent,
+        allow_publication_alias=allow_publication_alias,
+    )
+    payload = parse_json_object(content, "cleanup intent")
+    _kind, _sources, _objects, journal_content = validate_cleanup_intent_payload(target, payload)
+    return payload, alias, journal_content
+
+
 def validate_cleanup_pending_state(
     target: Path,
     *,
@@ -2143,10 +2658,18 @@ def validate_cleanup_pending_state(
     require_current_user_owned(parent_info, "cleanup pending parent")
     require_exact_mode(parent_info, "cleanup pending parent", OWNER_DIR_MODE)
     journal = cleanup_journal_path(target)
+    intent = cleanup_intent_path(target)
     tombstone = cleanup_tombstone_path(target)
     journal_info = lstat_optional(journal)
+    intent_info = lstat_optional(intent)
     entries = sorted(parent.iterdir())
     if journal_info is None:
+        if intent_info is not None:
+            validate_cleanup_intent_state(
+                target,
+                allow_publication_alias=allow_publication_alias,
+            )
+            fail("cleanup transition is incomplete")
         if entries:
             fail("cleanup pending parent contains unjournaled state")
         return None
@@ -2159,6 +2682,20 @@ def validate_cleanup_pending_state(
         allowed.add(tombstone.name)
     if alias is not None:
         allowed.add(alias.name)
+    intent_alias: Path | None = None
+    if intent_info is not None:
+        intent_state = validate_cleanup_intent_state(
+            target,
+            allow_publication_alias=allow_publication_alias,
+        )
+        if intent_state is None:
+            fail("cleanup intent disappeared during validation")
+        _intent_payload, intent_alias, expected_journal_content = intent_state
+        if expected_journal_content != content:
+            fail("cleanup intent and journal disagree")
+        allowed.add(intent.name)
+        if intent_alias is not None:
+            allowed.add(intent_alias.name)
     for path in entries:
         if path.name not in allowed:
             fail(f"cleanup pending parent contains unknown path: {path.name}")
@@ -2183,6 +2720,7 @@ def validate_cleanup_pending_state(
         "managed-rollback-retirement",
         "backup-slot-retirement",
         "software-rollback-retirement",
+        "software-stage-retirement",
         "multi-retirement",
     }:
         fail("cleanup journal kind is invalid")
@@ -2245,6 +2783,8 @@ def validate_cleanup_pending_state(
             objects=objects,
             children=children,
             journal_alias=alias,
+            intent=intent if intent_info is not None else None,
+            intent_alias=intent_alias,
         )
         for relative, entry in objects.items():
             if entry.kind == "dir":
@@ -2260,6 +2800,8 @@ def validate_cleanup_pending_state(
         objects=objects,
         children=children,
         journal_alias=alias,
+        intent=intent if intent_info is not None else None,
+        intent_alias=intent_alias,
     )
 
 
@@ -2284,30 +2826,39 @@ def add_cleanup_pending_fields(payload: dict[str, Any], target: Path) -> dict[st
     return payload
 
 
-def publish_cleanup_journal_file(journal: Path, content: bytes) -> bool:
+def publish_cleanup_metadata_file(
+    final: Path,
+    content: bytes,
+    *,
+    alias_prefix: Callable[[Path], str],
+    max_bytes: int,
+    label: str,
+) -> bool:
+    if len(content) > max_bytes:
+        fail(f"{label} exceeds the byte bound")
     fd, temporary_name = tempfile.mkstemp(
-        prefix=cleanup_journal_alias_prefix(journal),
-        dir=str(journal.parent),
+        prefix=alias_prefix(final),
+        dir=str(final.parent),
     )
     temporary = Path(temporary_name)
     final_visible = False
     try:
-        write_complete(fd, content, f"cleanup journal temporary {temporary}")
+        write_complete(fd, content, f"{label} temporary {temporary}")
         os.fchmod(fd, OWNER_FILE_MODE)
         os.fsync(fd)
         os.close(fd)
         fd = -1
-        os.link(temporary, journal)
+        os.link(temporary, final)
         final_visible = True
         try:
-            fsync_directory(journal.parent)
+            fsync_directory(final.parent)
             temporary.unlink()
-            fsync_directory(journal.parent)
+            fsync_directory(final.parent)
             return True
         except BaseException:
             return False
     except FileExistsError as exc:
-        raise ManagerError("cleanup journal already exists") from exc
+        raise ManagerError(f"{label} already exists") from exc
     except BaseException:
         if final_visible:
             return False
@@ -2320,14 +2871,251 @@ def publish_cleanup_journal_file(journal: Path, content: bytes) -> bool:
             temporary.unlink(missing_ok=True)
 
 
+def publish_cleanup_intent_file(intent: Path, content: bytes) -> bool:
+    return publish_cleanup_metadata_file(
+        intent,
+        content,
+        alias_prefix=cleanup_intent_alias_prefix,
+        max_bytes=CLEANUP_INTENT_MAX_BYTES,
+        label="cleanup intent",
+    )
+
+
+def publish_cleanup_journal_file(journal: Path, content: bytes) -> bool:
+    return publish_cleanup_metadata_file(
+        journal,
+        content,
+        alias_prefix=cleanup_journal_alias_prefix,
+        max_bytes=CLEANUP_JOURNAL_MAX_BYTES,
+        label="cleanup journal",
+    )
+
+
 def cleanup_retirement_name(kind: str, index: int) -> str:
     if kind not in {
         "managed-rollback-retirement",
         "backup-slot-retirement",
         "software-rollback-retirement",
+        "software-stage-retirement",
     }:
         fail("cleanup retirement kind is invalid")
     return f"{index:02d}-{kind}"
+
+
+def build_cleanup_transition(
+    target: Path,
+    retirements: list[tuple[Path, str]],
+) -> tuple[bytes, bytes]:
+    sources: list[dict[str, Any]] = []
+    tombstone = cleanup_tombstone_path(target)
+    total = [0]
+    journal_objects: dict[str, CleanupJournalEntry] = {
+        ".": cleanup_entry_from_path(tombstone, tombstone, total)
+    }
+    for index, (source, source_kind) in enumerate(retirements):
+        if lstat_optional(source) is None:
+            fail("cleanup source is missing")
+        entries = snapshot_cleanup_tree(source, f"cleanup source {index}")
+        source_payload = cleanup_source_to_json(
+            target=target,
+            source=source,
+            source_kind=source_kind,
+            index=index,
+            entries=entries,
+        )
+        anchor_parent = cleanup_anchor_parent(target, source_payload["source_anchor"])
+        if not cleanup_parent_exact_identity_matches(
+            anchor_parent,
+            source_payload["source_parent"],
+        ):
+            fail("cleanup source parent changed before intent publication")
+        destination_objects = cleanup_entries_for_destination(
+            entries,
+            source_payload["destination_relative"],
+        )
+        overlap = set(journal_objects) & set(destination_objects)
+        if overlap:
+            fail(f"cleanup destinations overlap: {sorted(overlap)}")
+        journal_objects.update(destination_objects)
+        sources.append(source_payload)
+    kind = cleanup_kind_for_retirements(retirements)
+    journal_content = canonical_json(cleanup_journal_payload(target, kind, journal_objects))
+    if len(journal_content) > CLEANUP_JOURNAL_MAX_BYTES:
+        fail("cleanup journal exceeds the byte bound")
+    intent_content = canonical_json(cleanup_intent_payload(target, kind, sources))
+    if len(intent_content) > CLEANUP_INTENT_MAX_BYTES:
+        fail("cleanup intent exceeds the byte bound")
+    return intent_content, journal_content
+
+
+def cleanup_intent_source_path(target: Path, source: Mapping[str, Any]) -> Path:
+    return cleanup_anchor_parent(target, source["source_anchor"]) / str(source["source_name"])
+
+
+def cleanup_intent_destination_path(tombstone: Path, source: Mapping[str, Any]) -> Path:
+    return tombstone / safe_relative_path(str(source["destination_relative"]))
+
+
+def cleanup_transition_allowed_names(
+    *,
+    intent: Path,
+    intent_alias: Path | None,
+    tombstone: Path,
+    journal: Path,
+    journal_alias: Path | None,
+) -> set[str]:
+    allowed = {intent.name}
+    if intent_alias is not None:
+        allowed.add(intent_alias.name)
+    if lstat_optional(tombstone) is not None:
+        allowed.add(tombstone.name)
+    if lstat_optional(journal) is not None:
+        allowed.add(journal.name)
+    if journal_alias is not None:
+        allowed.add(journal_alias.name)
+    return allowed
+
+
+def require_cleanup_transition_parent_paths(
+    parent: Path,
+    *,
+    intent: Path,
+    intent_alias: Path | None,
+    tombstone: Path,
+    journal: Path,
+    journal_alias: Path | None,
+) -> None:
+    allowed = cleanup_transition_allowed_names(
+        intent=intent,
+        intent_alias=intent_alias,
+        tombstone=tombstone,
+        journal=journal,
+        journal_alias=journal_alias,
+    )
+    for path in parent.iterdir():
+        if path.name not in allowed:
+            fail(f"cleanup pending parent contains unknown path: {path.name}")
+
+
+def remove_cleanup_intent_after_journal(target: Path) -> bool:
+    intent = cleanup_intent_path(target)
+    state = validate_cleanup_intent_state(target, allow_publication_alias=True)
+    if state is None:
+        return True
+    _payload, alias, _journal_content = state
+    try:
+        if alias is not None:
+            info = alias.lstat()
+            intent_info = intent.lstat()
+            if identity_of(info) != identity_of(intent_info):
+                fail("cleanup intent publication alias changed")
+            alias.unlink()
+            fsync_directory(intent.parent)
+        intent.unlink()
+        fsync_directory(intent.parent)
+        return True
+    except BaseException:
+        return False
+
+
+def ensure_cleanup_tombstone_directory(parent: Path, tombstone: Path) -> None:
+    info = lstat_optional(tombstone)
+    if info is None:
+        tombstone.mkdir(mode=OWNER_DIR_MODE)
+        os.chmod(tombstone, OWNER_DIR_MODE)
+        fsync_directory(parent)
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("cleanup tombstone must be a real directory")
+    require_current_user_owned(info, "cleanup tombstone")
+    require_exact_mode(info, "cleanup tombstone", OWNER_DIR_MODE)
+
+
+def complete_cleanup_transition_from_intent(target: Path) -> CleanupPendingState | None:
+    intent_state = validate_cleanup_intent_state(target, allow_publication_alias=True)
+    if intent_state is None:
+        return validate_cleanup_pending_state(target, allow_publication_alias=True)
+    payload, intent_alias, _journal_content = intent_state
+    _kind, sources, _journal_objects, journal_content = validate_cleanup_intent_payload(
+        target,
+        payload,
+    )
+    parent = cleanup_pending_parent(target)
+    journal = cleanup_journal_path(target)
+    tombstone = cleanup_tombstone_path(target)
+    journal_alias: Path | None = None
+    if lstat_optional(journal) is None:
+        for alias in cleanup_unpublished_metadata_aliases(journal):
+            remove_unpublished_cleanup_metadata_alias(alias)
+    if lstat_optional(journal) is not None:
+        _content, _journal_stat, journal_alias = read_cleanup_journal_file(
+            journal,
+            allow_publication_alias=True,
+        )
+    require_cleanup_transition_parent_paths(
+        parent,
+        intent=cleanup_intent_path(target),
+        intent_alias=intent_alias,
+        tombstone=tombstone,
+        journal=journal,
+        journal_alias=journal_alias,
+    )
+    if lstat_optional(journal) is None:
+        ensure_cleanup_tombstone_directory(parent, tombstone)
+        _kind, sources, _journal_objects, journal_content = validate_cleanup_intent_payload(
+            target,
+            payload,
+        )
+        for source in sources:
+            source_path = cleanup_intent_source_path(target, source)
+            destination = cleanup_intent_destination_path(tombstone, source)
+            source_entries = source["objects"]
+            source_present = lstat_optional(source_path) is not None
+            destination_present = lstat_optional(destination) is not None
+            if source_present and destination_present:
+                fail("cleanup transition has both source and destination")
+            if destination_present:
+                if not cleanup_entries_match_root(
+                    destination,
+                    source_entries,
+                    allow_directory_drain_drift=False,
+                ):
+                    fail("cleanup transition destination identity changed")
+                continue
+            if not source_present:
+                fail("cleanup transition source and destination are both missing")
+            source_parent = cleanup_anchor_parent(target, source["source_anchor"])
+            if not cleanup_parent_stable_identity_matches(source_parent, source["source_parent"]):
+                fail("cleanup transition source parent identity changed")
+            if not cleanup_entries_match_root(
+                source_path,
+                source_entries,
+                allow_directory_drain_drift=False,
+            ):
+                fail("cleanup transition source identity changed")
+            os.replace(source_path, destination)
+            fsync_directory(source_parent)
+            fsync_directory(destination.parent)
+            if not cleanup_entries_match_root(
+                destination,
+                source_entries,
+                allow_directory_drain_drift=False,
+            ):
+                fail("cleanup transition destination postcondition failed")
+        _kind, _sources, _journal_objects, journal_content = validate_cleanup_intent_payload(
+            target,
+            payload,
+        )
+        publish_cleanup_journal_file(journal, journal_content)
+    state = validate_cleanup_pending_state(target, allow_publication_alias=True)
+    if state is None:
+        fail("cleanup transition did not publish a cleanup journal")
+    if state.journal_alias is None:
+        remove_cleanup_intent_after_journal(target)
+        state = validate_cleanup_pending_state(target, allow_publication_alias=True)
+        if state is None:
+            fail("cleanup journal disappeared while removing intent")
+    return state
 
 
 def publish_cleanup_tombstones(
@@ -2338,10 +3126,8 @@ def publish_cleanup_tombstones(
         fail("cleanup retirement list is empty")
     if len(retirements) > 4:
         fail("cleanup retirement list exceeds the bound")
-    for source, _kind in retirements:
-        if lstat_optional(source) is None:
-            fail("cleanup source is missing")
     parent = cleanup_pending_parent(target)
+    intent = cleanup_intent_path(target)
     journal = cleanup_journal_path(target)
     tombstone = cleanup_tombstone_path(target)
     if validate_cleanup_pending_state(target) is not None:
@@ -2350,39 +3136,62 @@ def publish_cleanup_tombstones(
     require_owner_private_directory(parent, "cleanup pending parent")
     if list(parent.iterdir()):
         fail("cleanup pending parent must be empty before journal publication")
-    tombstone.mkdir(mode=OWNER_DIR_MODE)
-    os.chmod(tombstone, OWNER_DIR_MODE)
-    fsync_directory(parent)
-    moved: list[tuple[Path, Path]] = []
-    journal_visible = False
     try:
-        for index, (source, kind) in enumerate(retirements):
-            destination = tombstone / cleanup_retirement_name(kind, index)
-            os.replace(source, destination)
-            moved.append((source, destination))
-            fsync_directory(source.parent)
+        ensure_cleanup_tombstone_directory(parent, tombstone)
+        intent_content, journal_content = build_cleanup_transition(target, retirements)
+    except BaseException:
+        recover_empty_cleanup_transition_parent(target)
+        raise
+    publish_cleanup_intent_file(intent, intent_content)
+    try:
+        payload, _intent_alias, _expected_journal = validate_cleanup_intent_state(
+            target, allow_publication_alias=True
+        ) or fail("cleanup intent publication failed")
+        _kind, sources, _journal_objects, _journal_content = validate_cleanup_intent_payload(
+            target,
+            payload,
+        )
+        for source in sources:
+            source_path = cleanup_intent_source_path(target, source)
+            destination = cleanup_intent_destination_path(tombstone, source)
+            if lstat_optional(destination) is not None:
+                fail("cleanup destination already exists")
+            if not cleanup_parent_exact_identity_matches(
+                cleanup_anchor_parent(target, source["source_anchor"]),
+                source["source_parent"],
+            ):
+                fail("cleanup source parent changed before source move")
+            if not cleanup_entries_match_root(
+                source_path,
+                source["objects"],
+                allow_directory_drain_drift=False,
+            ):
+                fail("cleanup source identity changed before source move")
+            os.replace(source_path, destination)
+            fsync_directory(source_path.parent)
             fsync_directory(tombstone)
         fsync_directory(parent)
-        objects = snapshot_cleanup_tombstone(tombstone)
-        kind = retirements[0][1] if len(retirements) == 1 else "multi-retirement"
-        content = canonical_json(cleanup_journal_payload(target, kind, objects))
-        publish_cleanup_journal_file(journal, content)
-        journal_visible = True
-        return validate_cleanup_pending_state(
+        _kind, _sources, _journal_objects, journal_content = validate_cleanup_intent_payload(
+            target,
+            payload,
+        )
+        publish_cleanup_journal_file(journal, journal_content)
+        state = validate_cleanup_pending_state(
             target,
             allow_publication_alias=True,
         ) or fail("cleanup journal publication failed")
+        if state.journal_alias is None:
+            remove_cleanup_intent_after_journal(target)
+            state = validate_cleanup_pending_state(
+                target,
+                allow_publication_alias=True,
+            ) or fail("cleanup journal disappeared while removing intent")
+        return state
     except BaseException:
-        if not journal_visible and lstat_optional(journal) is None:
-            for source, destination in reversed(moved):
-                if lstat_optional(destination) is not None:
-                    os.replace(destination, source)
-                    fsync_directory(source.parent)
-            fsync_directory(parent)
-            with contextlib.suppress(BaseException):
-                remove_empty_directory_if_present(tombstone)
-            with contextlib.suppress(BaseException):
-                remove_empty_directory_if_present(parent)
+        if lstat_optional(intent) is not None:
+            return complete_cleanup_transition_from_intent(target) or fail(
+                "cleanup transition recovery failed"
+            )
         raise
 
 
@@ -2449,10 +3258,51 @@ def remove_empty_cleanup_parent(parent: Path) -> None:
             raise
 
 
-def drain_cleanup_pending(target: Path, *, post_commit: bool = False) -> bool:
-    state = validate_cleanup_pending_state(target, allow_publication_alias=True)
-    if state is None:
+def recover_empty_cleanup_transition_parent(target: Path) -> bool:
+    parent = cleanup_pending_parent(target)
+    intent = cleanup_intent_path(target)
+    journal = cleanup_journal_path(target)
+    tombstone = cleanup_tombstone_path(target)
+    info = lstat_optional(parent)
+    if info is None:
         return False
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("cleanup pending parent must be a real directory")
+    entries = sorted(parent.iterdir())
+    if not entries:
+        remove_empty_cleanup_parent(parent)
+        return True
+    if lstat_optional(intent) is not None or lstat_optional(journal) is not None:
+        return False
+    aliases = [
+        *cleanup_unpublished_metadata_aliases(intent),
+        *cleanup_unpublished_metadata_aliases(journal),
+    ]
+    allowed = {tombstone.name, *(alias.name for alias in aliases)}
+    if {path.name for path in entries} != allowed:
+        return False
+    tombstone_info = lstat_optional(tombstone)
+    if (
+        tombstone_info is None
+        or stat.S_ISLNK(tombstone_info.st_mode)
+        or not stat.S_ISDIR(tombstone_info.st_mode)
+    ):
+        fail("cleanup tombstone must be a real directory")
+    if list(tombstone.iterdir()):
+        return False
+    for alias in aliases:
+        remove_unpublished_cleanup_metadata_alias(alias)
+    tombstone.rmdir()
+    fsync_directory(parent)
+    remove_empty_cleanup_parent(parent)
+    return True
+
+
+def drain_cleanup_pending(target: Path, *, post_commit: bool = False) -> bool:
+    recovered_empty_transition = recover_empty_cleanup_transition_parent(target)
+    state = complete_cleanup_transition_from_intent(target)
+    if state is None:
+        return recovered_empty_transition
     try:
         if state.journal_alias is not None:
             unlink_cleanup_journal_alias(state)
@@ -2470,6 +3320,9 @@ def drain_cleanup_pending(target: Path, *, post_commit: bool = False) -> bool:
             fail("cleanup tombstone drain did not remove all declared objects")
         state.journal.unlink()
         try:
+            fsync_directory(state.parent)
+            if not remove_cleanup_intent_after_journal(target):
+                fail("cleanup intent cleanup failed")
             fsync_directory(state.parent)
         except BaseException:
             publish_cleanup_journal_file(state.journal, state.journal_content)
@@ -3523,7 +4376,14 @@ def software_install(
                     require_no_software_transaction_residue(target, "software stage")
                     raise
                 else:
-                    cleanup_transaction_tree(stage, "software stage")
+                    stage_cleanup_pending = retire_transaction_tree_after_commit(
+                        target,
+                        stage,
+                        "software-stage-retirement",
+                    )
+                    result["cleanup_pending"] = (
+                        bool(result.get("cleanup_pending")) or stage_cleanup_pending
+                    )
                     require_no_software_transaction_residue(target, "software stage")
         except BaseException:
             restore_setup_transaction_if_changed(target, transaction)
@@ -3588,7 +4448,11 @@ def software_update(
                             "rollback": {"mode": "none", "created_dirs": []},
                             "official_vendor_installer": official_vendor_installer_record(),
                         }
-                        cleanup_transaction_tree(stage, "software stage")
+                        result["cleanup_pending"] = retire_transaction_tree_after_commit(
+                            target,
+                            stage,
+                            "software-stage-retirement",
+                        )
                         require_no_software_transaction_residue(target, "software stage")
                         return result
                     result = install_prepared_software_root(target, prepared, allow_existing=True)
@@ -3597,7 +4461,14 @@ def software_update(
                     require_no_software_transaction_residue(target, "software stage")
                     raise
                 else:
-                    cleanup_transaction_tree(stage, "software stage")
+                    stage_cleanup_pending = retire_transaction_tree_after_commit(
+                        target,
+                        stage,
+                        "software-stage-retirement",
+                    )
+                    result["cleanup_pending"] = (
+                        bool(result.get("cleanup_pending")) or stage_cleanup_pending
+                    )
                     require_no_software_transaction_residue(target, "software stage")
         except BaseException:
             restore_setup_transaction_if_changed(target, transaction)

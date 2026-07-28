@@ -241,7 +241,9 @@ EXTERNAL_PRODUCT_LOCK_FILENAME_REF = "global.lock"
 EXTERNAL_LOCK_FILENAME_REF = "sha256(product namespace + canonical absolute target).lock"
 EXTERNAL_LOCK_PUBLICATION_REF = "atomic-hardlink-no-replace"
 CLEANUP_PENDING_ROOT_REF = "target/.nddev-runtime/cleanup-pending"
+CLEANUP_INTENT_NAME_REF = "NDDEV-KIRO-CLI-CLEANUP-INTENT.json"
 CLEANUP_JOURNAL_NAME_REF = "NDDEV-KIRO-CLI-CLEANUP.json"
+CLEANUP_INTENT_PUBLICATION_REF = "atomic-hardlink-no-replace"
 CLEANUP_JOURNAL_PUBLICATION_REF = "atomic-hardlink-no-replace"
 LOCK_FILE_MODE = "0600"
 LOCK_DIRECTORY_IDLE_MODE = "0700"
@@ -806,6 +808,11 @@ def check_cleanup_pending_fields(
 ) -> None:
     expected = {
         "cleanup_pending_root": CLEANUP_PENDING_ROOT_REF,
+        "cleanup_intent_name": CLEANUP_INTENT_NAME_REF,
+        "cleanup_intent_schema": 1,
+        "cleanup_intent_publication": CLEANUP_INTENT_PUBLICATION_REF,
+        "cleanup_intent_precedes_source_moves": True,
+        "cleanup_intent_alias_recovery_mutation_only": True,
         "cleanup_journal_name": CLEANUP_JOURNAL_NAME_REF,
         "cleanup_journal_schema": 1,
         "cleanup_journal_publication": CLEANUP_JOURNAL_PUBLICATION_REF,
