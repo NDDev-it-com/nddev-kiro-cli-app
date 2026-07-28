@@ -12,12 +12,12 @@
   },
   "release": {
     "channel": "stable",
-    "version": "2.15.0",
+    "version": "2.15.1",
     "changelog": "https://kiro.dev/changelog/cli/",
     "install_manifest_url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
-    "install_manifest_last_modified": "Mon, 27 Jul 2026 22:10:47 GMT",
-    "install_manifest_etag": "0e7e26e5361a83eb9c5f7eade4bd767b",
-    "install_manifest_sha256": "30c3b6e497117ae29307ce06e7049e83168b7e52c468f3f5d24027a73022b5ed",
+    "install_manifest_last_modified": "Tue, 28 Jul 2026 19:19:09 GMT",
+    "install_manifest_etag": "eee978b080d6ed2ac6419bcaab09cf1a",
+    "install_manifest_sha256": "94d5c7c5eeaf2538f03a2296c51d908273411a853f5003126b57d1139ab000c7",
     "install_manifest_size": 9313,
     "install_script_url": "https://cli.kiro.dev/install",
     "install_script_last_modified": "Fri, 03 Jul 2026 01:34:06 GMT",
@@ -49,7 +49,7 @@
   },
   "install_manifest": {
     "url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
-    "version": "2.15.0",
+    "version": "2.15.1",
     "packages": [
       {
         "kind": "deb",
@@ -58,9 +58,21 @@
         "fileType": "tarXz",
         "architecture": "x86_64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux.tar.xz",
-        "sha256": "6a4d44512c9b8727c548a68099afd7bc25817423a6f2a70c51a41ff074721d28",
-        "size": 492600764,
+        "download": "2.15.1/kirocli-x86_64-linux.tar.xz",
+        "sha256": "a29da53c08174642aed1182b275443d9bc599866c15064cab4fcf7c8275da08c",
+        "size": 492741300,
+        "channel": "stable"
+      },
+      {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "tarGz",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.1/kirocli-x86_64-linux.tar.gz",
+        "sha256": "ee7ff91894419b0ad9eb1e03535e32352ee938483912cc78f315648d7e4af648",
+        "size": 554395785,
         "channel": "stable"
       },
       {
@@ -70,21 +82,21 @@
         "fileType": "deb",
         "architecture": "x86_64",
         "variant": "full",
-        "download": "2.15.0/kiro-cli.deb",
-        "sha256": "8fa1963e900588efa57a130b18b7e26692fd74631e86695fd167528b8dd35927",
-        "size": 584889868,
+        "download": "2.15.1/kiro-cli.deb",
+        "sha256": "0e78aa84789282b58899696bb21f98194ac66182a796dd40190ac33cfeff00b9",
+        "size": 585058432,
         "channel": "stable"
       },
       {
         "kind": "deb",
         "targetTriple": "x86_64-unknown-linux-gnu",
         "os": "linux",
-        "fileType": "tarGz",
+        "fileType": "tarZst",
         "architecture": "x86_64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux.tar.gz",
-        "sha256": "ebb13ddb9926c474cc17622321a27ba754d3a0dbfd06a96e637b66c12a1ad101",
-        "size": 554239818,
+        "download": "2.15.1/kirocli-x86_64-linux.tar.zst",
+        "sha256": "a1f89b0b66caae8fe685310c9b0dd4fb76071fa280d69b0c4c23acff6a558143",
+        "size": 502845643,
         "channel": "stable"
       },
       {
@@ -94,45 +106,9 @@
         "fileType": "appImage",
         "architecture": "x86_64",
         "variant": "full",
-        "download": "2.15.0/kiro-cli.appimage",
-        "sha256": "90e2845591254004c982edac303345e14fbeeead49cf22df49d762f1455cb0f2",
-        "size": 730604736,
-        "channel": "stable"
-      },
-      {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "tarZst",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux.tar.zst",
-        "sha256": "4f802756809de8c4ec845c5bd0129454cc81bbf3c82ee762951ee94ea0711f9e",
-        "size": 502693053,
-        "channel": "stable"
-      },
-      {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "zip",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux.zip",
-        "sha256": "1b3fe0d70b0fb371d243378f64e0c39c0a26102942a6d291d2d19a4886f06164",
-        "size": 554217247,
-        "channel": "stable"
-      },
-      {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "tarXz",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux.tar.xz",
-        "sha256": "86ed14d5c2ddf02dd12104875266bac388a7da3fc945141b2bc2ea3129d0b387",
-        "size": 441426904,
+        "download": "2.15.1/kiro-cli.appimage",
+        "sha256": "952ed96b05cda54ccfa4ac8341b8142520720ba00c4150648173a5fdcedb165a",
+        "size": 730768576,
         "channel": "stable"
       },
       {
@@ -142,9 +118,33 @@
         "fileType": "tarGz",
         "architecture": "aarch64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux.tar.gz",
-        "sha256": "a53f2f885120cd8b1bbf841ed494380542f6da24d8df72e69924bca7d0cd1087",
-        "size": 509164766,
+        "download": "2.15.1/kirocli-aarch64-linux.tar.gz",
+        "sha256": "f09d2bb0d64892ba51eb8e438b77423fa6f7e94f2f86ca1a7e66b356ae4d116c",
+        "size": 509411664,
+        "channel": "stable"
+      },
+      {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "zip",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.1/kirocli-x86_64-linux.zip",
+        "sha256": "f17d352eea8f67ed92f6585193ad6a49ef045d6400822ed9f0888021d14754ac",
+        "size": 554394320,
+        "channel": "stable"
+      },
+      {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "tarXz",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.1/kirocli-aarch64-linux.tar.xz",
+        "sha256": "1c28931392868e485e1d8afd0bfee9a1330a85369073dd4c59982ad3312eb3bb",
+        "size": 441558164,
         "channel": "stable"
       },
       {
@@ -154,9 +154,9 @@
         "fileType": "tarZst",
         "architecture": "aarch64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux.tar.zst",
-        "sha256": "7a16526992754ed99ff5b4e7bdec2d1b4a8ef931de98c100a5878e9ca116edb8",
-        "size": 457158009,
+        "download": "2.15.1/kirocli-aarch64-linux.tar.zst",
+        "sha256": "ae477a97a98dc484e4849a9599c91f05a534c7747016e3d9fac4073ee0ff9ddb",
+        "size": 457317125,
         "channel": "stable"
       },
       {
@@ -166,9 +166,9 @@
         "fileType": "dmg",
         "architecture": "universal",
         "variant": "full",
-        "download": "2.15.0/Kiro CLI.dmg",
-        "sha256": "2da916f2647f1a97685dc0c1aaee9a412447e2235a5395b3399ccfaa3d5ad644",
-        "size": 681750654,
+        "download": "2.15.1/Kiro CLI.dmg",
+        "sha256": "e01f2a54389a75b47636671b58fe2cd4b204749e7a3391778ab9eb76ba59a13b",
+        "size": 682140633,
         "cliPath": "Contents/MacOS/kiro-cli",
         "channel": "stable"
       },
@@ -179,33 +179,9 @@
         "fileType": "zip",
         "architecture": "aarch64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux.zip",
-        "sha256": "5b071cb12e2a3eab9f6ee48ea912bf8cab569ed9aa0c15c46abf572b57cdf8b2",
-        "size": 509173932,
-        "channel": "stable"
-      },
-      {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "tarZst",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux-musl.tar.zst",
-        "sha256": "6578d980f0ace21a9a7fac3a5b13826d5004cdbee14d334340f2cc328e692ad2",
-        "size": 458702042,
-        "channel": "stable"
-      },
-      {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "tarXz",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux-musl.tar.xz",
-        "sha256": "82fc5c7508b98177e6d96a58a788a4d985be4aa89e7d2a16d9858d461be3cff4",
-        "size": 448205424,
+        "download": "2.15.1/kirocli-aarch64-linux.zip",
+        "sha256": "83346f95bc8a986d4ba9270720082c36535d652350afd3799bedb9b0f15617cb",
+        "size": 509410555,
         "channel": "stable"
       },
       {
@@ -215,9 +191,21 @@
         "fileType": "tarGz",
         "architecture": "x86_64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux-musl.tar.gz",
-        "sha256": "7ed8c06dd3a4033642b6b5dad2b1845c18509a58b45f48512ba29d2dee20dbf9",
-        "size": 511187462,
+        "download": "2.15.1/kirocli-x86_64-linux-musl.tar.gz",
+        "sha256": "57f43591487f2952cc0c96d025ad23d2d1daf4c229f7db2e8fdfb4b88e0a9156",
+        "size": 511391862,
+        "channel": "stable"
+      },
+      {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "tarXz",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.1/kirocli-x86_64-linux-musl.tar.xz",
+        "sha256": "ac05eb26af3ed47958105e1960e21fe3a7b95fc531d29f9f504593967ec6a6bc",
+        "size": 448460316,
         "channel": "stable"
       },
       {
@@ -227,9 +215,21 @@
         "fileType": "zip",
         "architecture": "x86_64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux-musl.zip",
-        "sha256": "2744d79cbae5ce86b9d4d24fdf8345c4bc9b571882aaf738f812a4b5abd1fbd5",
-        "size": 511195711,
+        "download": "2.15.1/kirocli-x86_64-linux-musl.zip",
+        "sha256": "472462588f7205d116f505f1bf1ac0ec8d58b6e5562e8047abbc7623987af245",
+        "size": 511375428,
+        "channel": "stable"
+      },
+      {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "tarZst",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.1/kirocli-x86_64-linux-musl.tar.zst",
+        "sha256": "10036b30567f700ac26922912cae55e24af85f08503213d13f20db60d2a1ca02",
+        "size": 458945159,
         "channel": "stable"
       },
       {
@@ -239,9 +239,9 @@
         "fileType": "tarGz",
         "architecture": "aarch64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux-musl.tar.gz",
-        "sha256": "73c7fa139f314ec306b1e0983fea964bf744f151d100a1faea24afd56a144a2e",
-        "size": 508337456,
+        "download": "2.15.1/kirocli-aarch64-linux-musl.tar.gz",
+        "sha256": "967683562a712b1881e6bc070f77e1a8c97f621862bb8b26ed81676879d1c8a1",
+        "size": 508287841,
         "channel": "stable"
       },
       {
@@ -251,9 +251,9 @@
         "fileType": "tarXz",
         "architecture": "aarch64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux-musl.tar.xz",
-        "sha256": "0f0ceec46a6e488963d1f8a4f37a20ee685bc524f33577c8052a545843c2f1a8",
-        "size": 440604464,
+        "download": "2.15.1/kirocli-aarch64-linux-musl.tar.xz",
+        "sha256": "c8a44871a7fc7cf68cbb60a0f244748a60be332739d99829849a841a39427481",
+        "size": 440625336,
         "channel": "stable"
       },
       {
@@ -263,9 +263,9 @@
         "fileType": "tarZst",
         "architecture": "aarch64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux-musl.tar.zst",
-        "sha256": "4d1bff56ef97d84c56159257f45ffe427f91397a01ad0c7118bee89db891e42d",
-        "size": 456128861,
+        "download": "2.15.1/kirocli-aarch64-linux-musl.tar.zst",
+        "sha256": "946ee888f3132cef3cd41a02d65ac5abb702c2908585e2664bb505632ad42d6a",
+        "size": 456147380,
         "channel": "stable"
       },
       {
@@ -275,21 +275,9 @@
         "fileType": "zip",
         "architecture": "aarch64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux-musl.zip",
-        "sha256": "df79880f45ed38564493c8da34017562f9070b7a0b74c6be3f52ea78524b2e04",
-        "size": 508339039,
-        "channel": "stable"
-      },
-      {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "rpm",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux.rpm",
-        "sha256": "0cdef59910afac941a7afeb26ae825eec60b0ca8b4e72d0a5cedc5e1cf01e9b9",
-        "size": 508178921,
+        "download": "2.15.1/kirocli-aarch64-linux-musl.zip",
+        "sha256": "a71bd0540739bb5211188dbe11b432d5b2589f7acc14d550a4731f98a717b61c",
+        "size": 508272955,
         "channel": "stable"
       },
       {
@@ -299,9 +287,21 @@
         "fileType": "rpm",
         "architecture": "x86_64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux.rpm",
-        "sha256": "83797b363112d288d5335e910f17befb4569fed05cc5281cf235840c3d21b559",
-        "size": 553103262,
+        "download": "2.15.1/kirocli-x86_64-linux.rpm",
+        "sha256": "ddcb8d55080d4aa30b28545df56369e9c1817f93a5cd1fbce036752f9aee5d01",
+        "size": 553254751,
+        "channel": "stable"
+      },
+      {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "rpm",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.1/kirocli-aarch64-linux.rpm",
+        "sha256": "b60084550651d5e6b1ee3e2df466c34ef27daf6ca8e4b2a4fc6d3fb267385aff",
+        "size": 508443736,
         "channel": "stable"
       },
       {
@@ -311,21 +311,9 @@
         "fileType": "msi",
         "architecture": "x86_64",
         "variant": "full",
-        "download": "2.15.0/kiro-cli-x86_64-pc-windows-msvc.msi",
-        "sha256": "42cb4f90a89dcc3b3a91e1bf6a68c7576f33893507b9f2b0ab591c1da64925c3",
-        "size": 250130432,
-        "channel": "stable"
-      },
-      {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "rpm",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux-musl.rpm",
-        "sha256": "40c5da0042928e23883e8f533033647cd2741689363b134cc2900b0bb3c0469c",
-        "size": 509994594,
+        "download": "2.15.1/kiro-cli-x86_64-pc-windows-msvc.msi",
+        "sha256": "aba54c18aa500d1daac90931c91c0d078d87be0adf197337b78a433d319c3d2b",
+        "size": 250236928,
         "channel": "stable"
       },
       {
@@ -335,9 +323,21 @@
         "fileType": "rpm",
         "architecture": "aarch64",
         "variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux-musl.rpm",
-        "sha256": "abe293c507f05bbe538924cf784ef7e0330d325f02165251d96fc750074242a7",
-        "size": 507383239,
+        "download": "2.15.1/kirocli-aarch64-linux-musl.rpm",
+        "sha256": "d671bad4cc6279697082266a17e09a4bf7f2dd8408e569941c68d25e367aab5d",
+        "size": 507308528,
+        "channel": "stable"
+      },
+      {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "rpm",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.1/kirocli-x86_64-linux-musl.rpm",
+        "sha256": "26dafe2ac0bf499e0b79205690d72c49745e2d8422a628cfcb56a966061f259c",
+        "size": 510209086,
         "channel": "stable"
       }
     ]
@@ -574,7 +574,7 @@
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.15.0/Kiro CLI.dmg"
+        "download": "2.15.1/Kiro CLI.dmg"
       },
       "macos-x64": {
         "vendor_target_triple": "universal-apple-darwin",
@@ -582,7 +582,7 @@
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.15.0/Kiro CLI.dmg"
+        "download": "2.15.1/Kiro CLI.dmg"
       },
       "ubuntu-glibc-arm64": {
         "vendor_target_triple": "aarch64-unknown-linux-gnu",
@@ -590,7 +590,7 @@
         "vendor_architecture": "aarch64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.15.0/kirocli-aarch64-linux.zip"
+        "download": "2.15.1/kirocli-aarch64-linux.zip"
       },
       "ubuntu-glibc-x64": {
         "vendor_target_triple": "x86_64-unknown-linux-gnu",
@@ -598,7 +598,7 @@
         "vendor_architecture": "x86_64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.15.0/kirocli-x86_64-linux.zip"
+        "download": "2.15.1/kirocli-x86_64-linux.zip"
       }
     }
   },
