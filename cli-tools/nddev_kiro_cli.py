@@ -308,8 +308,20 @@ class TreeSnapshotEntry:
     content: bytes | None
     size: int | None
     sha256: str | None
+    dev: int
     inode: int
     mtime_ns: int
+    link_target: str | None = None
+
+
+@dataclass
+class ExternalLockFile:
+    lock: Path
+    descriptor: int
+    created: bool
+    parent_snapshot: dict[str, TreeSnapshotEntry] | None
+    created_identity: tuple[int, int] | None
+    committed: bool = False
 
 
 @dataclass(frozen=True)
@@ -1331,7 +1343,11 @@ def sorted_tree_paths(root: Path) -> list[Path]:
     return sorted([root, *root.rglob("*")], key=lambda item: tree_relative(item, root))
 
 
-def snapshot_tree_exact(root: Path) -> dict[str, TreeSnapshotEntry] | None:
+def snapshot_tree_exact(
+    root: Path,
+    *,
+    allow_symlinks: bool = False,
+) -> dict[str, TreeSnapshotEntry] | None:
     info = lstat_optional(root)
     if info is None:
         return None
@@ -1347,6 +1363,19 @@ def snapshot_tree_exact(root: Path) -> dict[str, TreeSnapshotEntry] | None:
         child = path.lstat()
         mode = stat.S_IMODE(child.st_mode)
         if stat.S_ISLNK(child.st_mode):
+            if allow_symlinks:
+                snapshot[relative] = TreeSnapshotEntry(
+                    kind="symlink",
+                    mode=mode,
+                    content=None,
+                    size=child.st_size,
+                    sha256=None,
+                    dev=child.st_dev,
+                    inode=child.st_ino,
+                    mtime_ns=child.st_mtime_ns,
+                    link_target=os.readlink(path),
+                )
+                continue
             fail(f"snapshot path must not be a symlink: {relative}")
         if stat.S_ISDIR(child.st_mode):
             require_current_user_owned(child, f"snapshot directory {relative}")
@@ -1354,8 +1383,9 @@ def snapshot_tree_exact(root: Path) -> dict[str, TreeSnapshotEntry] | None:
                 kind="dir",
                 mode=mode,
                 content=None,
-                size=None,
+                size=child.st_size,
                 sha256=None,
+                dev=child.st_dev,
                 inode=child.st_ino,
                 mtime_ns=child.st_mtime_ns,
             )
@@ -1374,6 +1404,7 @@ def snapshot_tree_exact(root: Path) -> dict[str, TreeSnapshotEntry] | None:
                 content=content,
                 size=child.st_size,
                 sha256=sha256_bytes(content),
+                dev=child.st_dev,
                 inode=child.st_ino,
                 mtime_ns=child.st_mtime_ns,
             )
@@ -1571,6 +1602,11 @@ def restore_directory_identity(path: Path, expected: DirectorySnapshot, label: s
 
 
 def restore_tree_entry_metadata(path: Path, entry: TreeSnapshotEntry) -> None:
+    if entry.kind == "symlink":
+        refreshed = path.lstat()
+        os.utime(path, ns=(refreshed.st_atime_ns, entry.mtime_ns), follow_symlinks=False)
+        fsync_directory(path.parent)
+        return
     os.chmod(path, entry.mode)
     refreshed = path.lstat()
     os.utime(path, ns=(refreshed.st_atime_ns, entry.mtime_ns), follow_symlinks=False)
@@ -1600,7 +1636,7 @@ def restore_tree_snapshot_entry(root: Path, relative: str, entry: TreeSnapshotEn
     info = lstat_optional(path)
     if info is None:
         fail(f"tree snapshot object is missing: {relative}")
-    if info.st_ino != entry.inode:
+    if identity_of(info) != (entry.dev, entry.inode):
         fail(f"tree snapshot object identity changed: {relative}")
     if entry.kind == "dir":
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
@@ -1614,6 +1650,13 @@ def restore_tree_snapshot_entry(root: Path, relative: str, entry: TreeSnapshotEn
         if len(current_content) != entry.size or sha256_bytes(current_content) != entry.sha256:
             rewrite_tree_snapshot_file(path, entry, relative)
             return
+        restore_tree_entry_metadata(path, entry)
+        return
+    if entry.kind == "symlink":
+        if not stat.S_ISLNK(info.st_mode):
+            fail(f"tree snapshot symlink changed kind: {relative}")
+        if os.readlink(path) != entry.link_target:
+            fail(f"tree snapshot symlink target changed: {relative}")
         restore_tree_entry_metadata(path, entry)
         return
     fail(f"tree snapshot entry kind is invalid: {relative}")
@@ -4016,7 +4059,106 @@ def external_bootstrap_lock_path() -> Path:
     return bootstrap_product_root() / EXTERNAL_BOOTSTRAP_LOCK_NAME
 
 
-def open_external_lock_file(lock: Path) -> int:
+def close_external_lock_file(handle: ExternalLockFile) -> None:
+    if handle.descriptor < 0:
+        return
+    descriptor = handle.descriptor
+    handle.descriptor = -1
+    os.close(descriptor)
+
+
+def restore_external_lock_parent_graph_once(handle: ExternalLockFile) -> None:
+    parent = handle.lock.parent
+    snapshot = handle.parent_snapshot
+    if snapshot is None:
+        fail("external target lock parent snapshot is missing")
+    relative = handle.lock.relative_to(parent).as_posix()
+    if handle.created and relative in snapshot:
+        fail("created external target lock marker was pre-existing")
+    if handle.created:
+        info = lstat_optional(handle.lock)
+        if info is not None:
+            if handle.created_identity is not None and identity_of(info) != handle.created_identity:
+                fail("external target lock marker changed before rollback")
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                fail("external target lock marker changed kind before rollback")
+            handle.lock.unlink()
+            fsync_directory(parent)
+    current = snapshot_tree_exact(parent, allow_symlinks=True)
+    if current is None:
+        fail("external target lock parent is missing")
+    current_paths = set(current)
+    expected_paths = set(snapshot)
+    if current_paths != expected_paths:
+        fail("external target lock parent rollback found unexpected topology")
+    for item_relative, entry in sorted(
+        snapshot.items(),
+        key=lambda item: (len(Path(item[0]).parts), item[0]),
+    ):
+        restore_tree_snapshot_entry(parent, item_relative, entry)
+    for item_relative, entry in sorted(
+        snapshot.items(),
+        key=lambda item: len(Path(item[0]).parts),
+        reverse=True,
+    ):
+        if entry.kind == "dir":
+            restore_tree_entry_metadata(tree_snapshot_path(parent, item_relative), entry)
+    fsync_directory(parent.parent)
+
+
+def external_lock_parent_graph_matches(handle: ExternalLockFile) -> bool:
+    try:
+        return (
+            snapshot_tree_exact(handle.lock.parent, allow_symlinks=True) == handle.parent_snapshot
+        )
+    except ManagerError:
+        return False
+
+
+def restore_external_lock_parent_graph(
+    handle: ExternalLockFile,
+    label: str,
+) -> None:
+    last_error: BaseException | None = None
+    for _attempt in range(ROLLBACK_RETRY_ATTEMPTS):
+        try:
+            restore_external_lock_parent_graph_once(handle)
+        except BaseException as exc:
+            last_error = exc
+        if external_lock_parent_graph_matches(handle):
+            return
+    raise ManagerError(f"{label} rollback did not restore exact pre-state") from last_error
+
+
+def abort_external_lock_file(
+    handle: ExternalLockFile,
+    label: str,
+    cause: BaseException,
+) -> NoReturn:
+    with contextlib.suppress(OSError):
+        close_external_lock_file(handle)
+    if not handle.committed and handle.parent_snapshot is not None:
+        restore_external_lock_parent_graph(handle, label)
+    if isinstance(cause, ManagerError):
+        raise cause
+    raise ManagerError(
+        f"{label} failed after creating external target lock file: {cause}"
+    ) from cause
+
+
+def commit_external_lock_file(handle: ExternalLockFile) -> None:
+    handle.committed = True
+
+
+def capture_external_lock_parent_snapshot(handle: ExternalLockFile) -> None:
+    if handle.parent_snapshot is None:
+        handle.parent_snapshot = snapshot_tree_exact(
+            handle.lock.parent,
+            allow_symlinks=True,
+        )
+
+
+def open_external_lock_descriptor(lock: Path) -> ExternalLockFile:
     flags = os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
@@ -4025,27 +4167,47 @@ def open_external_lock_file(lock: Path) -> int:
     try:
         descriptor = os.open(lock, flags)
         created = False
+        created_identity = None
+        parent_snapshot = None
     except FileNotFoundError:
+        parent_snapshot = snapshot_tree_exact(lock.parent, allow_symlinks=True)
         try:
             descriptor = os.open(lock, flags | os.O_CREAT | os.O_EXCL, OWNER_FILE_MODE)
             created = True
+            created_identity = None
         except FileExistsError:
             try:
                 descriptor = os.open(lock, flags)
                 created = False
+                created_identity = None
+                parent_snapshot = None
             except OSError as exc:
                 fail(f"cannot open external target lock file: {exc}")
         except OSError as exc:
             fail(f"cannot create external target lock file: {exc}")
     except OSError as exc:
         fail(f"cannot open external target lock file: {exc}")
+    handle = ExternalLockFile(
+        lock=lock,
+        descriptor=descriptor,
+        created=created,
+        parent_snapshot=parent_snapshot,
+        created_identity=created_identity,
+    )
     try:
         if created:
-            os.fchmod(descriptor, OWNER_FILE_MODE)
-    except BaseException:
-        os.close(descriptor)
-        raise
-    return descriptor
+            handle.created_identity = identity_of(os.fstat(handle.descriptor))
+            os.fchmod(handle.descriptor, OWNER_FILE_MODE)
+            fsync_directory(lock.parent)
+    except BaseException as exc:
+        abort_external_lock_file(handle, "external target lock file", exc)
+    return handle
+
+
+def open_external_lock_file(lock: Path) -> int:
+    handle = open_external_lock_descriptor(lock)
+    commit_external_lock_file(handle)
+    return handle.descriptor
 
 
 def require_external_lock_descriptor(lock: Path, descriptor: int) -> None:
@@ -4102,67 +4264,76 @@ def ensure_external_lock_binding_matches(descriptor: int, expected: dict[str, An
 @contextlib.contextmanager
 def external_bootstrap_lock(*, blocking: bool = False) -> Iterator[Path]:
     lock = external_bootstrap_lock_path()
-    descriptor = open_external_lock_file(lock)
+    handle = open_external_lock_descriptor(lock)
     locked = False
     try:
         operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
         try:
-            fcntl.flock(descriptor, operation)
+            fcntl.flock(handle.descriptor, operation)
         except OSError as exc:
             if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
                 fail(f"target is already locked: {lock}")
             fail(f"cannot lock target externally: {exc}")
         locked = True
-        require_external_lock_descriptor(lock, descriptor)
+        require_external_lock_descriptor(lock, handle.descriptor)
+        commit_external_lock_file(handle)
+    except BaseException as exc:
+        if locked:
+            with contextlib.suppress(OSError):
+                fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
+            locked = False
+        abort_external_lock_file(handle, "external bootstrap lock", exc)
+    try:
         yield lock
     finally:
         if locked:
             with contextlib.suppress(OSError):
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
         with contextlib.suppress(OSError):
-            os.close(descriptor)
+            close_external_lock_file(handle)
 
 
 @contextlib.contextmanager
 def external_lifecycle_lock(target: Path, *, blocking: bool = False) -> Iterator[tuple[Path, Path]]:
-    descriptor = -1
+    handle: ExternalLockFile | None = None
     target_locked = False
     with external_bootstrap_lock(blocking=blocking):
         canonical_target = canonical_target_identity(target)
         lock = external_lock_path_for_canonical_target(canonical_target)
-        descriptor = open_external_lock_file(lock)
+        handle = open_external_lock_descriptor(lock)
         try:
             operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
             try:
-                fcntl.flock(descriptor, operation)
+                fcntl.flock(handle.descriptor, operation)
             except OSError as exc:
                 if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
                     fail(f"target is already locked: {lock}")
                 fail(f"cannot lock target externally: {exc}")
             target_locked = True
-            require_external_lock_descriptor(lock, descriptor)
+            require_external_lock_descriptor(lock, handle.descriptor)
+            capture_external_lock_parent_snapshot(handle)
             ensure_external_lock_binding_matches(
-                descriptor,
+                handle.descriptor,
                 external_lock_binding_for_canonical_target(canonical_target),
             )
-            require_external_lock_descriptor(lock, descriptor)
-        except BaseException:
+            require_external_lock_descriptor(lock, handle.descriptor)
+            commit_external_lock_file(handle)
+        except BaseException as exc:
             if target_locked:
                 with contextlib.suppress(OSError):
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
-            if descriptor >= 0:
-                with contextlib.suppress(OSError):
-                    os.close(descriptor)
-            raise
+                    fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
+                target_locked = False
+            abort_external_lock_file(handle, "external target lock", exc)
     try:
         yield canonical_target, lock
     finally:
         if target_locked:
+            assert handle is not None
             with contextlib.suppress(OSError):
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-        if descriptor >= 0:
+                fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
+        if handle is not None:
             with contextlib.suppress(OSError):
-                os.close(descriptor)
+                close_external_lock_file(handle)
 
 
 @contextlib.contextmanager
