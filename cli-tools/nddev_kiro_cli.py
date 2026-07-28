@@ -2611,15 +2611,47 @@ def require_bootstrap_system_root(path: Path) -> Path:
 
 
 def restore_directory_metadata(path: Path, before: os.stat_result, label: str) -> None:
-    current = require_directory(path, label)
-    if identity_of(current) != identity_of(before):
-        raise ConcurrentTargetChange(f"{label} identity changed")
+    flags = os.O_RDONLY
+    if not hasattr(os, "O_DIRECTORY"):
+        fail(f"{label} fd-bound directory restore is unsupported")
+    flags |= os.O_DIRECTORY
+    if not hasattr(os, "O_NOFOLLOW"):
+        fail(f"{label} no-follow directory restore is unsupported")
+    flags |= os.O_NOFOLLOW
+    if not hasattr(os, "O_CLOEXEC"):
+        fail(f"{label} close-on-exec directory restore is unsupported")
+    flags |= os.O_CLOEXEC
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open {label} for metadata restore: {exc}")
     before_mode = stat.S_IMODE(before.st_mode)
-    if stat.S_IMODE(current.st_mode) != before_mode:
-        if not current_user_owns(current):
-            fail(f"{label} mode changed and cannot be restored")
-        os.chmod(path, before_mode)
-    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    try:
+        current = os.fstat(descriptor)
+        if not stat.S_ISDIR(current.st_mode):
+            fail(f"{label} must be a real directory")
+        if identity_of(current) != identity_of(before):
+            raise ConcurrentTargetChange(f"{label} identity changed")
+        if stat.S_IMODE(current.st_mode) != before_mode:
+            if not current_user_owns(current):
+                fail(f"{label} mode changed and cannot be restored")
+            try:
+                os.fchmod(descriptor, before_mode)
+            except OSError as exc:
+                fail(f"cannot restore {label} mode: {exc}")
+        if os.utime not in os.supports_fd:
+            fail(f"{label} fd-bound timestamp restore is unsupported")
+        try:
+            os.utime(descriptor, ns=(before.st_atime_ns, before.st_mtime_ns))
+        except OSError as exc:
+            fail(f"cannot restore {label} timestamps: {exc}")
+        restored_fd = os.fstat(descriptor)
+        if not stat.S_ISDIR(restored_fd.st_mode):
+            fail(f"{label} must remain a real directory")
+        if identity_of(restored_fd) != identity_of(before):
+            raise ConcurrentTargetChange(f"{label} identity changed")
+    finally:
+        os.close(descriptor)
     restored = require_directory(path, label)
     if identity_of(restored) != identity_of(before):
         raise ConcurrentTargetChange(f"{label} identity changed")

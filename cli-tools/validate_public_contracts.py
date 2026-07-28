@@ -1558,6 +1558,48 @@ def directory_stable_metadata_signature(path: Path) -> tuple[int, int, int, int]
     )
 
 
+def run_directory_metadata_fd_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    directory = tmp / "directory-metadata-restore"
+    directory.mkdir()
+    os.chmod(directory, manager.OWNER_DIR_MODE)
+    before = directory.lstat()
+    os.chmod(directory, 0o755)
+    replacement_mtime = before.st_mtime_ns + 1_000_000_000
+    original_fchmod = manager.os.fchmod
+    replaced = False
+
+    def replace_path_then_fchmod(descriptor: int, mode: int) -> None:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            directory.rmdir()
+            directory.mkdir()
+            os.chmod(directory, 0o755)
+            os.utime(directory, ns=(replacement_mtime, replacement_mtime))
+        original_fchmod(descriptor, mode)
+
+    manager.os.fchmod = replace_path_then_fchmod
+    try:
+        try:
+            manager.restore_directory_metadata(directory, before, "directory metadata regression")
+            errors.append("directory metadata restore: same-path replacement was accepted")
+        except manager.ManagerError as exc:
+            if "identity changed" not in str(exc):
+                errors.append(f"directory metadata restore: wrong failure for replacement: {exc}")
+    finally:
+        manager.os.fchmod = original_fchmod
+    if not replaced:
+        errors.append("directory metadata restore: replacement hook did not run")
+        return
+    replacement = directory.lstat()
+    if (replacement.st_dev, replacement.st_ino) == (before.st_dev, before.st_ino):
+        errors.append("directory metadata restore: original directory identity still occupies path")
+    if stat.S_IMODE(replacement.st_mode) != 0o755:
+        errors.append("directory metadata restore: replacement directory mode was mutated")
+    if replacement.st_mtime_ns != replacement_mtime:
+        errors.append("directory metadata restore: replacement directory mtime was mutated")
+
+
 def run_external_product_root_rollback_regression(
     manager: Any,
     tmp: Path,
@@ -2940,6 +2982,7 @@ def run_public_manager_regressions(errors: list[str]) -> None:
             if stat.S_IMODE(injected_system_root.lstat().st_mode) != 0o1777:
                 errors.append("public manager regressions: injected bootstrap root must be 01777")
             manager.bootstrap_system_temp_root = lambda: injected_system_root
+            run_directory_metadata_fd_regression(manager, tmp, errors)
             run_external_lock_cold_read_regressions(manager, tmp, errors)
             run_external_product_root_rollback_regression(manager, tmp, errors)
             run_external_lock_binding_regressions(manager, tmp, errors)
