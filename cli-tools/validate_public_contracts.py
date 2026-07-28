@@ -230,7 +230,7 @@ OFFICIAL_UBUNTU_GLIBC_FLOOR = {
     "ubuntu-glibc-x64": "2.34",
 }
 PLATFORM_DETECTION = (
-    "platform.system + platform.machine + platform.freedesktop_os_release + platform.libc_ver"
+    "platform.system + platform.machine + platform.freedesktop_os_release or /etc/os-release + platform.libc_ver"
 )
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 LOCK_ROOT_REF = "target/.nddev-runtime/locks/setup-manager.lock"

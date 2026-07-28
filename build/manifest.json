@@ -199,7 +199,7 @@
       "linux-musl",
       "unsupported-architecture"
     ],
-    "platform_detection": "platform.system + platform.machine + platform.freedesktop_os_release + platform.libc_ver",
+    "platform_detection": "platform.system + platform.machine + platform.freedesktop_os_release or /etc/os-release + platform.libc_ver",
     "public_platform_override_arguments": [],
     "official_ubuntu_version_floor": null,
     "official_ubuntu_glibc_floor": {

@@ -761,9 +761,36 @@ def official_vendor_installer_record() -> dict[str, Any]:
     }
 
 
+def parse_os_release_content(content: str) -> dict[str, str]:
+    release: dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        release[key] = value
+    return release
+
+
+def freedesktop_os_release() -> Mapping[str, str]:
+    reader = getattr(platform, "freedesktop_os_release", None)
+    if reader is not None:
+        return reader()
+    try:
+        return parse_os_release_content(Path("/etc/os-release").read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ManagerError("Ubuntu software installs require structured os-release detection") from exc
+
+
 def require_ubuntu_os_release(os_release: Mapping[str, str] | None = None) -> None:
     try:
-        release = platform.freedesktop_os_release() if os_release is None else os_release
+        release = freedesktop_os_release() if os_release is None else os_release
     except OSError:
         fail("Ubuntu software installs require structured os-release detection")
     distro_id = str(release.get("ID", "")).strip().lower()
@@ -2672,7 +2699,7 @@ def validate_cleanup_pending_state(
             fail("cleanup transition is incomplete")
         if entries:
             fail("cleanup pending parent contains unjournaled state")
-        return None
+        fail("cleanup pending parent exists without a cleanup journal")
     content, _journal_stat, alias = read_cleanup_journal_file(
         journal,
         allow_publication_alias=allow_publication_alias,
@@ -3268,6 +3295,8 @@ def recover_empty_cleanup_transition_parent(target: Path) -> bool:
         return False
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         fail("cleanup pending parent must be a real directory")
+    require_current_user_owned(info, "cleanup pending parent")
+    require_exact_mode(info, "cleanup pending parent", OWNER_DIR_MODE)
     entries = sorted(parent.iterdir())
     if not entries:
         remove_empty_cleanup_parent(parent)
@@ -4133,6 +4162,7 @@ def install_prepared_software_root(
     prepared: Path,
     *,
     allow_existing: bool,
+    post_commit_retirements: list[tuple[Path, str]] | None = None,
 ) -> dict[str, Any]:
     created_dirs: list[str] = []
     rollback_parent: Path | None = None
@@ -4141,7 +4171,6 @@ def install_prepared_software_root(
     final_root = software_root(target)
     software_parent_initial_mode: int | None = None
     existing_root_modes: dict[str, int] | None = None
-    cleanup_pending = False
     target_info = lstat_optional(target)
     target_existed = target_info is not None
     target_mode = stat.S_IMODE(target_info.st_mode) if target_info is not None else None
@@ -4221,18 +4250,16 @@ def install_prepared_software_root(
         if rollback_parent is not None:
             if rollback_root is not None:
                 make_software_tree_mutable(rollback_root)
-            cleanup_pending = retire_transaction_tree_after_commit(
-                target,
-                rollback_parent,
-                "software-rollback-retirement",
-            )
+            if post_commit_retirements is None:
+                post_commit_retirements = []
+            post_commit_retirements.append((rollback_parent, "software-rollback-retirement"))
             rollback_parent = None
         return {
             "target": str(target),
             "version": prepared_stamp["version"],
             "package": prepared_stamp["package"],
             "executable": str(software_executable_from_stamp(target, prepared_stamp)),
-            "cleanup_pending": cleanup_pending,
+            "cleanup_pending": False,
             "rollback": {
                 "mode": "rename-restore",
                 "created_dirs": created_dirs,
@@ -4370,19 +4397,19 @@ def software_install(
                     race_status = preflight_software_target(target, allow_partial=False)
                     if race_status["state"] == "installed":
                         fail("Kiro CLI software is already installed")
-                    result = install_prepared_software_root(target, prepared, allow_existing=False)
+                    result = install_prepared_software_root(
+                        target,
+                        prepared,
+                        allow_existing=False,
+                    )
                 except BaseException:
                     cleanup_transaction_tree(stage, "software stage")
                     require_no_software_transaction_residue(target, "software stage")
                     raise
                 else:
-                    stage_cleanup_pending = retire_transaction_tree_after_commit(
+                    result["cleanup_pending"] = retire_transaction_trees_after_commit(
                         target,
-                        stage,
-                        "software-stage-retirement",
-                    )
-                    result["cleanup_pending"] = (
-                        bool(result.get("cleanup_pending")) or stage_cleanup_pending
+                        [(stage, "software-stage-retirement")],
                     )
                     require_no_software_transaction_residue(target, "software stage")
         except BaseException:
@@ -4448,26 +4475,28 @@ def software_update(
                             "rollback": {"mode": "none", "created_dirs": []},
                             "official_vendor_installer": official_vendor_installer_record(),
                         }
-                        result["cleanup_pending"] = retire_transaction_tree_after_commit(
+                        result["cleanup_pending"] = retire_transaction_trees_after_commit(
                             target,
-                            stage,
-                            "software-stage-retirement",
+                            [(stage, "software-stage-retirement")],
                         )
                         require_no_software_transaction_residue(target, "software stage")
                         return result
-                    result = install_prepared_software_root(target, prepared, allow_existing=True)
+                    post_commit_retirements: list[tuple[Path, str]] = []
+                    result = install_prepared_software_root(
+                        target,
+                        prepared,
+                        allow_existing=True,
+                        post_commit_retirements=post_commit_retirements,
+                    )
                 except BaseException:
                     cleanup_transaction_tree(stage, "software stage")
                     require_no_software_transaction_residue(target, "software stage")
                     raise
                 else:
-                    stage_cleanup_pending = retire_transaction_tree_after_commit(
+                    post_commit_retirements.append((stage, "software-stage-retirement"))
+                    result["cleanup_pending"] = retire_transaction_trees_after_commit(
                         target,
-                        stage,
-                        "software-stage-retirement",
-                    )
-                    result["cleanup_pending"] = (
-                        bool(result.get("cleanup_pending")) or stage_cleanup_pending
+                        post_commit_retirements,
                     )
                     require_no_software_transaction_residue(target, "software stage")
         except BaseException:
@@ -6125,6 +6154,7 @@ def publish_external_lock_descriptor_no_replace(
             return existing
         final_visible = True
         final_identity = identity_of(lock.lstat())
+        fsync_directory(lock.parent)
         temporary.unlink()
         fsync_directory(lock.parent)
         handle = open_existing_external_lock_descriptor(
