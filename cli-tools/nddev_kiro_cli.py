@@ -140,6 +140,14 @@ EXTERNAL_BOOTSTRAP_LOCK_NAME = "global.lock"
 EXTERNAL_LOCK_NAME_SUFFIX = ".lock"
 EXTERNAL_LOCK_ALIAS_SCAN_MAX = 128
 BACKUP_RUNTIME_DIR = ".nddev-runtime/backups/setup"
+CLEANUP_PENDING_RUNTIME_DIR = ".nddev-runtime/cleanup-pending"
+CLEANUP_JOURNAL_NAME = "NDDEV-KIRO-CLI-CLEANUP.json"
+CLEANUP_JOURNAL_SCHEMA = 1
+CLEANUP_JOURNAL_MAX_BYTES = 16 * 1024 * 1024
+CLEANUP_TOMBSTONE_NAME = "tombstone"
+CLEANUP_JOURNAL_ALIAS_SCAN_MAX = 8
+CLEANUP_TOMBSTONE_MAX_FILES = 20000
+CLEANUP_TOMBSTONE_MAX_BYTES = 3 * 1024 * 1024 * 1024
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 TRUSTED_BASH = "/bin/bash"
 TRUSTED_HDIUTIL = "/usr/bin/hdiutil"
@@ -212,6 +220,33 @@ BACKUP_KEYS = {
     "stamp_sha256",
 }
 BACKUP_RECORD_KEYS = {"path", "size", "sha256"}
+CLEANUP_JOURNAL_KEYS = {
+    "schema_version",
+    "product_name",
+    "build_version",
+    "canonical_target",
+    "cleanup_parent",
+    "journal_name",
+    "tombstone_name",
+    "kind",
+    "bounds",
+    "object_count",
+    "byte_count",
+    "objects",
+}
+CLEANUP_JOURNAL_BOUNDS_KEYS = {"max_files", "max_bytes"}
+CLEANUP_JOURNAL_OBJECT_KEYS = {
+    "relative",
+    "kind",
+    "uid",
+    "mode",
+    "nlink",
+    "dev",
+    "inode",
+    "size",
+    "mtime_ns",
+    "sha256",
+}
 LEGACY_BACKUP_KEYS = {
     "schema_version",
     "product_name",
@@ -343,12 +378,47 @@ class TreeManifestEntry:
 
 
 @dataclass(frozen=True)
+class CleanupJournalEntry:
+    relative: str
+    kind: str
+    uid: int | None
+    mode: int
+    nlink: int
+    dev: int
+    inode: int
+    size: int
+    mtime_ns: int
+    sha256: str | None
+
+
+@dataclass(frozen=True)
+class CleanupPendingState:
+    parent: Path
+    journal: Path
+    journal_content: bytes
+    tombstone: Path
+    kind: str
+    object_count: int
+    byte_count: int
+    objects: dict[str, CleanupJournalEntry]
+    children: dict[str, set[str]]
+    journal_alias: Path | None = None
+
+
+@dataclass(frozen=True)
 class BackupTransaction:
     slot: int
     pool: Path
     slot_dir: Path
     stage_dir: Path
     backup_managed_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BackupCommitResult:
+    slot: int
+    cleanup_pending: bool
+    retirement_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1730,6 +1800,719 @@ def cleanup_transaction_tree(path: Path, label: str) -> None:
     remove_tree_exact_retry(path, label)
 
 
+def cleanup_pending_parent(target: Path) -> Path:
+    return target / CLEANUP_PENDING_RUNTIME_DIR
+
+
+def cleanup_journal_path(target: Path) -> Path:
+    return cleanup_pending_parent(target) / CLEANUP_JOURNAL_NAME
+
+
+def cleanup_tombstone_path(target: Path) -> Path:
+    return cleanup_pending_parent(target) / CLEANUP_TOMBSTONE_NAME
+
+
+def cleanup_journal_alias_prefix(journal: Path) -> str:
+    return f".{journal.name}."
+
+
+def cleanup_entry_path(tombstone: Path, relative: str) -> Path:
+    return tombstone if relative == "." else tombstone / safe_relative_path(relative)
+
+
+def cleanup_entry_from_path(path: Path, tombstone: Path, total: list[int]) -> CleanupJournalEntry:
+    relative = tree_relative(path, tombstone)
+    info = path.lstat()
+    mode = stat.S_IMODE(info.st_mode)
+    uid = owner_of(info)
+    if stat.S_ISLNK(info.st_mode):
+        fail(f"cleanup tombstone must not contain symlinks: {relative}")
+    if stat.S_ISDIR(info.st_mode):
+        require_current_user_owned(info, f"cleanup tombstone directory {relative}")
+        return CleanupJournalEntry(
+            relative=relative,
+            kind="dir",
+            uid=uid,
+            mode=mode,
+            nlink=info.st_nlink,
+            dev=info.st_dev,
+            inode=info.st_ino,
+            size=info.st_size,
+            mtime_ns=info.st_mtime_ns,
+            sha256=None,
+        )
+    if stat.S_ISREG(info.st_mode):
+        if info.st_nlink != 1:
+            fail(f"cleanup tombstone file must not have hard-link aliases: {relative}")
+        require_current_user_owned(info, f"cleanup tombstone file {relative}")
+        total[0] += info.st_size
+        if total[0] > CLEANUP_TOMBSTONE_MAX_BYTES:
+            fail("cleanup tombstone exceeds the byte bound")
+        digest, refreshed = digest_regular_file(
+            path,
+            f"cleanup tombstone file {relative}",
+            owner_only=False,
+            max_bytes=CLEANUP_TOMBSTONE_MAX_BYTES,
+        )
+        return CleanupJournalEntry(
+            relative=relative,
+            kind="file",
+            uid=uid,
+            mode=mode,
+            nlink=refreshed.st_nlink,
+            dev=refreshed.st_dev,
+            inode=refreshed.st_ino,
+            size=refreshed.st_size,
+            mtime_ns=refreshed.st_mtime_ns,
+            sha256=digest,
+        )
+    fail(f"cleanup tombstone path must be a regular file or directory: {relative}")
+
+
+def snapshot_cleanup_tombstone(tombstone: Path) -> dict[str, CleanupJournalEntry]:
+    info = require_directory(tombstone, "cleanup tombstone")
+    require_current_user_owned(info, "cleanup tombstone")
+    paths = sorted_tree_paths(tombstone)
+    if len(paths) > CLEANUP_TOMBSTONE_MAX_FILES:
+        fail("cleanup tombstone exceeds the object bound")
+    total = [0]
+    entries = {
+        tree_relative(path, tombstone): cleanup_entry_from_path(path, tombstone, total)
+        for path in paths
+    }
+    if "." not in entries:
+        fail("cleanup tombstone root is missing")
+    return entries
+
+
+def cleanup_entry_to_json(entry: CleanupJournalEntry) -> dict[str, Any]:
+    return {
+        "relative": entry.relative,
+        "kind": entry.kind,
+        "uid": entry.uid,
+        "mode": entry.mode,
+        "nlink": entry.nlink,
+        "dev": entry.dev,
+        "inode": entry.inode,
+        "size": entry.size,
+        "mtime_ns": entry.mtime_ns,
+        "sha256": entry.sha256,
+    }
+
+
+def cleanup_entry_from_json(item: Any, label: str) -> CleanupJournalEntry:
+    if not isinstance(item, dict) or set(item) != CLEANUP_JOURNAL_OBJECT_KEYS:
+        fail(f"{label} cleanup object has invalid keys")
+    relative = item["relative"]
+    if not isinstance(relative, str):
+        fail(f"{label} cleanup object relative path is invalid")
+    if relative != ".":
+        safe_relative_path(relative)
+    kind = item["kind"]
+    if kind not in {"dir", "file"}:
+        fail(f"{label} cleanup object kind is invalid")
+    uid = item["uid"]
+    if uid is not None and (not isinstance(uid, int) or uid < 0):
+        fail(f"{label} cleanup object uid is invalid")
+    int_fields = ("mode", "nlink", "dev", "inode", "size", "mtime_ns")
+    for field in int_fields:
+        if not isinstance(item[field], int) or item[field] < 0:
+            fail(f"{label} cleanup object {field} is invalid")
+    digest = item["sha256"]
+    if kind == "dir":
+        if digest is not None:
+            fail(f"{label} cleanup directory digest must be null")
+    elif not isinstance(digest, str) or not SHA256_PATTERN.fullmatch(digest):
+        fail(f"{label} cleanup file digest is invalid")
+    return CleanupJournalEntry(
+        relative=relative,
+        kind=kind,
+        uid=uid,
+        mode=item["mode"],
+        nlink=item["nlink"],
+        dev=item["dev"],
+        inode=item["inode"],
+        size=item["size"],
+        mtime_ns=item["mtime_ns"],
+        sha256=digest,
+    )
+
+
+def cleanup_journal_payload(
+    target: Path,
+    kind: str,
+    objects: dict[str, CleanupJournalEntry],
+) -> dict[str, Any]:
+    byte_count = sum(entry.size for entry in objects.values() if entry.kind == "file")
+    return {
+        "schema_version": CLEANUP_JOURNAL_SCHEMA,
+        "product_name": PRODUCT_NAME,
+        "build_version": VERSION,
+        "canonical_target": str(target),
+        "cleanup_parent": CLEANUP_PENDING_RUNTIME_DIR,
+        "journal_name": CLEANUP_JOURNAL_NAME,
+        "tombstone_name": CLEANUP_TOMBSTONE_NAME,
+        "kind": kind,
+        "bounds": {
+            "max_files": CLEANUP_TOMBSTONE_MAX_FILES,
+            "max_bytes": CLEANUP_TOMBSTONE_MAX_BYTES,
+        },
+        "object_count": len(objects),
+        "byte_count": byte_count,
+        "objects": [
+            cleanup_entry_to_json(objects[relative])
+            for relative in sorted(objects, key=lambda item: (len(Path(item).parts), item))
+        ],
+    }
+
+
+def cleanup_declared_children(objects: dict[str, CleanupJournalEntry]) -> dict[str, set[str]]:
+    children: dict[str, set[str]] = {}
+    for relative in objects:
+        if relative == ".":
+            continue
+        parent = Path(relative).parent.as_posix()
+        if parent == "":
+            parent = "."
+        children.setdefault(parent, set()).add(Path(relative).name)
+    return children
+
+
+def cleanup_entry_matches_path(
+    path: Path,
+    entry: CleanupJournalEntry,
+    *,
+    allow_directory_drain_drift: bool = False,
+) -> bool:
+    try:
+        info = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    if identity_of(info) != (entry.dev, entry.inode):
+        return False
+    if owner_of(info) != entry.uid:
+        return False
+    if stat.S_IMODE(info.st_mode) != entry.mode:
+        return False
+    if entry.kind == "dir":
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            return False
+        return allow_directory_drain_drift or (
+            info.st_nlink == entry.nlink
+            and info.st_size == entry.size
+            and info.st_mtime_ns == entry.mtime_ns
+        )
+    if info.st_nlink != entry.nlink or info.st_size != entry.size:
+        return False
+    if info.st_mtime_ns != entry.mtime_ns:
+        return False
+    if entry.kind != "file" or stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return False
+    try:
+        digest, refreshed = digest_regular_file(
+            path,
+            f"cleanup tombstone file {entry.relative}",
+            owner_only=False,
+            max_bytes=CLEANUP_TOMBSTONE_MAX_BYTES,
+        )
+    except ManagerError:
+        return False
+    return identity_of(refreshed) == (entry.dev, entry.inode) and digest == entry.sha256
+
+
+def path_child_names(path: Path) -> set[str]:
+    info = lstat_optional(path)
+    if info is None:
+        return set()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail(f"cleanup tombstone directory changed kind: {path}")
+    return {child.name for child in path.iterdir()}
+
+
+def remaining_declared_child_names(
+    state: CleanupPendingState,
+    relative: str,
+) -> set[str]:
+    expected: set[str] = set()
+    for name in state.children.get(relative, set()):
+        child_relative = name if relative == "." else f"{relative}/{name}"
+        if lstat_optional(cleanup_entry_path(state.tombstone, child_relative)) is not None:
+            expected.add(name)
+    return expected
+
+
+def validate_cleanup_directory_for_drain(
+    state: CleanupPendingState,
+    entry: CleanupJournalEntry,
+) -> None:
+    path = cleanup_entry_path(state.tombstone, entry.relative)
+    info = lstat_optional(path)
+    if info is None:
+        return
+    if not cleanup_entry_matches_path(path, entry, allow_directory_drain_drift=True):
+        fail(f"cleanup tombstone directory identity changed: {entry.relative}")
+    actual_children = path_child_names(path)
+    expected_children = remaining_declared_child_names(state, entry.relative)
+    if actual_children != expected_children:
+        fail(f"cleanup tombstone directory child set changed: {entry.relative}")
+
+
+def read_cleanup_journal_file(
+    journal: Path,
+    *,
+    allow_publication_alias: bool,
+) -> tuple[bytes, os.stat_result, Path | None]:
+    try:
+        before = journal.lstat()
+    except FileNotFoundError:
+        fail("cleanup journal is missing")
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        fail("cleanup journal must be a regular non-symlink file")
+    require_current_user_owned(before, "cleanup journal")
+    require_exact_mode(before, "cleanup journal", OWNER_FILE_MODE)
+    if before.st_size > CLEANUP_JOURNAL_MAX_BYTES:
+        fail("cleanup journal exceeds the byte bound")
+    alias: Path | None = None
+    if before.st_nlink == 2:
+        if not allow_publication_alias:
+            fail("cleanup journal publication is incomplete")
+        alias = find_cleanup_journal_publication_alias(journal, before)
+    elif before.st_nlink != 1:
+        fail("cleanup journal has an unsupported link count")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(journal, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if identity_of(opened) != identity_of(before):
+            raise ConcurrentTargetChange("cleanup journal changed while it was opened")
+        blocks: list[bytes] = []
+        total = 0
+        while True:
+            block = os.read(descriptor, 65536)
+            if not block:
+                break
+            total += len(block)
+            if total > CLEANUP_JOURNAL_MAX_BYTES:
+                fail("cleanup journal exceeds the byte bound")
+            blocks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    final = journal.lstat()
+    if identity_of(final) != identity_of(before) or identity_of(after) != identity_of(before):
+        raise ConcurrentTargetChange("cleanup journal changed while it was read")
+    return b"".join(blocks), final, alias
+
+
+def find_cleanup_journal_publication_alias(journal: Path, info: os.stat_result) -> Path:
+    prefix = cleanup_journal_alias_prefix(journal)
+    matches: list[Path] = []
+    scanned = 0
+    for path in journal.parent.iterdir():
+        if not path.name.startswith(prefix):
+            continue
+        scanned += 1
+        if scanned > CLEANUP_JOURNAL_ALIAS_SCAN_MAX:
+            fail("cleanup journal has too many publication aliases")
+        alias_info = path.lstat()
+        if stat.S_ISLNK(alias_info.st_mode) or not stat.S_ISREG(alias_info.st_mode):
+            fail("cleanup journal publication alias is invalid")
+        if identity_of(alias_info) != identity_of(info):
+            fail("cleanup journal publication alias does not match the final journal")
+        matches.append(path)
+    if len(matches) != 1:
+        fail("cleanup journal hard-link alias state is invalid")
+    return matches[0]
+
+
+def validate_cleanup_pending_state(
+    target: Path,
+    *,
+    allow_publication_alias: bool = False,
+) -> CleanupPendingState | None:
+    parent = cleanup_pending_parent(target)
+    parent_info = lstat_optional(parent)
+    if parent_info is None:
+        return None
+    if stat.S_ISLNK(parent_info.st_mode) or not stat.S_ISDIR(parent_info.st_mode):
+        fail("cleanup pending parent must be a real directory")
+    require_current_user_owned(parent_info, "cleanup pending parent")
+    require_exact_mode(parent_info, "cleanup pending parent", OWNER_DIR_MODE)
+    journal = cleanup_journal_path(target)
+    tombstone = cleanup_tombstone_path(target)
+    journal_info = lstat_optional(journal)
+    entries = sorted(parent.iterdir())
+    if journal_info is None:
+        if entries:
+            fail("cleanup pending parent contains unjournaled state")
+        return None
+    content, _journal_stat, alias = read_cleanup_journal_file(
+        journal,
+        allow_publication_alias=allow_publication_alias,
+    )
+    allowed = {journal.name}
+    if lstat_optional(tombstone) is not None:
+        allowed.add(tombstone.name)
+    if alias is not None:
+        allowed.add(alias.name)
+    for path in entries:
+        if path.name not in allowed:
+            fail(f"cleanup pending parent contains unknown path: {path.name}")
+    payload = parse_json_object(content, "cleanup journal")
+    if set(payload) != CLEANUP_JOURNAL_KEYS:
+        fail("cleanup journal has invalid keys")
+    if (
+        payload["schema_version"] != CLEANUP_JOURNAL_SCHEMA
+        or payload["product_name"] != PRODUCT_NAME
+    ):
+        fail("cleanup journal identity or schema is invalid")
+    if payload["build_version"] != VERSION or payload["canonical_target"] != str(target):
+        fail("cleanup journal target or build binding is invalid")
+    if payload["cleanup_parent"] != CLEANUP_PENDING_RUNTIME_DIR:
+        fail("cleanup journal parent binding is invalid")
+    if payload["journal_name"] != CLEANUP_JOURNAL_NAME:
+        fail("cleanup journal name binding is invalid")
+    if payload["tombstone_name"] != CLEANUP_TOMBSTONE_NAME:
+        fail("cleanup tombstone name binding is invalid")
+    kind = payload["kind"]
+    if kind not in {
+        "managed-rollback-retirement",
+        "backup-slot-retirement",
+        "software-rollback-retirement",
+        "multi-retirement",
+    }:
+        fail("cleanup journal kind is invalid")
+    bounds = payload["bounds"]
+    if not isinstance(bounds, dict) or set(bounds) != CLEANUP_JOURNAL_BOUNDS_KEYS:
+        fail("cleanup journal bounds are invalid")
+    if (
+        bounds["max_files"] != CLEANUP_TOMBSTONE_MAX_FILES
+        or bounds["max_bytes"] != CLEANUP_TOMBSTONE_MAX_BYTES
+    ):
+        fail("cleanup journal bounds do not match the contract")
+    objects_value = payload["objects"]
+    object_count = payload["object_count"]
+    byte_count = payload["byte_count"]
+    if not isinstance(objects_value, list) or not isinstance(object_count, int):
+        fail("cleanup journal object list is invalid")
+    if not isinstance(byte_count, int) or byte_count < 0:
+        fail("cleanup journal byte count is invalid")
+    if object_count != len(objects_value) or object_count > CLEANUP_TOMBSTONE_MAX_FILES:
+        fail("cleanup journal object count is invalid")
+    objects: dict[str, CleanupJournalEntry] = {}
+    for item in objects_value:
+        entry = cleanup_entry_from_json(item, "cleanup journal")
+        if entry.relative in objects:
+            fail(f"cleanup journal contains duplicate object: {entry.relative}")
+        objects[entry.relative] = entry
+    if objects and "." not in objects:
+        fail("cleanup journal does not bind the tombstone root")
+    if sum(entry.size for entry in objects.values() if entry.kind == "file") != byte_count:
+        fail("cleanup journal byte count does not match objects")
+    if byte_count > CLEANUP_TOMBSTONE_MAX_BYTES:
+        fail("cleanup journal byte count exceeds the bound")
+    children = cleanup_declared_children(objects)
+    tombstone_info = lstat_optional(tombstone)
+    if tombstone_info is not None:
+        if stat.S_ISLNK(tombstone_info.st_mode) or not stat.S_ISDIR(tombstone_info.st_mode):
+            fail("cleanup tombstone must be a real directory")
+        actual_paths = sorted_tree_paths(tombstone)
+        if len(actual_paths) > CLEANUP_TOMBSTONE_MAX_FILES:
+            fail("cleanup tombstone exceeds the object bound")
+        for path in actual_paths:
+            relative = tree_relative(path, tombstone)
+            entry = objects.get(relative)
+            if entry is None:
+                fail(f"cleanup tombstone contains unknown object: {relative}")
+            if not cleanup_entry_matches_path(
+                path,
+                entry,
+                allow_directory_drain_drift=True,
+            ):
+                fail(f"cleanup tombstone object identity changed: {relative}")
+        provisional = CleanupPendingState(
+            parent=parent,
+            journal=journal,
+            journal_content=content,
+            tombstone=tombstone,
+            kind=kind,
+            object_count=object_count,
+            byte_count=byte_count,
+            objects=objects,
+            children=children,
+            journal_alias=alias,
+        )
+        for relative, entry in objects.items():
+            if entry.kind == "dir":
+                validate_cleanup_directory_for_drain(provisional, entry)
+    return CleanupPendingState(
+        parent=parent,
+        journal=journal,
+        journal_content=content,
+        tombstone=tombstone,
+        kind=kind,
+        object_count=object_count,
+        byte_count=byte_count,
+        objects=objects,
+        children=children,
+        journal_alias=alias,
+    )
+
+
+def cleanup_pending_report(target: Path) -> dict[str, Any]:
+    state = validate_cleanup_pending_state(target)
+    if state is None:
+        return {"cleanup_pending": False, "cleanup": None}
+    return {
+        "cleanup_pending": True,
+        "cleanup": {
+            "kind": state.kind,
+            "object_count": state.object_count,
+            "byte_count": state.byte_count,
+            "max_files": CLEANUP_TOMBSTONE_MAX_FILES,
+            "max_bytes": CLEANUP_TOMBSTONE_MAX_BYTES,
+        },
+    }
+
+
+def add_cleanup_pending_fields(payload: dict[str, Any], target: Path) -> dict[str, Any]:
+    payload.update(cleanup_pending_report(target))
+    return payload
+
+
+def publish_cleanup_journal_file(journal: Path, content: bytes) -> bool:
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=cleanup_journal_alias_prefix(journal),
+        dir=str(journal.parent),
+    )
+    temporary = Path(temporary_name)
+    final_visible = False
+    try:
+        write_complete(fd, content, f"cleanup journal temporary {temporary}")
+        os.fchmod(fd, OWNER_FILE_MODE)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.link(temporary, journal)
+        final_visible = True
+        try:
+            fsync_directory(journal.parent)
+            temporary.unlink()
+            fsync_directory(journal.parent)
+            return True
+        except BaseException:
+            return False
+    except FileExistsError as exc:
+        raise ManagerError("cleanup journal already exists") from exc
+    except BaseException:
+        if final_visible:
+            return False
+        raise
+    finally:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        if not final_visible:
+            temporary.unlink(missing_ok=True)
+
+
+def cleanup_retirement_name(kind: str, index: int) -> str:
+    if kind not in {
+        "managed-rollback-retirement",
+        "backup-slot-retirement",
+        "software-rollback-retirement",
+    }:
+        fail("cleanup retirement kind is invalid")
+    return f"{index:02d}-{kind}"
+
+
+def publish_cleanup_tombstones(
+    target: Path,
+    retirements: list[tuple[Path, str]],
+) -> CleanupPendingState:
+    if not retirements:
+        fail("cleanup retirement list is empty")
+    if len(retirements) > 4:
+        fail("cleanup retirement list exceeds the bound")
+    for source, _kind in retirements:
+        if lstat_optional(source) is None:
+            fail("cleanup source is missing")
+    parent = cleanup_pending_parent(target)
+    journal = cleanup_journal_path(target)
+    tombstone = cleanup_tombstone_path(target)
+    if validate_cleanup_pending_state(target) is not None:
+        fail("cleanup pending state must be drained before a new mutation")
+    ensure_owner_private_directory_chain(parent, "cleanup pending parent")
+    require_owner_private_directory(parent, "cleanup pending parent")
+    if list(parent.iterdir()):
+        fail("cleanup pending parent must be empty before journal publication")
+    tombstone.mkdir(mode=OWNER_DIR_MODE)
+    os.chmod(tombstone, OWNER_DIR_MODE)
+    fsync_directory(parent)
+    moved: list[tuple[Path, Path]] = []
+    journal_visible = False
+    try:
+        for index, (source, kind) in enumerate(retirements):
+            destination = tombstone / cleanup_retirement_name(kind, index)
+            os.replace(source, destination)
+            moved.append((source, destination))
+            fsync_directory(source.parent)
+            fsync_directory(tombstone)
+        fsync_directory(parent)
+        objects = snapshot_cleanup_tombstone(tombstone)
+        kind = retirements[0][1] if len(retirements) == 1 else "multi-retirement"
+        content = canonical_json(cleanup_journal_payload(target, kind, objects))
+        publish_cleanup_journal_file(journal, content)
+        journal_visible = True
+        return validate_cleanup_pending_state(
+            target,
+            allow_publication_alias=True,
+        ) or fail("cleanup journal publication failed")
+    except BaseException:
+        if not journal_visible and lstat_optional(journal) is None:
+            for source, destination in reversed(moved):
+                if lstat_optional(destination) is not None:
+                    os.replace(destination, source)
+                    fsync_directory(source.parent)
+            fsync_directory(parent)
+            with contextlib.suppress(BaseException):
+                remove_empty_directory_if_present(tombstone)
+            with contextlib.suppress(BaseException):
+                remove_empty_directory_if_present(parent)
+        raise
+
+
+def publish_cleanup_tombstone(target: Path, source: Path, kind: str) -> CleanupPendingState:
+    return publish_cleanup_tombstones(target, [(source, kind)])
+
+
+def unlink_cleanup_journal_alias(state: CleanupPendingState) -> None:
+    alias = state.journal_alias
+    if alias is None:
+        return
+    info = alias.lstat()
+    journal_info = state.journal.lstat()
+    if identity_of(info) != identity_of(journal_info):
+        fail("cleanup journal publication alias changed")
+    alias.unlink()
+    fsync_directory(state.parent)
+
+
+def delete_cleanup_tombstone_object(state: CleanupPendingState, entry: CleanupJournalEntry) -> None:
+    path = cleanup_entry_path(state.tombstone, entry.relative)
+    info = lstat_optional(path)
+    if info is None:
+        return
+    if entry.kind == "dir":
+        validate_cleanup_directory_for_drain(state, entry)
+    else:
+        parent_relative = Path(entry.relative).parent.as_posix()
+        if parent_relative == "":
+            parent_relative = "."
+        parent_entry = state.objects.get(parent_relative)
+        if parent_entry is not None and parent_entry.kind == "dir":
+            validate_cleanup_directory_for_drain(state, parent_entry)
+    if not cleanup_entry_matches_path(path, entry, allow_directory_drain_drift=True):
+        fail(f"cleanup tombstone object changed before drain: {entry.relative}")
+    if entry.kind == "file":
+        path.unlink()
+    elif entry.kind == "dir":
+        path.rmdir()
+    else:
+        fail(f"cleanup tombstone object kind is invalid: {entry.relative}")
+    fsync_directory(path.parent)
+    fsync_directory(state.parent)
+
+
+def cleanup_entries_all_absent(state: CleanupPendingState) -> bool:
+    return all(
+        lstat_optional(cleanup_entry_path(state.tombstone, relative)) is None
+        for relative in state.objects
+    )
+
+
+def remove_empty_cleanup_parent(parent: Path) -> None:
+    info = lstat_optional(parent)
+    if info is None:
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("cleanup pending parent must be a real directory")
+    try:
+        parent.rmdir()
+        fsync_directory(parent.parent)
+    except OSError as exc:
+        if exc.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
+            raise
+
+
+def drain_cleanup_pending(target: Path, *, post_commit: bool = False) -> bool:
+    state = validate_cleanup_pending_state(target, allow_publication_alias=True)
+    if state is None:
+        return False
+    try:
+        if state.journal_alias is not None:
+            unlink_cleanup_journal_alias(state)
+            state = validate_cleanup_pending_state(
+                target,
+                allow_publication_alias=True,
+            ) or fail("cleanup journal disappeared during alias recovery")
+        for relative, entry in sorted(
+            state.objects.items(),
+            key=lambda item: len(Path(item[0]).parts),
+            reverse=True,
+        ):
+            delete_cleanup_tombstone_object(state, entry)
+        if not cleanup_entries_all_absent(state):
+            fail("cleanup tombstone drain did not remove all declared objects")
+        state.journal.unlink()
+        try:
+            fsync_directory(state.parent)
+        except BaseException:
+            publish_cleanup_journal_file(state.journal, state.journal_content)
+            if post_commit:
+                return True
+            raise
+        remove_empty_cleanup_parent(state.parent)
+        return True
+    except BaseException:
+        if (
+            post_commit
+            and validate_cleanup_pending_state(target, allow_publication_alias=True) is not None
+        ):
+            return True
+        raise
+
+
+def retire_transaction_tree_after_commit(target: Path, source: Path, kind: str) -> bool:
+    return retire_transaction_trees_after_commit(target, [(source, kind)])
+
+
+def retire_transaction_trees_after_commit(
+    target: Path, retirements: list[tuple[Path, str]]
+) -> bool:
+    state = publish_cleanup_tombstones(target, retirements)
+    if state.journal_alias is not None:
+        return True
+    drain_cleanup_pending(target, post_commit=True)
+    return validate_cleanup_pending_state(target, allow_publication_alias=True) is not None
+
+
+def drain_cleanup_pending_before_mutation(target: Path, *, create_target: bool) -> bool:
+    if lstat_optional(cleanup_pending_parent(target)) is None:
+        return False
+    with internal_target_lock(target, create_target=create_target):
+        return drain_cleanup_pending(target)
+
+
+def require_no_cleanup_pending(target: Path, operation: str) -> None:
+    if validate_cleanup_pending_state(target) is not None:
+        fail(f"{operation} requires cleanup pending state to be drained by a mutation")
+
+
 def software_installation_mode_drift(target: Path, executable_relative: str) -> list[str]:
     drift: list[str] = []
     parent_info = require_owned_directory_modes(
@@ -1951,43 +2734,55 @@ def software_stamp_provenance_drift(stamp: dict[str, Any]) -> list[str]:
 def software_status_body(target: Path) -> dict[str, Any]:
     presence = software_root_presence(target)
     if presence == "missing":
-        return {
-            "state": "missing",
-            "target": str(target),
-            "version": expected_runtime_version(),
-            "executable": None,
-            "drift": [],
-            "executes_binary": False,
-        }
+        return add_cleanup_pending_fields(
+            {
+                "state": "missing",
+                "target": str(target),
+                "version": expected_runtime_version(),
+                "executable": None,
+                "drift": [],
+                "executes_binary": False,
+            },
+            target,
+        )
     if presence == "absent":
-        return {
-            "state": "absent",
-            "target": str(target),
-            "version": expected_runtime_version(),
-            "executable": None,
-            "drift": [],
-            "executes_binary": False,
-        }
+        return add_cleanup_pending_fields(
+            {
+                "state": "absent",
+                "target": str(target),
+                "version": expected_runtime_version(),
+                "executable": None,
+                "drift": [],
+                "executes_binary": False,
+            },
+            target,
+        )
     root = software_root(target)
     stamp, stamp_issue = load_software_stamp_for_status(target)
     if stamp_issue is not None:
-        return {
-            "state": "partial",
-            "target": str(target),
-            "version": expected_runtime_version(),
-            "executable": None,
-            "drift": [f"software stamp invalid: {stamp_issue}"],
-            "executes_binary": False,
-        }
+        return add_cleanup_pending_fields(
+            {
+                "state": "partial",
+                "target": str(target),
+                "version": expected_runtime_version(),
+                "executable": None,
+                "drift": [f"software stamp invalid: {stamp_issue}"],
+                "executes_binary": False,
+            },
+            target,
+        )
     if stamp is None:
-        return {
-            "state": "partial",
-            "target": str(target),
-            "version": expected_runtime_version(),
-            "executable": None,
-            "drift": ["software stamp missing"],
-            "executes_binary": False,
-        }
+        return add_cleanup_pending_fields(
+            {
+                "state": "partial",
+                "target": str(target),
+                "version": expected_runtime_version(),
+                "executable": None,
+                "drift": ["software stamp missing"],
+                "executes_binary": False,
+            },
+            target,
+        )
     executable_relative = stamp["executable"]["relative_path"]
     tree = scan_software_tree(root, executable_relative)
     provenance_drift = software_stamp_provenance_drift(stamp)
@@ -2003,15 +2798,18 @@ def software_status_body(target: Path) -> dict[str, Any]:
         state = "drift"
     elif provenance_drift:
         state = "needs-update"
-    return {
-        "state": state,
-        "target": str(target),
-        "version": stamp["version"],
-        "package": stamp["package"],
-        "executable": str(software_executable_from_stamp(target, stamp)),
-        "drift": drift,
-        "executes_binary": False,
-    }
+    return add_cleanup_pending_fields(
+        {
+            "state": state,
+            "target": str(target),
+            "version": stamp["version"],
+            "package": stamp["package"],
+            "executable": str(software_executable_from_stamp(target, stamp)),
+            "drift": drift,
+            "executes_binary": False,
+        },
+        target,
+    )
 
 
 def preflight_software_target(target: Path, *, allow_partial: bool) -> dict[str, Any]:
@@ -2490,6 +3288,7 @@ def install_prepared_software_root(
     final_root = software_root(target)
     software_parent_initial_mode: int | None = None
     existing_root_modes: dict[str, int] | None = None
+    cleanup_pending = False
     target_info = lstat_optional(target)
     target_existed = target_info is not None
     target_mode = stat.S_IMODE(target_info.st_mode) if target_info is not None else None
@@ -2569,13 +3368,18 @@ def install_prepared_software_root(
         if rollback_parent is not None:
             if rollback_root is not None:
                 make_software_tree_mutable(rollback_root)
-            cleanup_transaction_tree(rollback_parent, "software rollback retirement")
+            cleanup_pending = retire_transaction_tree_after_commit(
+                target,
+                rollback_parent,
+                "software-rollback-retirement",
+            )
             rollback_parent = None
         return {
             "target": str(target),
             "version": prepared_stamp["version"],
             "package": prepared_stamp["package"],
             "executable": str(software_executable_from_stamp(target, prepared_stamp)),
+            "cleanup_pending": cleanup_pending,
             "rollback": {
                 "mode": "rename-restore",
                 "created_dirs": created_dirs,
@@ -2656,6 +3460,7 @@ def software_probe(
     validate_software_host_request(platform_arg, architecture_arg, libc_arg)
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(target, create_target=False)
         preflight_software_target(target, allow_partial=True)
         package = select_software_package(
             platform_arg,
@@ -2675,6 +3480,8 @@ def software_probe(
                 "target": str(target),
                 "mutates": False,
                 "stage_only": True,
+                "cleanup_drained": cleanup_drained,
+                "cleanup_pending": False,
                 "version": stamp["version"],
                 "package": stamp["package"],
                 "executable": stamp["executable"],
@@ -2693,6 +3500,7 @@ def software_install(
     validate_software_host_request(platform_arg, architecture_arg, libc_arg)
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(target, create_target=False)
         transaction = setup_transaction_snapshot(target)
         try:
             with internal_target_lock(target, create_target=True):
@@ -2723,6 +3531,7 @@ def software_install(
     return {
         "operation": "software-install",
         "changed": True,
+        "cleanup_drained": cleanup_drained,
         **result,
         "official_vendor_installer": official_vendor_installer_record(),
     }
@@ -2738,6 +3547,7 @@ def software_update(
     validate_software_host_request(platform_arg, architecture_arg, libc_arg)
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(target, create_target=False)
         transaction = setup_transaction_snapshot(target)
         try:
             with internal_target_lock(target, create_target=False):
@@ -2749,6 +3559,8 @@ def software_update(
                         "operation": "software-update",
                         "target": str(target),
                         "changed": False,
+                        "cleanup_drained": cleanup_drained,
+                        "cleanup_pending": False,
                         "version": status["version"],
                         "package": status["package"],
                         "executable": status["executable"],
@@ -2768,6 +3580,8 @@ def software_update(
                             "operation": "software-update",
                             "target": str(target),
                             "changed": False,
+                            "cleanup_drained": cleanup_drained,
+                            "cleanup_pending": False,
                             "version": race_status["version"],
                             "package": race_status["package"],
                             "executable": race_status["executable"],
@@ -2791,6 +3605,7 @@ def software_update(
     return {
         "operation": "software-update",
         "changed": True,
+        "cleanup_drained": cleanup_drained,
         **result,
         "official_vendor_installer": official_vendor_installer_record(),
     }
@@ -2800,6 +3615,7 @@ def software_remove(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(target, create_target=False)
         transaction = setup_transaction_snapshot(target)
         try:
             with internal_target_lock(target, create_target=False):
@@ -2811,6 +3627,8 @@ def software_remove(target: Path) -> dict[str, Any]:
                         "target": str(target),
                         "changed": False,
                         "removed_state": status["state"],
+                        "cleanup_drained": cleanup_drained,
+                        "cleanup_pending": False,
                     }
                 target_info = lstat_optional(target)
                 target_existed = target_info is not None
@@ -2825,6 +3643,7 @@ def software_remove(target: Path) -> dict[str, Any]:
                 software_parent_manifest = snapshot_tree_manifest(software_parent(target))
                 rollback_parent: Path | None = None
                 rollback_root: Path | None = None
+                cleanup_pending = False
                 require_owned_directory_modes(
                     root,
                     "software root",
@@ -2843,7 +3662,11 @@ def software_remove(target: Path) -> dict[str, Any]:
                     if absent["state"] not in {"missing", "absent"}:
                         fail(f"Kiro CLI software remove postcondition failed: {absent['state']}")
                     make_software_tree_mutable(rollback_root)
-                    cleanup_transaction_tree(rollback_parent, "software rollback retirement")
+                    cleanup_pending = retire_transaction_tree_after_commit(
+                        target,
+                        rollback_parent,
+                        "software-rollback-retirement",
+                    )
                     rollback_parent = None
                     require_no_software_transaction_residue(target, "software remove")
                 except BaseException:
@@ -2869,6 +3692,8 @@ def software_remove(target: Path) -> dict[str, Any]:
                     "target": str(target),
                     "changed": True,
                     "removed_state": status["state"],
+                    "cleanup_drained": cleanup_drained,
+                    "cleanup_pending": cleanup_pending,
                 }
         except BaseException:
             restore_setup_transaction_if_changed(target, transaction)
@@ -3914,25 +4739,36 @@ def rollback_managed_state_transaction(transaction: ManagedStateTransaction) -> 
     ) from last_error
 
 
-def commit_managed_state_transaction(transaction: ManagedStateTransaction) -> None:
+def commit_managed_state_transaction(
+    transaction: ManagedStateTransaction,
+    *,
+    extra_retirements: list[tuple[Path, str]] | None = None,
+) -> bool:
+    verify_exact_managed_state(
+        transaction.target,
+        transaction.desired,
+        managed_files=transaction.managed_files,
+    )
+    if transaction.remove_empty_parents:
+        for relative in (*transaction.managed_files, STAMP_NAME):
+            if transaction.desired.get(relative) is None:
+                remove_empty_managed_parents(transaction.target, relative)
+        verify_exact_managed_state(
+            transaction.target,
+            transaction.desired,
+            managed_files=transaction.managed_files,
+        )
+    cleanup_pending = False
+    retirements = list(extra_retirements or [])
     if transaction.rollback_dir is not None:
-        cleanup_transaction_tree(transaction.rollback_dir, "managed rollback retirement")
+        retirements.append((transaction.rollback_dir, "managed-rollback-retirement"))
+    if retirements:
+        cleanup_pending = retire_transaction_trees_after_commit(
+            transaction.target,
+            retirements,
+        )
     require_no_setup_transaction_residue(transaction.target, "managed transaction")
-    verify_exact_managed_state(
-        transaction.target,
-        transaction.desired,
-        managed_files=transaction.managed_files,
-    )
-    if not transaction.remove_empty_parents:
-        return
-    for relative in (*transaction.managed_files, STAMP_NAME):
-        if transaction.desired.get(relative) is None:
-            remove_empty_managed_parents(transaction.target, relative)
-    verify_exact_managed_state(
-        transaction.target,
-        transaction.desired,
-        managed_files=transaction.managed_files,
-    )
+    return cleanup_pending
 
 
 def managed_snapshot_matches(
@@ -4449,7 +5285,9 @@ def open_external_lock_descriptor_for_binding(
     label: str,
 ) -> ExternalLockFile:
     if expected is None:
-        expected = external_product_lock_binding() if lock.name == EXTERNAL_BOOTSTRAP_LOCK_NAME else {}
+        expected = (
+            external_product_lock_binding() if lock.name == EXTERNAL_BOOTSTRAP_LOCK_NAME else {}
+        )
     existing = open_existing_external_lock_descriptor(lock, expected, label=label)
     if existing is not None:
         return existing
@@ -5191,10 +6029,17 @@ def stage_backup(target: Path, stamp: dict[str, Any]) -> BackupTransaction:
         raise
 
 
-def commit_backup(transaction: BackupTransaction, target: Path) -> int:
+def commit_backup(
+    transaction: BackupTransaction,
+    target: Path,
+    *,
+    retire: bool = True,
+) -> BackupCommitResult:
     rollback_dir: Path | None = None
     rollback_ready = False
     published = False
+    cleanup_pending = False
+    deferred_retirement = False
     try:
         if transaction.slot_dir.exists():
             rollback_dir = backup_transaction_dir(transaction.pool, transaction.slot, "rollback")
@@ -5230,11 +6075,20 @@ def commit_backup(transaction: BackupTransaction, target: Path) -> int:
                 rollback_ready = False
                 rollback_dir = None
             raise
+        if rollback_dir is not None and not retire:
+            deferred_retirement = True
+            rollback_ready = False
+            return BackupCommitResult(
+                slot=transaction.slot,
+                cleanup_pending=False,
+                retirement_dir=rollback_dir,
+            )
         if rollback_dir is not None:
             try:
-                cleanup_transaction_tree(
+                cleanup_pending = retire_transaction_tree_after_commit(
+                    target,
                     rollback_dir,
-                    f"backup slot {transaction.slot} rollback retirement",
+                    "backup-slot-retirement",
                 )
                 rollback_ready = False
                 rollback_dir = None
@@ -5251,21 +6105,38 @@ def commit_backup(transaction: BackupTransaction, target: Path) -> int:
                     rollback_ready = False
                     rollback_dir = None
                 raise
-        return transaction.slot
+        return BackupCommitResult(slot=transaction.slot, cleanup_pending=cleanup_pending)
     finally:
         if lstat_optional(transaction.stage_dir) is not None:
             cleanup_transaction_tree(
                 transaction.stage_dir,
                 f"backup slot {transaction.slot} stage",
             )
-        if rollback_dir is not None and not rollback_ready:
+        if rollback_dir is not None and not rollback_ready and not deferred_retirement:
             cleanup_transaction_tree(
                 rollback_dir,
                 f"backup slot {transaction.slot} rollback",
             )
 
 
-def write_backup(target: Path, stamp: dict[str, Any]) -> int:
+def rollback_deferred_backup_commit(
+    transaction: BackupTransaction,
+    result: BackupCommitResult | None,
+) -> None:
+    if result is None or result.retirement_dir is None:
+        return
+    if lstat_optional(transaction.slot_dir) is not None:
+        remove_tree_exact_retry(
+            transaction.slot_dir,
+            f"backup slot {transaction.slot} failed publication",
+        )
+    if lstat_optional(result.retirement_dir) is None:
+        fail(f"backup slot {transaction.slot} rollback retirement is missing")
+    os.replace(result.retirement_dir, transaction.slot_dir)
+    fsync_directory(transaction.pool)
+
+
+def write_backup(target: Path, stamp: dict[str, Any]) -> BackupCommitResult:
     transaction = stage_backup(target, stamp)
     try:
         return commit_backup(transaction, target)
@@ -5567,68 +6438,80 @@ def restore_setup_transaction_if_changed(target: Path, snapshot: dict[str, Any])
 def current_status_body(target: Path) -> dict[str, Any]:
     if not ensure_target_directory(target, create=False):
         software = software_status_body(target)
-        return {
-            "state": "missing",
-            "target": str(target),
-            "setup_id": None,
-            "permission_profile_id": None,
-            "schema_version": None,
-            "migration_required": False,
-            "launch_allowed": False,
-            "drift": [],
-            "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
-            "software": software,
-        }
+        return add_cleanup_pending_fields(
+            {
+                "state": "missing",
+                "target": str(target),
+                "setup_id": None,
+                "permission_profile_id": None,
+                "schema_version": None,
+                "migration_required": False,
+                "launch_allowed": False,
+                "drift": [],
+                "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
+                "software": software,
+            },
+            target,
+        )
     stamp = load_stamp(target)
     if stamp is None:
         software = software_status_body(target)
-        return {
-            "state": "unmanaged",
-            "target": str(target),
-            "setup_id": None,
-            "permission_profile_id": None,
-            "schema_version": None,
-            "migration_required": False,
-            "launch_allowed": False,
-            "drift": [],
-            "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
-            "software": software,
-        }
+        return add_cleanup_pending_fields(
+            {
+                "state": "unmanaged",
+                "target": str(target),
+                "setup_id": None,
+                "permission_profile_id": None,
+                "schema_version": None,
+                "migration_required": False,
+                "launch_allowed": False,
+                "drift": [],
+                "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
+                "software": software,
+            },
+            target,
+        )
     drift = detect_drift(target, stamp)
     software = software_status_body(target)
     if not stamp_is_current(stamp):
-        return {
-            "state": "legacy-managed",
+        return add_cleanup_pending_fields(
+            {
+                "state": "legacy-managed",
+                "target": str(target),
+                "setup_id": stamp["setup_id"],
+                "permission_profile_id": None,
+                "schema_version": stamp["schema_version"],
+                "build_version": stamp["build_version"],
+                "migration_required": True,
+                "launch_allowed": False,
+                "drift": drift,
+                "builder": {
+                    "projection": LEGACY_BUILDER_PROJECTION,
+                    "enabled": not any(item in drift for item in LEGACY_BUILDER_FILES),
+                },
+                "software": software,
+            },
+            target,
+        )
+    return add_cleanup_pending_fields(
+        {
+            "state": "managed",
             "target": str(target),
             "setup_id": stamp["setup_id"],
-            "permission_profile_id": None,
+            "permission_profile_id": stamp["permission_profile_id"],
             "schema_version": stamp["schema_version"],
             "build_version": stamp["build_version"],
-            "migration_required": True,
-            "launch_allowed": False,
+            "migration_required": False,
+            "launch_allowed": not drift and software["state"] == "installed",
             "drift": drift,
             "builder": {
-                "projection": LEGACY_BUILDER_PROJECTION,
-                "enabled": not any(item in drift for item in LEGACY_BUILDER_FILES),
+                "projection": BUILDER_PROJECTION,
+                "enabled": not any(item in drift for item in BUILDER_FILES),
             },
             "software": software,
-        }
-    return {
-        "state": "managed",
-        "target": str(target),
-        "setup_id": stamp["setup_id"],
-        "permission_profile_id": stamp["permission_profile_id"],
-        "schema_version": stamp["schema_version"],
-        "build_version": stamp["build_version"],
-        "migration_required": False,
-        "launch_allowed": not drift and software["state"] == "installed",
-        "drift": drift,
-        "builder": {
-            "projection": BUILDER_PROJECTION,
-            "enabled": not any(item in drift for item in BUILDER_FILES),
         },
-        "software": software,
-    }
+        target,
+    )
 
 
 def current_status(target: Path) -> dict[str, Any]:
@@ -5638,6 +6521,7 @@ def current_status(target: Path) -> dict[str, Any]:
 
 def plan_setup(target: Path, setup_id: str, permission_profile_id: str) -> dict[str, Any]:
     require_supported_host_preflight()
+
     def plan_body(locked_target: Path) -> dict[str, Any]:
         target = locked_target
         setup = render_setup(setup_id)
@@ -5681,19 +6565,23 @@ def plan_setup(target: Path, setup_id: str, permission_profile_id: str) -> dict[
                 stamp_payload(target, setup.setup_id, profile.profile_id, desired)
             )
         changed = changed_managed_paths(before, desired, managed_files)
-        return {
-            "operation": operation,
-            "target": str(target),
-            "setup_id": setup_id,
-            "permission_profile_id": permission_profile_id,
-            "mutates": False,
-            "backup_required": backup_required,
-            "changed": changed,
-            "state": status["state"],
-            "current_setup_id": status["setup_id"],
-            "current_permission_profile_id": status["permission_profile_id"],
-            "drift": status["drift"],
-        }
+        return add_cleanup_pending_fields(
+            {
+                "operation": operation,
+                "target": str(target),
+                "setup_id": setup_id,
+                "permission_profile_id": permission_profile_id,
+                "mutates": False,
+                "backup_required": backup_required,
+                "changed": changed,
+                "state": status["state"],
+                "current_setup_id": status["setup_id"],
+                "current_permission_profile_id": status["permission_profile_id"],
+                "drift": status["drift"],
+            },
+            target,
+        )
+
     return run_read_only_target_operation(target, plan_body)
 
 
@@ -5728,6 +6616,10 @@ def mutate_setup(
     require_supported_host_preflight()
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(
+            target,
+            create_target=action == "install",
+        )
         transaction = setup_transaction_snapshot(target)
         try:
             with internal_target_lock(target, create_target=action == "install"):
@@ -5762,12 +6654,25 @@ def mutate_setup(
                 ):
                     backup_transaction = stage_backup(target, existing_stamp)
                 managed_transaction: ManagedStateTransaction | None = None
+                backup_result: BackupCommitResult | None = None
+                cleanup_pending = False
                 try:
                     managed_transaction = begin_managed_state_transaction(target, desired, before)
                     if backup_transaction is not None:
-                        backup_slot = commit_backup(backup_transaction, target)
-                    commit_managed_state_transaction(managed_transaction)
+                        backup_result = commit_backup(backup_transaction, target, retire=False)
+                        backup_slot = backup_result.slot
+                    extra_retirements = []
+                    if backup_result is not None and backup_result.retirement_dir is not None:
+                        extra_retirements.append(
+                            (backup_result.retirement_dir, "backup-slot-retirement")
+                        )
+                    cleanup_pending = commit_managed_state_transaction(
+                        managed_transaction,
+                        extra_retirements=extra_retirements,
+                    )
                 except BaseException:
+                    if backup_transaction is not None:
+                        rollback_deferred_backup_commit(backup_transaction, backup_result)
                     if managed_transaction is not None:
                         rollback_managed_state_transaction(managed_transaction)
                     else:
@@ -5781,6 +6686,8 @@ def mutate_setup(
                     "permission_profile_id": permission_profile_id,
                     "changed": changed,
                     "backup_slot": backup_slot,
+                    "cleanup_drained": cleanup_drained,
+                    "cleanup_pending": cleanup_pending,
                     "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
                     "engine": {
                         "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
@@ -5796,6 +6703,7 @@ def update_setup(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(target, create_target=False)
         transaction = setup_transaction_snapshot(target)
         try:
             with internal_target_lock(target, create_target=False):
@@ -5812,9 +6720,10 @@ def update_setup(target: Path) -> dict[str, Any]:
                     stamp_payload(target, setup.setup_id, profile.profile_id, desired)
                 )
                 managed_transaction: ManagedStateTransaction | None = None
+                cleanup_pending = False
                 try:
                     managed_transaction = begin_managed_state_transaction(target, desired, before)
-                    commit_managed_state_transaction(managed_transaction)
+                    cleanup_pending = commit_managed_state_transaction(managed_transaction)
                 except BaseException:
                     if managed_transaction is not None:
                         rollback_managed_state_transaction(managed_transaction)
@@ -5829,6 +6738,8 @@ def update_setup(target: Path) -> dict[str, Any]:
                     "permission_profile_id": profile.profile_id,
                     "changed": changed,
                     "backup_slot": None,
+                    "cleanup_drained": cleanup_drained,
+                    "cleanup_pending": cleanup_pending,
                     "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
                     "engine": {
                         "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
@@ -5844,6 +6755,7 @@ def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
     require_supported_host_preflight()
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(target, create_target=False)
         transaction = setup_transaction_snapshot(target)
         try:
             with internal_target_lock(target, create_target=False):
@@ -5868,6 +6780,8 @@ def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
                 backup_transaction = stage_backup(target, stamp)
                 backup_slot: int | None = None
                 managed_transaction: ManagedStateTransaction | None = None
+                backup_result: BackupCommitResult | None = None
+                cleanup_pending = False
                 try:
                     managed_transaction = begin_managed_state_transaction(
                         target,
@@ -5875,9 +6789,19 @@ def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
                         before,
                         managed_files=managed_files,
                     )
-                    backup_slot = commit_backup(backup_transaction, target)
-                    commit_managed_state_transaction(managed_transaction)
+                    backup_result = commit_backup(backup_transaction, target, retire=False)
+                    backup_slot = backup_result.slot
+                    extra_retirements = []
+                    if backup_result.retirement_dir is not None:
+                        extra_retirements.append(
+                            (backup_result.retirement_dir, "backup-slot-retirement")
+                        )
+                    cleanup_pending = commit_managed_state_transaction(
+                        managed_transaction,
+                        extra_retirements=extra_retirements,
+                    )
                 except BaseException:
+                    rollback_deferred_backup_commit(backup_transaction, backup_result)
                     if managed_transaction is not None:
                         rollback_managed_state_transaction(managed_transaction)
                     else:
@@ -5893,6 +6817,8 @@ def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
                     "permission_profile_id": profile.profile_id,
                     "changed": changed,
                     "backup_slot": backup_slot,
+                    "cleanup_drained": cleanup_drained,
+                    "cleanup_pending": cleanup_pending,
                     "builder": {"projection": BUILDER_PROJECTION, "enabled": True},
                     "engine": {
                         "argument": MANAGED_LAUNCH_ENGINE_ARGUMENT,
@@ -5908,6 +6834,7 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
     require_supported_host_preflight()
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(target, create_target=False)
         transaction = setup_transaction_snapshot(target)
         try:
             with internal_target_lock(target, create_target=False):
@@ -5921,6 +6848,8 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
                 backup_transaction = stage_backup(target, stamp)
                 backup_slot: int | None = None
                 managed_transaction: ManagedStateTransaction | None = None
+                backup_result: BackupCommitResult | None = None
+                cleanup_pending = False
                 try:
                     managed_transaction = begin_managed_state_transaction(
                         target,
@@ -5928,9 +6857,19 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
                         before,
                         managed_files=managed_files,
                     )
-                    backup_slot = commit_backup(backup_transaction, target)
-                    commit_managed_state_transaction(managed_transaction)
+                    backup_result = commit_backup(backup_transaction, target, retire=False)
+                    backup_slot = backup_result.slot
+                    extra_retirements = []
+                    if backup_result.retirement_dir is not None:
+                        extra_retirements.append(
+                            (backup_result.retirement_dir, "backup-slot-retirement")
+                        )
+                    cleanup_pending = commit_managed_state_transaction(
+                        managed_transaction,
+                        extra_retirements=extra_retirements,
+                    )
                 except BaseException:
+                    rollback_deferred_backup_commit(backup_transaction, backup_result)
                     if managed_transaction is not None:
                         rollback_managed_state_transaction(managed_transaction)
                     else:
@@ -5948,6 +6887,8 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
                     "changed": changed,
                     "backup_slot": backup_slot,
                     "restored_backup": slot,
+                    "cleanup_drained": cleanup_drained,
+                    "cleanup_pending": cleanup_pending,
                     "migration_required": not stamp_is_current(restored_stamp),
                     "builder": {
                         "projection": BUILDER_PROJECTION
@@ -5965,6 +6906,7 @@ def remove_setup(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
     with external_target_scope(target) as locked_target:
         target = locked_target
+        cleanup_drained = drain_cleanup_pending_before_mutation(target, create_target=False)
         transaction = setup_transaction_snapshot(target)
         try:
             with internal_target_lock(target, create_target=False):
@@ -5980,6 +6922,8 @@ def remove_setup(target: Path) -> dict[str, Any]:
                 backup_transaction = stage_backup(target, stamp)
                 backup_slot: int | None = None
                 managed_transaction: ManagedStateTransaction | None = None
+                backup_result: BackupCommitResult | None = None
+                cleanup_pending = False
                 try:
                     managed_transaction = begin_managed_state_transaction(
                         target,
@@ -5987,9 +6931,19 @@ def remove_setup(target: Path) -> dict[str, Any]:
                         before,
                         managed_files=managed_files,
                     )
-                    backup_slot = commit_backup(backup_transaction, target)
-                    commit_managed_state_transaction(managed_transaction)
+                    backup_result = commit_backup(backup_transaction, target, retire=False)
+                    backup_slot = backup_result.slot
+                    extra_retirements = []
+                    if backup_result.retirement_dir is not None:
+                        extra_retirements.append(
+                            (backup_result.retirement_dir, "backup-slot-retirement")
+                        )
+                    cleanup_pending = commit_managed_state_transaction(
+                        managed_transaction,
+                        extra_retirements=extra_retirements,
+                    )
                 except BaseException:
+                    rollback_deferred_backup_commit(backup_transaction, backup_result)
                     if managed_transaction is not None:
                         rollback_managed_state_transaction(managed_transaction)
                     else:
@@ -6004,6 +6958,8 @@ def remove_setup(target: Path) -> dict[str, Any]:
                     "removed_schema_version": stamp["schema_version"],
                     "changed": changed,
                     "backup_slot": backup_slot,
+                    "cleanup_drained": cleanup_drained,
+                    "cleanup_pending": cleanup_pending,
                     "builder": {"projection": BUILDER_PROJECTION, "enabled": False},
                 }
         except BaseException:
@@ -6109,6 +7065,7 @@ def launch(target: Path, child_args: list[str]) -> int:
     require_supported_host_preflight()
     with target_lock(target, create_target=False) as locked_target:
         target = locked_target
+        drain_cleanup_pending(target)
         reject_managed_launch_overrides(child_args)
         require_clean_managed(target)
         executable = require_clean_software(target)

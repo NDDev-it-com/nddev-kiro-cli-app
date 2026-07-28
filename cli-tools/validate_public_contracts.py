@@ -240,6 +240,9 @@ EXTERNAL_LOCK_ROOT_REF = "fixed-system-temp/nddev-kiro-cli-app-uid"
 EXTERNAL_PRODUCT_LOCK_FILENAME_REF = "global.lock"
 EXTERNAL_LOCK_FILENAME_REF = "sha256(product namespace + canonical absolute target).lock"
 EXTERNAL_LOCK_PUBLICATION_REF = "atomic-hardlink-no-replace"
+CLEANUP_PENDING_ROOT_REF = "target/.nddev-runtime/cleanup-pending"
+CLEANUP_JOURNAL_NAME_REF = "NDDEV-KIRO-CLI-CLEANUP.json"
+CLEANUP_JOURNAL_PUBLICATION_REF = "atomic-hardlink-no-replace"
 LOCK_FILE_MODE = "0600"
 LOCK_DIRECTORY_IDLE_MODE = "0700"
 LOCK_DIRECTORY_HELD_MODE = "0500"
@@ -796,6 +799,32 @@ def check_monotonic_external_lock_fields(
         errors.append(f"{label}: target lock publication boundary mismatch")
 
 
+def check_cleanup_pending_fields(
+    surface: dict[str, Any],
+    label: str,
+    errors: list[str],
+) -> None:
+    expected = {
+        "cleanup_pending_root": CLEANUP_PENDING_ROOT_REF,
+        "cleanup_journal_name": CLEANUP_JOURNAL_NAME_REF,
+        "cleanup_journal_schema": 1,
+        "cleanup_journal_publication": CLEANUP_JOURNAL_PUBLICATION_REF,
+        "cleanup_journal_final_path_publication_commit_point": True,
+        "cleanup_journal_immutable": True,
+        "cleanup_journal_alias_recovery_mutation_only": True,
+        "cleanup_pending_bound": 1,
+        "cleanup_tombstone_max_roots": 4,
+        "cleanup_pending_status_plan_exposed": True,
+        "cleanup_pending_top_level_result": True,
+        "cleanup_pending_malformed_fail_closed": True,
+        "read_only_cleanup_pending_no_recovery": True,
+        "next_mutation_drains_cleanup_pending": True,
+    }
+    for key, value in expected.items():
+        if surface.get(key) != value:
+            errors.append(f"{label}: {key} mismatch")
+
+
 def check_setup(errors: list[str]) -> None:
     setup_id = "nddev-builder"
     root = ROOT / "setups" / setup_id
@@ -882,6 +911,7 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
     if runtime.get("external_lock_never_unlinked") is not True:
         errors.append(f"{label}: external lock unlink policy mismatch")
     check_monotonic_external_lock_fields(runtime, label, errors)
+    check_cleanup_pending_fields(runtime, label, errors)
     if runtime.get("external_lock_not_exposed_to_child") is not True:
         errors.append(f"{label}: external lock child boundary mismatch")
     if runtime.get("fixed_system_temp_root_for_external_lock") is not True:
@@ -1289,6 +1319,7 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
     if software.get("external_lock_never_unlinked") is not True:
         errors.append(f"{label}: external lock unlink policy mismatch")
     check_monotonic_external_lock_fields(software, label, errors)
+    check_cleanup_pending_fields(software, label, errors)
     if software.get("lock_acquisition_order") != ["external", "internal"]:
         errors.append(f"{label}: lock acquisition order mismatch")
     if software.get("lock_release_order") != ["internal", "external"]:
@@ -1379,6 +1410,11 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
     if managed_state.get("external_lock_never_unlinked") is not True:
         errors.append("config/nddev-contract.json: external lock unlink policy mismatch")
     check_monotonic_external_lock_fields(
+        managed_state,
+        "config/nddev-contract.json",
+        errors,
+    )
+    check_cleanup_pending_fields(
         managed_state,
         "config/nddev-contract.json",
         errors,
@@ -1492,6 +1528,11 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         "config/nddev-contract.json: safety",
         errors,
     )
+    check_cleanup_pending_fields(
+        safety,
+        "config/nddev-contract.json: safety",
+        errors,
+    )
     if safety.get("directory_lock_used") is not False:
         errors.append("config/nddev-contract.json: removable directory lock must be disabled")
 
@@ -1548,6 +1589,11 @@ def check_baseline(
     if authentication.get("external_lock_never_unlinked") is not True:
         errors.append("references/kiro-cli-baseline.json: external lock unlink policy missing")
     check_monotonic_external_lock_fields(
+        authentication,
+        "references/kiro-cli-baseline.json",
+        errors,
+    )
+    check_cleanup_pending_fields(
         authentication,
         "references/kiro-cli-baseline.json",
         errors,
@@ -1612,6 +1658,11 @@ def check_baseline(
         if software.get("external_lock_never_unlinked") is not True:
             errors.append("references/kiro-cli-baseline.json: external lock unlink policy mismatch")
         check_monotonic_external_lock_fields(
+            software,
+            "references/kiro-cli-baseline.json",
+            errors,
+        )
+        check_cleanup_pending_fields(
             software,
             "references/kiro-cli-baseline.json",
             errors,
@@ -2767,7 +2818,9 @@ def run_lifecycle_order_regressions(manager: Any, tmp: Path, errors: list[str]) 
             yield lock
 
     def traced_canonical(path: Path) -> Path:
-        events.append(("canonical-target", product_depth) if record_lock_depth else "canonical-target")
+        events.append(
+            ("canonical-target", product_depth) if record_lock_depth else "canonical-target"
+        )
         return original_canonical(path)
 
     def traced_status_body(path: Path) -> dict[str, Any]:
