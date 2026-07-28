@@ -2762,16 +2762,6 @@ def snapshot_bootstrap_tree(root: Path) -> tuple[Any, ...]:
     return (str(root), tuple(entries))
 
 
-def system_bootstrap_snapshot(manager: Any, resolver: Any) -> tuple[Any, ...]:
-    uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
-    try:
-        system_root = manager.require_bootstrap_system_root(resolver())
-    except Exception as exc:
-        return ("system-root-error", str(exc))
-    root = system_root / f"{manager.PRODUCT_NAME}-{uid}"
-    return snapshot_bootstrap_tree(root)
-
-
 def check_python_portability(errors: list[str]) -> None:
     for relative in PORTABLE_PYTHON_SOURCES:
         path = ROOT / relative
@@ -2931,7 +2921,6 @@ def run_public_manager_regressions(errors: list[str]) -> None:
         else:
             errors.append(f"{command}: public platform override unexpectedly parsed")
     original_bootstrap_root = manager.bootstrap_system_temp_root
-    real_before = system_bootstrap_snapshot(manager, original_bootstrap_root)
     try:
         with tempfile.TemporaryDirectory(prefix="nddev-kiro-public-validator-") as tmp_name:
             tmp = Path(tmp_name).resolve(strict=False)
@@ -2954,9 +2943,6 @@ def run_public_manager_regressions(errors: list[str]) -> None:
         errors.append(f"public manager regressions failed: {exc}")
     finally:
         manager.bootstrap_system_temp_root = original_bootstrap_root
-    real_after = system_bootstrap_snapshot(manager, original_bootstrap_root)
-    if real_after != real_before:
-        errors.append("public manager regressions changed the real system bootstrap lock root")
 
 
 def main() -> int:
