@@ -218,6 +218,10 @@ UNSUPPORTED_PLATFORMS = [
     "linux-musl",
     "unsupported-architecture",
 ]
+OFFICIAL_UBUNTU_GLIBC_FLOOR = {
+    "ubuntu-glibc-arm64": "2.39",
+    "ubuntu-glibc-x64": "2.34",
+}
 PLATFORM_DETECTION = (
     "platform.system + platform.machine + platform.freedesktop_os_release + platform.libc_ver"
 )
@@ -917,8 +921,8 @@ def check_product_platform_scope(scope: Any, label: str, errors: list[str]) -> N
         errors.append(f"{label}: public platform override arguments must be absent")
     if scope.get("official_ubuntu_version_floor") is not None:
         errors.append(f"{label}: Ubuntu version floor must be null")
-    if scope.get("official_ubuntu_glibc_floor") is not None:
-        errors.append(f"{label}: Ubuntu glibc floor must be null")
+    if scope.get("official_ubuntu_glibc_floor") != OFFICIAL_UBUNTU_GLIBC_FLOOR:
+        errors.append(f"{label}: Ubuntu glibc floors mismatch")
     if scope.get("product_host_package_map") != PRODUCT_HOST_PACKAGE_MAP:
         errors.append(f"{label}: product host package map mismatch")
 

@@ -74,8 +74,10 @@ manager build reports `needs-update` instead of becoming hard-invalid, and
 stamp after strict target trust checks. `software-status --json` reports whether
 the target-owned software matches the current baseline owner; non-current
 software makes launch unavailable until repaired.
-Ubuntu support requires structured `os-release` identity `ID=ubuntu` and glibc;
-the public contract records no official Ubuntu version floor.
+Ubuntu support requires structured `os-release` identity `ID=ubuntu` and glibc.
+The public contract records no official Ubuntu release floor, enforces the
+official architecture-specific glibc ABI floors, and rejects the observed musl
+fallback because it is outside the NDDev product host scope.
 
 Launch Kiro with the isolated target:
 

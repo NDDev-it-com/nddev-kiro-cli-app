@@ -56,6 +56,28 @@ METADATA_MAX_BYTES = 256 * 1024
 MANAGED_PAYLOAD_MAX_BYTES = 1024 * 1024
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+GLIBC_VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)*\Z")
+OFFICIAL_UBUNTU_GLIBC_FLOORS = {
+    "x86_64": "2.34",
+    "aarch64": "2.39",
+}
+PRODUCT_HOST_GATED_COMMANDS = {
+    "status",
+    "plan",
+    "install",
+    "apply",
+    "update",
+    "switch",
+    "migrate",
+    "restore",
+    "remove",
+    "launch",
+    "software-status",
+    "software-probe",
+    "software-install",
+    "software-update",
+    "software-remove",
+}
 CONTENT_SETUP_ID = "nddev-builder"
 DEFAULT_PERMISSION_PROFILE_ID = "full-auto"
 PERMISSION_PROFILE_IDS = ("safe", "full-auto")
@@ -266,6 +288,16 @@ class FileSnapshot:
     content: bytes | None
     digest: str | None
     mode: int | None
+    inode: int | None = None
+    mtime_ns: int | None = None
+
+
+@dataclass(frozen=True)
+class DirectorySnapshot:
+    existed: bool
+    mode: int | None
+    inode: int | None
+    mtime_ns: int | None
 
 
 @dataclass(frozen=True)
@@ -290,6 +322,18 @@ class BackupTransaction:
     slot_dir: Path
     stage_dir: Path
     backup_managed_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ManagedStateTransaction:
+    target: Path
+    rollback_dir: Path | None
+    before: dict[str, FileSnapshot]
+    desired: dict[str, bytes | None]
+    managed_files: tuple[str, ...]
+    directories: dict[str, DirectorySnapshot]
+    remove_empty_parents: bool
+    changed: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -632,27 +676,80 @@ def normalize_architecture(value: str | None, os_name: str) -> str:
     fail(f"unsupported Ubuntu architecture: {raw}")
 
 
-def detect_ubuntu_libc() -> str:
+def parse_glibc_version(value: str) -> tuple[int, ...]:
+    raw = value.strip()
+    if not raw:
+        fail("Ubuntu glibc version is required")
+    if not GLIBC_VERSION_PATTERN.fullmatch(raw):
+        fail(f"Ubuntu glibc version is malformed: {value!r}")
+    return tuple(int(part) for part in raw.split("."))
+
+
+def require_ubuntu_glibc_floor(architecture: str, version: str) -> None:
+    minimum = OFFICIAL_UBUNTU_GLIBC_FLOORS.get(architecture)
+    if minimum is None:
+        fail(f"unsupported Ubuntu architecture: {architecture}")
+    actual_parts = parse_glibc_version(version)
+    minimum_parts = parse_glibc_version(minimum)
+    width = max(len(actual_parts), len(minimum_parts))
+    padded_actual = actual_parts + (0,) * (width - len(actual_parts))
+    padded_minimum = minimum_parts + (0,) * (width - len(minimum_parts))
+    if padded_actual < padded_minimum:
+        fail(f"Ubuntu {architecture} requires glibc >= {minimum}; detected {version!r}")
+
+
+def detect_ubuntu_libc(architecture: str) -> str:
     if platform.system().lower() != "linux":
         fail("Ubuntu libc detection requires a Linux host")
-    libc_name, _libc_version = platform.libc_ver()
+    libc_name, libc_version = platform.libc_ver()
     if libc_name.lower() in {"glibc", "gnu"}:
+        require_ubuntu_glibc_floor(architecture, libc_version)
         return "glibc"
     fail("unsupported Ubuntu libc variant: glibc is required")
 
 
-def normalize_libc(value: str | None, os_name: str) -> str | None:
+def normalize_libc(value: str | None, os_name: str, architecture: str | None = None) -> str | None:
     if os_name != "ubuntu":
         if value not in {None, ""}:
             fail("--libc is only valid for Ubuntu software installs")
         return None
     if value in {None, ""}:
-        return detect_ubuntu_libc()
+        if architecture is None:
+            fail("Ubuntu architecture is required before libc detection")
+        return detect_ubuntu_libc(architecture)
     if value in {"glibc", "gnu"}:
         return "glibc"
     if value == "musl":
         fail("unsupported Ubuntu libc variant: musl is not supported")
     fail(f"unsupported Ubuntu libc variant: {value}")
+
+
+def validate_supported_product_host() -> str:
+    os_name = normalize_platform_name(None)
+    if os_name == "macos":
+        raw = platform.machine().lower()
+        if raw in {"arm64", "aarch64"}:
+            return "macos-arm64"
+        if raw in {"x86_64", "amd64"}:
+            return "macos-x64"
+        fail(f"unsupported macOS architecture: {raw}")
+    architecture = normalize_architecture(None, os_name)
+    libc = normalize_libc(None, os_name, architecture)
+    if libc != "glibc":
+        fail("unsupported Ubuntu libc variant: glibc is required")
+    if architecture == "x86_64":
+        return "ubuntu-glibc-x64"
+    if architecture == "aarch64":
+        return "ubuntu-glibc-arm64"
+    fail(f"unsupported Ubuntu architecture: {architecture}")
+
+
+def require_supported_host_preflight() -> None:
+    validate_supported_product_host()
+
+
+def command_requires_supported_host(command: str | None) -> bool:
+    return command in PRODUCT_HOST_GATED_COMMANDS
 
 
 def baseline_packages() -> list[dict[str, Any]]:
@@ -700,7 +797,7 @@ def package_matches(
 def select_baseline_package(os_name: str, architecture: str, libc: str | None) -> SoftwarePackage:
     product_platform = normalize_platform_name(os_name)
     normalized_architecture = normalize_architecture(architecture, product_platform)
-    normalized_libc = normalize_libc(libc, product_platform)
+    normalized_libc = normalize_libc(libc, product_platform, normalized_architecture)
     matches = [
         package
         for package in baseline_packages()
@@ -1708,7 +1805,7 @@ def preflight_software_target(target: Path, *, allow_partial: bool) -> dict[str,
 
 
 def software_status(target: Path) -> dict[str, Any]:
-    validate_software_host_request(None, None, None)
+    require_supported_host_preflight()
     return software_status_body(target)
 
 
@@ -1765,6 +1862,21 @@ def software_transaction_residue(target: Path) -> list[Path]:
         f".{target.name}.nddev-kiro-cli-software-rollback-",
     )
     return sorted(path for path in parent.iterdir() if path.name.startswith(prefixes))
+
+
+def setup_transaction_residue(target: Path) -> list[Path]:
+    parent = target.parent
+    if lstat_optional(parent) is None:
+        return []
+    prefixes = (f".{target.name}.nddev-kiro-cli-setup-rollback-",)
+    return sorted(path for path in parent.iterdir() if path.name.startswith(prefixes))
+
+
+def require_no_setup_transaction_residue(target: Path, label: str) -> None:
+    residue = setup_transaction_residue(target)
+    if residue:
+        names = [path.name for path in residue]
+        fail(f"{label} left transaction residue: {names}")
 
 
 def require_no_software_transaction_residue(target: Path, label: str) -> None:
@@ -2234,7 +2346,7 @@ def validate_software_host_request(
 ) -> tuple[str, str, str | None]:
     os_name = normalize_platform_name(platform_arg)
     architecture = normalize_architecture(architecture_arg, os_name)
-    libc = normalize_libc(libc_arg, os_name)
+    libc = normalize_libc(libc_arg, os_name, architecture)
     return os_name, architecture, libc
 
 
@@ -2406,7 +2518,7 @@ def software_update(
 
 
 def software_remove(target: Path) -> dict[str, Any]:
-    validate_software_host_request(None, None, None)
+    require_supported_host_preflight()
     with target_lock(target, create_target=False):
         status = software_status_body(target)
         root = software_root(target)
@@ -2980,12 +3092,15 @@ def snapshot_managed_files(
     for relative in (*managed_files, STAMP_NAME):
         if ensure_target_directory(target, create=False) and target_file_exists(target, relative):
             path = target_path(target, relative)
-            mode = stat.S_IMODE(path.lstat().st_mode)
+            info = path.lstat()
+            mode = stat.S_IMODE(info.st_mode)
             content = read_target_file(target, relative, owner_only=False)
             snapshot[relative] = FileSnapshot(
                 content=content,
                 digest=sha256_bytes(content),
                 mode=mode,
+                inode=info.st_ino,
+                mtime_ns=info.st_mtime_ns,
             )
         else:
             snapshot[relative] = FileSnapshot(content=None, digest=None, mode=None)
@@ -3024,10 +3139,22 @@ def assert_snapshot(target: Path, snapshot: dict[str, FileSnapshot]) -> None:
             actual = FileSnapshot(content=None, digest=None, mode=None)
         else:
             path = target_path(target, relative)
-            mode = stat.S_IMODE(path.lstat().st_mode)
+            info = path.lstat()
+            mode = stat.S_IMODE(info.st_mode)
             content = read_target_file(target, relative, owner_only=False)
-            actual = FileSnapshot(content=content, digest=sha256_bytes(content), mode=mode)
-        if actual.digest != expected.digest or actual.mode != expected.mode:
+            actual = FileSnapshot(
+                content=content,
+                digest=sha256_bytes(content),
+                mode=mode,
+                inode=info.st_ino,
+                mtime_ns=info.st_mtime_ns,
+            )
+        if (
+            actual.digest != expected.digest
+            or actual.mode != expected.mode
+            or actual.inode != expected.inode
+            or actual.mtime_ns != expected.mtime_ns
+        ):
             raise ConcurrentTargetChange(f"managed path changed concurrently: {relative}")
 
 
@@ -3097,6 +3224,8 @@ def snapshot_regular_destination(path: Path) -> FileSnapshot:
         content=content,
         digest=sha256_bytes(content),
         mode=stat.S_IMODE(info.st_mode),
+        inode=info.st_ino,
+        mtime_ns=info.st_mtime_ns,
     )
 
 
@@ -3180,6 +3309,150 @@ def desired_content_matches(path: Path, content: bytes) -> bool:
     return path.read_bytes() == content
 
 
+def managed_directory_paths(target: Path, managed_files: tuple[str, ...]) -> tuple[Path, ...]:
+    paths: set[Path] = {target}
+    for relative in (*managed_files, STAMP_NAME):
+        current = target_path(target, relative).parent
+        while current != target.parent:
+            paths.add(current)
+            if current == target:
+                break
+            current = current.parent
+    return tuple(sorted(paths, key=lambda path: (len(path.parts), str(path))))
+
+
+def managed_directory_key(target: Path, path: Path) -> str:
+    return "." if path == target else path.relative_to(target).as_posix()
+
+
+def managed_directory_from_key(target: Path, key: str) -> Path:
+    return target if key == "." else target / safe_relative_path(key)
+
+
+def snapshot_managed_directories(
+    target: Path,
+    managed_files: tuple[str, ...],
+) -> dict[str, DirectorySnapshot]:
+    snapshot: dict[str, DirectorySnapshot] = {}
+    for path in managed_directory_paths(target, managed_files):
+        key = managed_directory_key(target, path)
+        info = lstat_optional(path)
+        if info is None:
+            snapshot[key] = DirectorySnapshot(
+                existed=False,
+                mode=None,
+                inode=None,
+                mtime_ns=None,
+            )
+            continue
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            fail(f"managed directory path must be a real directory: {key}")
+        snapshot[key] = DirectorySnapshot(
+            existed=True,
+            mode=stat.S_IMODE(info.st_mode),
+            inode=info.st_ino,
+            mtime_ns=info.st_mtime_ns,
+        )
+    return snapshot
+
+
+def managed_directories_match(target: Path, snapshot: dict[str, DirectorySnapshot]) -> bool:
+    try:
+        for key, expected in snapshot.items():
+            path = managed_directory_from_key(target, key)
+            info = lstat_optional(path)
+            if not expected.existed:
+                if info is not None:
+                    return False
+                continue
+            if (
+                info is None
+                or stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISDIR(info.st_mode)
+                or stat.S_IMODE(info.st_mode) != expected.mode
+                or info.st_ino != expected.inode
+                or info.st_mtime_ns != expected.mtime_ns
+            ):
+                return False
+    except ManagerError:
+        return False
+    return True
+
+
+def restore_managed_directories(target: Path, snapshot: dict[str, DirectorySnapshot]) -> None:
+    for key, expected in sorted(
+        snapshot.items(),
+        key=lambda item: len(Path(item[0]).parts),
+        reverse=True,
+    ):
+        if expected.existed:
+            continue
+        path = managed_directory_from_key(target, key)
+        if lstat_optional(path) is not None:
+            remove_tree_exact(path)
+    for key, expected in sorted(snapshot.items(), key=lambda item: len(Path(item[0]).parts)):
+        if not expected.existed:
+            continue
+        path = managed_directory_from_key(target, key)
+        info = require_directory(path, f"managed directory {key}")
+        require_current_user_owned(info, f"managed directory {key}")
+        if expected.mode is None or expected.mtime_ns is None:
+            fail(f"managed directory snapshot is invalid: {key}")
+        os.chmod(path, expected.mode)
+        refreshed = path.lstat()
+        os.utime(path, ns=(refreshed.st_atime_ns, expected.mtime_ns))
+        fsync_directory(path.parent)
+
+
+def managed_rollback_path(transaction: ManagedStateTransaction, relative: str) -> Path:
+    if transaction.rollback_dir is None:
+        fail("managed rollback directory is missing")
+    return transaction.rollback_dir / "files" / safe_relative_path(relative)
+
+
+def ensure_rollback_parent(path: Path) -> None:
+    path.parent.mkdir(mode=OWNER_DIR_MODE, parents=True, exist_ok=True)
+    os.chmod(path.parent, OWNER_DIR_MODE)
+    require_owner_private_directory(path.parent, f"managed rollback parent {path.parent}")
+
+
+def move_managed_file_to_rollback(path: Path, rollback_path: Path) -> None:
+    ensure_rollback_parent(rollback_path)
+    if lstat_optional(rollback_path) is not None:
+        fail(f"managed rollback path already exists: {rollback_path}")
+    os.replace(path, rollback_path)
+    fsync_directory(path.parent)
+    fsync_directory(rollback_path.parent)
+
+
+def remove_current_managed_file(path: Path) -> None:
+    info = lstat_optional(path)
+    if info is None:
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        fail(f"managed rollback path must be a regular file: {path}")
+    path.unlink()
+    fsync_directory(path.parent)
+
+
+def regular_file_matches_snapshot(path: Path, expected: FileSnapshot) -> bool:
+    info = lstat_optional(path)
+    if expected.content is None:
+        return info is None
+    if info is None or stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return False
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return False
+    return (
+        sha256_bytes(content) == expected.digest
+        and stat.S_IMODE(info.st_mode) == expected.mode
+        and info.st_ino == expected.inode
+        and info.st_mtime_ns == expected.mtime_ns
+    )
+
+
 def atomic_remove_managed_file(path: Path, before: FileSnapshot) -> None:
     if before.content is None:
         return
@@ -3221,28 +3494,139 @@ def replace_managed_state(
     managed_files: tuple[str, ...] = MANAGED_FILES,
     remove_empty_parents: bool = True,
 ) -> None:
+    transaction = begin_managed_state_transaction(
+        target,
+        desired,
+        expected,
+        managed_files=managed_files,
+        remove_empty_parents=remove_empty_parents,
+    )
+    try:
+        commit_managed_state_transaction(transaction)
+    except BaseException:
+        rollback_managed_state_transaction(transaction)
+        raise
+
+
+def begin_managed_state_transaction(
+    target: Path,
+    desired: dict[str, bytes | None],
+    expected: dict[str, FileSnapshot] | None,
+    *,
+    managed_files: tuple[str, ...] = MANAGED_FILES,
+    remove_empty_parents: bool = True,
+) -> ManagedStateTransaction:
     ensure_target_directory(target, create=True)
     if expected is not None:
         assert_snapshot(target, expected)
-    for relative in (*managed_files, STAMP_NAME):
-        path = target_path(target, relative)
-        content = desired.get(relative)
-        before = (
-            expected.get(relative, FileSnapshot(content=None, digest=None, mode=None))
-            if expected is not None
-            else snapshot_regular_destination(path)
-        )
-        if content is None:
-            if before.content is not None:
+        before = expected
+    else:
+        before = snapshot_managed_files(target, managed_files)
+    changed = tuple(changed_managed_paths(before, desired, managed_files))
+    directories = snapshot_managed_directories(target, managed_files)
+    rollback_dir = create_transaction_dir(target, "setup-rollback") if changed else None
+    transaction = ManagedStateTransaction(
+        target=target,
+        rollback_dir=rollback_dir,
+        before=before,
+        desired=desired,
+        managed_files=managed_files,
+        directories=directories,
+        remove_empty_parents=remove_empty_parents,
+        changed=changed,
+    )
+    try:
+        for relative in changed:
+            path = target_path(target, relative)
+            content = desired.get(relative)
+            before_item = before.get(relative, FileSnapshot(content=None, digest=None, mode=None))
+            if before_item.content is not None:
                 require_regular_file(path, f"managed path {path}", owner_only=False)
-                atomic_remove_managed_file(path, before)
-                if remove_empty_parents:
-                    remove_empty_managed_parents(target, relative)
-            continue
-        if desired_content_matches(path, content):
-            continue
-        atomic_write(path, content)
-    verify_exact_managed_state(target, desired, managed_files=managed_files)
+                move_managed_file_to_rollback(path, managed_rollback_path(transaction, relative))
+            if content is not None:
+                atomic_write(path, content)
+        verify_exact_managed_state(target, desired, managed_files=managed_files)
+        return transaction
+    except BaseException:
+        rollback_managed_state_transaction(transaction)
+        raise
+
+
+def managed_transaction_matches(transaction: ManagedStateTransaction) -> bool:
+    if not managed_snapshot_matches(
+        transaction.target,
+        transaction.before,
+        managed_files=transaction.managed_files,
+    ):
+        return False
+    if not managed_directories_match(transaction.target, transaction.directories):
+        return False
+    return not setup_transaction_residue(transaction.target)
+
+
+def rollback_managed_state_transaction_once(transaction: ManagedStateTransaction) -> None:
+    target = transaction.target
+    if transaction.rollback_dir is not None:
+        for relative in reversed(transaction.changed):
+            path = target_path(target, relative)
+            before_item = transaction.before.get(
+                relative,
+                FileSnapshot(content=None, digest=None, mode=None),
+            )
+            if regular_file_matches_snapshot(path, before_item):
+                continue
+            remove_current_managed_file(path)
+            if before_item.content is not None:
+                rollback_path = managed_rollback_path(transaction, relative)
+                if lstat_optional(rollback_path) is None:
+                    if regular_file_matches_snapshot(path, before_item):
+                        continue
+                    fail(f"managed rollback path is missing: {relative}")
+                make_parent_directories(path)
+                os.replace(rollback_path, path)
+                fsync_directory(path.parent)
+                fsync_directory(rollback_path.parent)
+        cleanup_transaction_tree(transaction.rollback_dir, "managed rollback")
+    restore_managed_directories(target, transaction.directories)
+    assert_snapshot(target, transaction.before)
+    if not managed_directories_match(target, transaction.directories):
+        fail("managed directory rollback did not restore exact pre-state")
+    require_no_setup_transaction_residue(target, "managed rollback")
+
+
+def rollback_managed_state_transaction(transaction: ManagedStateTransaction) -> None:
+    last_error: BaseException | None = None
+    for _attempt in range(ROLLBACK_RETRY_ATTEMPTS):
+        try:
+            rollback_managed_state_transaction_once(transaction)
+        except BaseException as exc:
+            last_error = exc
+        if managed_transaction_matches(transaction):
+            return
+    raise ManagerError(
+        "managed transaction rollback did not restore exact pre-state"
+    ) from last_error
+
+
+def commit_managed_state_transaction(transaction: ManagedStateTransaction) -> None:
+    if transaction.rollback_dir is not None:
+        cleanup_transaction_tree(transaction.rollback_dir, "managed rollback retirement")
+    require_no_setup_transaction_residue(transaction.target, "managed transaction")
+    verify_exact_managed_state(
+        transaction.target,
+        transaction.desired,
+        managed_files=transaction.managed_files,
+    )
+    if not transaction.remove_empty_parents:
+        return
+    for relative in (*transaction.managed_files, STAMP_NAME):
+        if transaction.desired.get(relative) is None:
+            remove_empty_managed_parents(transaction.target, relative)
+    verify_exact_managed_state(
+        transaction.target,
+        transaction.desired,
+        managed_files=transaction.managed_files,
+    )
 
 
 def managed_snapshot_matches(
@@ -3271,6 +3655,8 @@ def restore_snapshot_once(
     for relative in (*managed_files, STAMP_NAME):
         item = snapshot.get(relative, FileSnapshot(content=None, digest=None, mode=None))
         path = target_path(target, relative)
+        if regular_file_matches_snapshot(path, item):
+            continue
         if item.content is None:
             actual = snapshot_regular_destination(path)
             atomic_remove_managed_file(path, actual)
@@ -3625,17 +4011,20 @@ def internal_target_lock(target: Path, *, create_target: bool) -> Iterator[None]
     finally:
         cleanup_error: BaseException | None = None
         if locked and hardened:
-            try:
-                os.fchmod(root_descriptor, OWNER_DIR_MODE)
-                require_lock_root_descriptor(
-                    root,
-                    root_descriptor,
-                    "target lock root",
-                    expected_mode=OWNER_DIR_MODE,
-                )
-                require_owner_private_file(lock, "target lock")
-            except BaseException as exc:
-                cleanup_error = exc
+            for _attempt in range(ROLLBACK_RETRY_ATTEMPTS):
+                try:
+                    os.fchmod(root_descriptor, OWNER_DIR_MODE)
+                    require_lock_root_descriptor(
+                        root,
+                        root_descriptor,
+                        "target lock root",
+                        expected_mode=OWNER_DIR_MODE,
+                    )
+                    require_owner_private_file(lock, "target lock")
+                    cleanup_error = None
+                    break
+                except BaseException as exc:
+                    cleanup_error = exc
         if locked:
             with contextlib.suppress(OSError):
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -3907,14 +4296,19 @@ def stage_backup(target: Path, stamp: dict[str, Any]) -> BackupTransaction:
 
 def commit_backup(transaction: BackupTransaction, target: Path) -> int:
     rollback_dir: Path | None = None
+    rollback_ready = False
+    published = False
     try:
         if transaction.slot_dir.exists():
             rollback_dir = backup_transaction_dir(transaction.pool, transaction.slot, "rollback")
             rollback_dir.rmdir()
+            fsync_directory(transaction.pool)
             os.replace(transaction.slot_dir, rollback_dir)
+            rollback_ready = True
             fsync_directory(transaction.pool)
         try:
             os.replace(transaction.stage_dir, transaction.slot_dir)
+            published = True
             fsync_directory(transaction.pool)
             validate_backup_slot_dir(
                 target,
@@ -3923,21 +4317,43 @@ def commit_backup(transaction: BackupTransaction, target: Path) -> int:
                 backup_managed_files=transaction.backup_managed_files,
             )
         except BaseException:
-            remove_tree_exact_retry(
-                transaction.slot_dir,
-                f"backup slot {transaction.slot} failed publication",
-            )
-            if rollback_dir is not None and lstat_optional(rollback_dir) is not None:
+            if published:
+                remove_tree_exact_retry(
+                    transaction.slot_dir,
+                    f"backup slot {transaction.slot} failed publication",
+                )
+                published = False
+            if (
+                rollback_ready
+                and rollback_dir is not None
+                and lstat_optional(rollback_dir) is not None
+            ):
                 os.replace(rollback_dir, transaction.slot_dir)
                 fsync_directory(transaction.pool)
+                rollback_ready = False
                 rollback_dir = None
             raise
         if rollback_dir is not None:
-            cleanup_transaction_tree(
-                rollback_dir,
-                f"backup slot {transaction.slot} rollback retirement",
-            )
-            rollback_dir = None
+            try:
+                cleanup_transaction_tree(
+                    rollback_dir,
+                    f"backup slot {transaction.slot} rollback retirement",
+                )
+                rollback_ready = False
+                rollback_dir = None
+            except BaseException:
+                if published:
+                    remove_tree_exact_retry(
+                        transaction.slot_dir,
+                        f"backup slot {transaction.slot} failed publication",
+                    )
+                    published = False
+                if rollback_ready and lstat_optional(rollback_dir) is not None:
+                    os.replace(rollback_dir, transaction.slot_dir)
+                    fsync_directory(transaction.pool)
+                    rollback_ready = False
+                    rollback_dir = None
+                raise
         return transaction.slot
     finally:
         if lstat_optional(transaction.stage_dir) is not None:
@@ -3945,7 +4361,7 @@ def commit_backup(transaction: BackupTransaction, target: Path) -> int:
                 transaction.stage_dir,
                 f"backup slot {transaction.slot} stage",
             )
-        if rollback_dir is not None:
+        if rollback_dir is not None and not rollback_ready:
             cleanup_transaction_tree(
                 rollback_dir,
                 f"backup slot {transaction.slot} rollback",
@@ -4139,6 +4555,8 @@ def remove_empty_runtime_dirs(target: Path) -> None:
 
 
 def setup_transaction_matches(target: Path, snapshot: dict[str, Any]) -> bool:
+    if setup_transaction_residue(target):
+        return False
     if not snapshot["target_existed"]:
         return lstat_optional(target) is None
     try:
@@ -4278,10 +4696,12 @@ def current_status_body(target: Path) -> dict[str, Any]:
 
 
 def current_status(target: Path) -> dict[str, Any]:
+    require_supported_host_preflight()
     return current_status_body(target)
 
 
 def plan_setup(target: Path, setup_id: str, permission_profile_id: str) -> dict[str, Any]:
+    require_supported_host_preflight()
     setup = render_setup(setup_id)
     profile = render_permission_profile(permission_profile_id)
     status = current_status(target)
@@ -4365,6 +4785,7 @@ def mutate_setup(
     permission_profile_id: str,
     action: str,
 ) -> dict[str, Any]:
+    require_supported_host_preflight()
     setup = render_setup(setup_id)
     profile = render_permission_profile(permission_profile_id)
     transaction = setup_transaction_snapshot(target)
@@ -4400,12 +4821,17 @@ def mutate_setup(
                 or existing_stamp["permission_profile_id"] != permission_profile_id
             ):
                 backup_transaction = stage_backup(target, existing_stamp)
+            managed_transaction: ManagedStateTransaction | None = None
             try:
-                replace_managed_state(target, desired, before)
+                managed_transaction = begin_managed_state_transaction(target, desired, before)
                 if backup_transaction is not None:
                     backup_slot = commit_backup(backup_transaction, target)
+                commit_managed_state_transaction(managed_transaction)
             except BaseException:
-                restore_snapshot(target, before)
+                if managed_transaction is not None:
+                    rollback_managed_state_transaction(managed_transaction)
+                else:
+                    restore_snapshot(target, before)
                 raise
             changed = changed_managed_paths(before, desired)
             return {
@@ -4429,6 +4855,7 @@ def mutate_setup(
 
 
 def update_setup(target: Path) -> dict[str, Any]:
+    require_supported_host_preflight()
     transaction = setup_transaction_snapshot(target)
     locked = False
     try:
@@ -4446,10 +4873,15 @@ def update_setup(target: Path) -> dict[str, Any]:
             desired[STAMP_NAME] = canonical_json(
                 stamp_payload(target, setup.setup_id, profile.profile_id, desired)
             )
+            managed_transaction: ManagedStateTransaction | None = None
             try:
-                replace_managed_state(target, desired, before)
+                managed_transaction = begin_managed_state_transaction(target, desired, before)
+                commit_managed_state_transaction(managed_transaction)
             except BaseException:
-                restore_snapshot(target, before)
+                if managed_transaction is not None:
+                    rollback_managed_state_transaction(managed_transaction)
+                else:
+                    restore_snapshot(target, before)
                 raise
             changed = changed_managed_paths(before, desired)
             return {
@@ -4473,6 +4905,7 @@ def update_setup(target: Path) -> dict[str, Any]:
 
 
 def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
+    require_supported_host_preflight()
     setup = render_setup(CONTENT_SETUP_ID)
     profile = render_permission_profile(permission_profile_id)
     transaction = setup_transaction_snapshot(target)
@@ -4498,11 +4931,21 @@ def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
             )
             backup_transaction = stage_backup(target, stamp)
             backup_slot: int | None = None
+            managed_transaction: ManagedStateTransaction | None = None
             try:
-                replace_managed_state(target, desired, before, managed_files=managed_files)
+                managed_transaction = begin_managed_state_transaction(
+                    target,
+                    desired,
+                    before,
+                    managed_files=managed_files,
+                )
                 backup_slot = commit_backup(backup_transaction, target)
+                commit_managed_state_transaction(managed_transaction)
             except BaseException:
-                restore_snapshot(target, before, managed_files=managed_files)
+                if managed_transaction is not None:
+                    rollback_managed_state_transaction(managed_transaction)
+                else:
+                    restore_snapshot(target, before, managed_files=managed_files)
                 raise
             changed = changed_managed_paths(before, desired, managed_files)
             return {
@@ -4528,6 +4971,7 @@ def migrate_setup(target: Path, permission_profile_id: str) -> dict[str, Any]:
 
 
 def restore_backup(target: Path, slot: int) -> dict[str, Any]:
+    require_supported_host_preflight()
     transaction = setup_transaction_snapshot(target)
     locked = False
     try:
@@ -4542,11 +4986,21 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
             before = snapshot_managed_files(target, managed_files)
             backup_transaction = stage_backup(target, stamp)
             backup_slot: int | None = None
+            managed_transaction: ManagedStateTransaction | None = None
             try:
-                replace_managed_state(target, files, before, managed_files=managed_files)
+                managed_transaction = begin_managed_state_transaction(
+                    target,
+                    files,
+                    before,
+                    managed_files=managed_files,
+                )
                 backup_slot = commit_backup(backup_transaction, target)
+                commit_managed_state_transaction(managed_transaction)
             except BaseException:
-                restore_snapshot(target, before, managed_files=managed_files)
+                if managed_transaction is not None:
+                    rollback_managed_state_transaction(managed_transaction)
+                else:
+                    restore_snapshot(target, before, managed_files=managed_files)
                 raise
             changed = changed_managed_paths(before, files, managed_files)
             restored_stamp = load_stamp(target)
@@ -4576,6 +5030,7 @@ def restore_backup(target: Path, slot: int) -> dict[str, Any]:
 
 
 def remove_setup(target: Path) -> dict[str, Any]:
+    require_supported_host_preflight()
     transaction = setup_transaction_snapshot(target)
     locked = False
     try:
@@ -4592,11 +5047,21 @@ def remove_setup(target: Path) -> dict[str, Any]:
             desired[STAMP_NAME] = None
             backup_transaction = stage_backup(target, stamp)
             backup_slot: int | None = None
+            managed_transaction: ManagedStateTransaction | None = None
             try:
-                replace_managed_state(target, desired, before, managed_files=managed_files)
+                managed_transaction = begin_managed_state_transaction(
+                    target,
+                    desired,
+                    before,
+                    managed_files=managed_files,
+                )
                 backup_slot = commit_backup(backup_transaction, target)
+                commit_managed_state_transaction(managed_transaction)
             except BaseException:
-                restore_snapshot(target, before, managed_files=managed_files)
+                if managed_transaction is not None:
+                    rollback_managed_state_transaction(managed_transaction)
+                else:
+                    restore_snapshot(target, before, managed_files=managed_files)
                 raise
             changed = changed_managed_paths(before, desired, managed_files)
             return {
@@ -4711,8 +5176,8 @@ def reject_managed_launch_overrides(child_args: list[str]) -> None:
 
 
 def launch(target: Path, child_args: list[str]) -> int:
+    require_supported_host_preflight()
     reject_managed_launch_overrides(child_args)
-    validate_software_host_request(None, None, None)
     with target_lock(target, create_target=False):
         require_clean_managed(target)
         executable = require_clean_software(target)
@@ -4729,9 +5194,33 @@ def emit(payload: dict[str, Any] | list[Any], *, as_json: bool) -> None:
         print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def wants_json(argv: list[str]) -> bool:
+    return "--json" in argv
+
+
+class JsonBoundaryArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, json_argv: list[str] | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._json_argv = json_argv
+
+    def error(self, message: str) -> NoReturn:
+        if self._json_argv is not None and wants_json(self._json_argv):
+            fail(f"argument error: {message}")
+        super().error(message)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = JsonBoundaryArgumentParser(description=__doc__, json_argv=raw_argv)
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=lambda *args, **kwargs: JsonBoundaryArgumentParser(
+            *args,
+            json_argv=raw_argv,
+            **kwargs,
+        ),
+    )
 
     list_parser = subparsers.add_parser("list", help="list available setups")
     list_parser.add_argument("--json", action="store_true")
@@ -4766,17 +5255,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     launch_parser = subparsers.add_parser("launch")
     launch_parser.add_argument("--target")
     launch_parser.add_argument("child_args", nargs=argparse.REMAINDER)
-    return parser.parse_args(argv)
-
-
-def wants_json(argv: list[str]) -> bool:
-    return "--json" in argv
+    return parser.parse_args(raw_argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     try:
         args = parse_args(raw_argv)
+        if command_requires_supported_host(args.command):
+            require_supported_host_preflight()
         if args.command == "list":
             emit(
                 {

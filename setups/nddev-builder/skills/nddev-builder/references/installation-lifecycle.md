@@ -26,7 +26,8 @@ DMG artifact and extracts the app-contained CLI into the target-owned tree. The
 official Ubuntu `.deb`, generic Linux, musl, rpm, AppImage, tar, and Windows
 assets are preserved as vendor observations only. Non-Ubuntu Linux, musl,
 Windows, and unsupported architectures are rejected before network or staging.
-The public contract records no official Ubuntu version floor.
+The public contract records no official Ubuntu release floor and the
+architecture-specific glibc ABI floors that gate Ubuntu hosts.
 
 ## Lifecycle Commands
 
