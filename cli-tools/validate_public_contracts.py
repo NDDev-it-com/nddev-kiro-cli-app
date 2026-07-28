@@ -1486,7 +1486,154 @@ def write_external_lock_seed(manager: Any, lock: Path, content: bytes) -> None:
         os.close(descriptor)
 
 
+def cleanup_test_owned_paths(*paths: Path) -> None:
+    for path in paths:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            path.rmdir()
+        else:
+            path.unlink()
+
+
+def ensure_product_lock_seed(manager: Any) -> Path:
+    root = manager.bootstrap_product_root()
+    assert root is not None
+    lock = manager.external_product_lock_path(root)
+    if not lock.exists():
+        write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_product_lock_binding(root)))
+    return lock
+
+
+def directory_metadata_signature(path: Path) -> tuple[int, int, int, int, int, int]:
+    info = path.lstat()
+    return (
+        info.st_dev,
+        info.st_ino,
+        stat.S_IMODE(info.st_mode),
+        info.st_nlink,
+        info.st_atime_ns,
+        info.st_mtime_ns,
+    )
+
+
+def directory_stable_metadata_signature(path: Path) -> tuple[int, int, int, int]:
+    info = path.lstat()
+    return (
+        info.st_dev,
+        info.st_ino,
+        stat.S_IMODE(info.st_mode),
+        info.st_mtime_ns,
+    )
+
+
+def run_external_product_root_rollback_regression(
+    manager: Any,
+    tmp: Path,
+    errors: list[str],
+) -> None:
+    target = (tmp / "external-product-root-rollback").resolve(strict=False)
+    system_root = manager.require_bootstrap_system_root(manager.bootstrap_system_temp_root())
+    before_tree = snapshot_bootstrap_tree(system_root)
+    before_metadata = directory_metadata_signature(system_root)
+    original_rename = manager.rename_no_replace
+
+    def fail_product_publication(source: Path, destination: Path, label: str) -> bool:
+        if label == "external product lock":
+            raise manager.ManagerError("forced product pre-final publication failure")
+        return original_rename(source, destination, label)
+
+    manager.rename_no_replace = fail_product_publication
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external product root rollback: publication unexpectedly succeeded")
+        except manager.ManagerError as exc:
+            if "forced product pre-final publication failure" not in str(exc):
+                errors.append(f"external product root rollback: wrong failure: {exc}")
+    finally:
+        manager.rename_no_replace = original_rename
+    after_tree = snapshot_bootstrap_tree(system_root)
+    after_metadata = directory_metadata_signature(system_root)
+    if after_tree != before_tree or after_metadata != before_metadata:
+        errors.append("external product root rollback: namespace or system root metadata changed")
+
+
+def run_external_lock_cold_read_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "external-lock-cold-read").resolve(strict=False)
+    original_stage_artifact = manager.stage_artifact
+    original_prepare_software_root = manager.prepare_software_root
+    original_finalize_prepared_software = manager.finalize_prepared_software
+    original_select_software_package = manager.select_software_package
+
+    def fake_stage_artifact(stage: Path, package: Any) -> Path:
+        artifact = stage / "artifact.zip"
+        artifact.write_bytes(b"offline-public-validator\n")
+        return artifact
+
+    def fake_prepare_software_root(stage: Path, artifact: Path, package: Any) -> tuple[Path, str]:
+        prepared = stage / "prepared" / manager.SOFTWARE_DIR_NAME
+        private_dir(manager, prepared / "bin")
+        executable = prepared / "bin" / "kiro-cli"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        os.chmod(executable, 0o700)
+        return prepared, "bin/kiro-cli"
+
+    def fake_finalize_prepared_software(
+        prepared: Path,
+        target: Path,
+        package: Any,
+        executable_relative: str,
+    ) -> None:
+        tree = manager.scan_software_tree(prepared, executable_relative)
+        stamp = manager.software_stamp_payload(target, package, executable_relative, tree)
+        manager.atomic_write(prepared / manager.SOFTWARE_STAMP_NAME, manager.canonical_json(stamp))
+
+    manager.stage_artifact = fake_stage_artifact
+    manager.prepare_software_root = fake_prepare_software_root
+    manager.finalize_prepared_software = fake_finalize_prepared_software
+    manager.select_software_package = lambda platform_arg, architecture_arg, libc_arg: fake_package(manager)
+    before = system_bootstrap_snapshot(manager, manager.bootstrap_system_temp_root)
+    try:
+        for label, callback in (
+            ("status", lambda: manager.current_status(target)),
+            ("software-status", lambda: manager.software_status(target)),
+            (
+                "plan",
+                lambda: manager.plan_setup(
+                    target,
+                    manager.CONTENT_SETUP_ID,
+                    manager.DEFAULT_PERMISSION_PROFILE_ID,
+                ),
+            ),
+            (
+                "software-probe",
+                lambda: manager.software_probe(
+                    target,
+                    platform_arg="linux",
+                    architecture_arg="x86_64",
+                    libc_arg="glibc",
+                ),
+            ),
+        ):
+            try:
+                callback()
+            except manager.ManagerError as exc:
+                errors.append(f"external lock cold read {label}: unexpected failure: {exc}")
+    finally:
+        manager.stage_artifact = original_stage_artifact
+        manager.prepare_software_root = original_prepare_software_root
+        manager.finalize_prepared_software = original_finalize_prepared_software
+        manager.select_software_package = original_select_software_package
+    after = system_bootstrap_snapshot(manager, manager.bootstrap_system_temp_root)
+    if after != before:
+        errors.append("external lock cold read: read-only command created external lock namespace")
+
+
 def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    ensure_product_lock_seed(manager)
     cases = [
         ("empty", b""),
         ("malformed", b'{"schema_version": '),
@@ -1496,6 +1643,7 @@ def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[
         target = (tmp / f"external-lock-binding-{label}").resolve(strict=False)
         lock = manager.external_lock_path(target)
         write_external_lock_seed(manager, lock, content)
+        before = snapshot_bootstrap_tree(lock.parent)
         try:
             with manager.external_target_lock(target):
                 errors.append(f"external lock binding {label}: invalid binding was accepted")
@@ -1508,52 +1656,73 @@ def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[
                 if label == "malformed"
                 else "must contain a JSON object"
             )
-            if expected not in str(exc):
+            if expected not in str(exc) and not (
+                label == "empty" and "cannot read valid JSON" in str(exc)
+            ):
                 errors.append(f"external lock binding {label}: wrong rejection: {exc}")
+        after = snapshot_bootstrap_tree(lock.parent)
+        if after != before:
+            errors.append(f"external lock binding {label}: invalid binding rejection mutated namespace")
+        cleanup_test_owned_paths(lock)
 
     target = (tmp / "external-lock-binding-mismatch").resolve(strict=False)
     lock = manager.external_lock_path(target)
     wrong = manager.external_lock_binding(target)
     wrong["canonical_target"] = str(tmp / "other-target")
     write_external_lock_seed(manager, lock, manager.canonical_json(wrong))
+    before = snapshot_bootstrap_tree(lock.parent)
     try:
         with manager.external_target_lock(target):
             errors.append("external lock binding mismatch: mismatched binding was accepted")
     except manager.ManagerError as exc:
-        if "external target lock binding mismatch" not in str(exc):
+        if "external target lock binding mismatch" not in str(exc) and "binding digest mismatch" not in str(exc):
             errors.append(f"external lock binding mismatch: wrong rejection: {exc}")
+    after = snapshot_bootstrap_tree(lock.parent)
+    if after != before:
+        errors.append("external lock binding mismatch: rejection mutated namespace")
+    cleanup_test_owned_paths(lock)
 
     target = (tmp / "external-lock-wrong-mode").resolve(strict=False)
     lock = manager.external_lock_path(target)
     write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
     lock.chmod(0o644)
+    before = snapshot_bootstrap_tree(lock.parent)
     try:
         with manager.external_target_lock(target):
             errors.append("external lock wrong mode: unsafe mode was accepted")
     except manager.ManagerError as exc:
         if "mode 0600" not in str(exc):
             errors.append(f"external lock wrong mode: wrong rejection: {exc}")
+    after = snapshot_bootstrap_tree(lock.parent)
+    if after != before:
+        errors.append("external lock wrong mode: rejection mutated namespace")
+    cleanup_test_owned_paths(lock)
 
     target = (tmp / "external-lock-hardlink").resolve(strict=False)
     lock = manager.external_lock_path(target)
     write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
     alias = lock.with_name(f"{lock.name}.alias")
     os.link(lock, alias)
+    before = snapshot_bootstrap_tree(lock.parent)
     try:
         try:
             with manager.external_target_lock(target):
                 errors.append("external lock hardlink: hard-linked lock was accepted")
         except manager.ManagerError as exc:
-            if "link" not in str(exc):
+            if "link" not in str(exc) and "unknown external lock namespace entry" not in str(exc):
                 errors.append(f"external lock hardlink: wrong rejection: {exc}")
     finally:
-        alias.unlink(missing_ok=True)
+        after = snapshot_bootstrap_tree(lock.parent)
+        if after != before:
+            errors.append("external lock hardlink: rejection mutated namespace")
+        cleanup_test_owned_paths(alias, lock)
 
 
 def run_external_lock_publication_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    ensure_product_lock_seed(manager)
     target = (tmp / "external-lock-publication").resolve(strict=False)
     lock = manager.external_lock_path(target)
-    with manager.external_target_lock(target):
+    with manager.external_target_lock(target, recover_publication=True):
         pass
     if not lock.is_file():
         errors.append("external lock publication: lock file was not published")
@@ -1579,7 +1748,7 @@ def run_external_lock_publication_regressions(manager: Any, tmp: Path, errors: l
     manager.fsync_directory = fail_parent_fsync
     try:
         try:
-            with manager.external_target_lock(target):
+            with manager.external_target_lock(target, recover_publication=True):
                 errors.append("external lock parent fsync fault: acquisition unexpectedly succeeded")
         except manager.ManagerError as exc:
             if "forced external lock parent fsync failure" not in str(exc):
@@ -1592,10 +1761,420 @@ def run_external_lock_publication_regressions(manager: Any, tmp: Path, errors: l
     if sorted(lock.parent.glob(f".{lock.name}.nddev.tmp.*")):
         errors.append("external lock parent fsync fault: staged publication temp residue remains")
     try:
-        with manager.external_target_lock(target):
+        with manager.external_target_lock(target, recover_publication=True):
             pass
     except manager.ManagerError as exc:
         errors.append(f"external lock parent fsync fault: final lock did not reopen cleanly: {exc}")
+
+    target = (tmp / "external-lock-eexist-valid-winner").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    expected = manager.canonical_json(manager.external_lock_binding(target))
+    original_rename = manager.rename_no_replace
+    original_drain = manager.drain_external_lock_publication_stages
+    observed_stage_before_drain = False
+
+    def publish_valid_winner(source: Path, destination: Path, label: str) -> bool:
+        if label == "external target lock" and destination == lock:
+            write_external_lock_seed(manager, destination, expected)
+            return False
+        return original_rename(source, destination, label)
+
+    def observe_valid_winner_drain(lock_arg: Path, expected_arg: bytes, label: str) -> None:
+        nonlocal observed_stage_before_drain
+        if label == "external target lock" and lock_arg == lock:
+            stages = sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*"))
+            observed_stage_before_drain = len(stages) == 1
+        original_drain(lock_arg, expected_arg, label)
+
+    manager.rename_no_replace = publish_valid_winner
+    manager.drain_external_lock_publication_stages = observe_valid_winner_drain
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                pass
+        except manager.ManagerError as exc:
+            errors.append(f"external lock EEXIST valid winner: mutator failed: {exc}")
+    finally:
+        manager.rename_no_replace = original_rename
+        manager.drain_external_lock_publication_stages = original_drain
+    if not observed_stage_before_drain:
+        errors.append("external lock EEXIST valid winner: fresh stage was not retained until drain")
+    if sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*")):
+        errors.append("external lock EEXIST valid winner: post-lock drain left fresh stage")
+
+    target = (tmp / "external-lock-eexist-malformed-winner").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    parent_before = directory_stable_metadata_signature(lock.parent)
+
+    def publish_malformed_winner(source: Path, destination: Path, label: str) -> bool:
+        if label == "external target lock" and destination == lock:
+            write_external_lock_seed(manager, destination, b'{"schema_version": ')
+            return False
+        return original_rename(source, destination, label)
+
+    manager.rename_no_replace = publish_malformed_winner
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external lock EEXIST malformed winner: invalid winner was accepted")
+        except manager.ManagerError:
+            pass
+    finally:
+        manager.rename_no_replace = original_rename
+    if directory_stable_metadata_signature(lock.parent) != parent_before:
+        errors.append("external lock EEXIST malformed winner: parent metadata was not restored")
+    if sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*")):
+        errors.append("external lock EEXIST malformed winner: fresh stage leaked")
+    cleanup_test_owned_paths(lock)
+
+    target = (tmp / "external-lock-eexist-mismatched-winner").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    other = (tmp / "external-lock-eexist-mismatched-other").resolve(strict=False)
+    parent_before = directory_stable_metadata_signature(lock.parent)
+
+    def publish_mismatched_winner(source: Path, destination: Path, label: str) -> bool:
+        if label == "external target lock" and destination == lock:
+            write_external_lock_seed(
+                manager,
+                destination,
+                manager.canonical_json(manager.external_lock_binding(other)),
+            )
+            return False
+        return original_rename(source, destination, label)
+
+    manager.rename_no_replace = publish_mismatched_winner
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external lock EEXIST mismatched winner: invalid winner was accepted")
+        except manager.ManagerError:
+            pass
+    finally:
+        manager.rename_no_replace = original_rename
+    if directory_stable_metadata_signature(lock.parent) != parent_before:
+        errors.append("external lock EEXIST mismatched winner: parent metadata was not restored")
+    if sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*")):
+        errors.append("external lock EEXIST mismatched winner: fresh stage leaked")
+    cleanup_test_owned_paths(lock)
+
+
+def run_external_lock_namespace_validation_regressions(
+    manager: Any,
+    tmp: Path,
+    errors: list[str],
+) -> None:
+    ensure_product_lock_seed(manager)
+    request_target = (tmp / "external-lock-namespace-request").resolve(strict=False)
+    valid_target = (tmp / "external-lock-namespace-valid-other").resolve(strict=False)
+    valid_lock = manager.external_lock_path(valid_target)
+    valid_stage = write_external_lock_stage(manager, valid_lock, valid_target, 1)
+    write_external_lock_seed(
+        manager,
+        valid_lock,
+        manager.canonical_json(manager.external_lock_binding(valid_target)),
+    )
+    try:
+        with manager.external_target_lock(request_target):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock namespace valid entries: exact namespace was rejected: {exc}")
+    cleanup_test_owned_paths(valid_stage, valid_lock)
+
+    root = manager.bootstrap_product_root()
+    assert root is not None
+    cases: list[tuple[str, Path, bytes]] = [
+        ("unknown entry", root / "unknown-entry", b"unknown\n"),
+        ("malformed target anchor", root / f"{'0' * 64}.lock", b'{"schema_version": '),
+        (
+            "mismatched target anchor",
+            root / f"{'1' * 64}.lock",
+            manager.canonical_json(manager.external_lock_binding(tmp / "namespace-wrong-target")),
+        ),
+        (
+            "malformed target stage",
+            root / f".{'2' * 64}.lock.nddev.tmp.1.1",
+            b'{"schema_version": ',
+        ),
+    ]
+    for label, entry, content in cases:
+        write_external_lock_seed(manager, entry, content)
+        before = snapshot_bootstrap_tree(root)
+        try:
+            with manager.external_target_lock(request_target):
+                errors.append(f"external lock namespace {label}: invalid entry was accepted")
+        except manager.ManagerError:
+            pass
+        after = snapshot_bootstrap_tree(root)
+        if after != before:
+            errors.append(f"external lock namespace {label}: rejection mutated namespace")
+        cleanup_test_owned_paths(entry)
+
+
+def external_lock_stage_path(manager: Any, lock: Path, index: int) -> Path:
+    return lock.with_name(f"{manager.external_lock_stage_prefix(lock)}1.{index}")
+
+
+def write_external_lock_stage(
+    manager: Any,
+    lock: Path,
+    target: Path,
+    index: int,
+    *,
+    content: bytes | None = None,
+) -> Path:
+    stage = external_lock_stage_path(manager, lock, index)
+    payload = manager.canonical_json(manager.external_lock_binding(target)) if content is None else content
+    write_external_lock_seed(manager, stage, payload)
+    return stage
+
+
+def assert_external_lock_stage_unchanged(
+    manager: Any,
+    lock: Path,
+    action: Any,
+    errors: list[str],
+    label: str,
+) -> None:
+    before = snapshot_bootstrap_tree(lock.parent)
+    try:
+        action()
+        errors.append(f"{label}: invalid staged publication was accepted")
+    except manager.ManagerError:
+        pass
+    after = snapshot_bootstrap_tree(lock.parent)
+    if after != before:
+        errors.append(f"{label}: staged publication failure mutated the namespace")
+
+
+def fork_external_lock_stage_crash(
+    manager: Any,
+    target: Path,
+    ready: Path,
+    error_file: Path,
+) -> int:
+    pid = os.fork()
+    if pid == 0:
+        original_rename = manager.rename_no_replace
+
+        def stop_before_rename(source: Path, destination: Path, label: str) -> bool:
+            if label == "external product lock":
+                return original_rename(source, destination, label)
+            ready.write_text(f"{source}\n{destination}\n{label}\n", encoding="utf-8")
+            while True:
+                time.sleep(1)
+
+        try:
+            manager.rename_no_replace = stop_before_rename
+            with manager.external_target_lock(target, recover_publication=True):
+                pass
+        except BaseException as exc:
+            with contextlib.suppress(Exception):
+                error_file.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            manager.rename_no_replace = original_rename
+            os._exit(125)
+        os._exit(0)
+    return pid
+
+
+def run_external_lock_stage_recovery_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    ensure_product_lock_seed(manager)
+    target = (tmp / "external-lock-stage-crash").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    ready = tmp / "external-lock-stage-crash-ready"
+    child_error = tmp / "external-lock-stage-crash-error"
+    child = fork_external_lock_stage_crash(manager, target, ready, child_error)
+    try:
+        if not wait_for_path(ready, 5):
+            errors.append(
+                "external lock stage crash: child did not reach pre-rename barrier "
+                f"(error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
+            )
+            return
+        os.kill(child, signal.SIGKILL)
+        pid, status = os.waitpid(child, 0)
+        if pid != child or not os.WIFSIGNALED(status) or os.WTERMSIG(status) != signal.SIGKILL:
+            errors.append(f"external lock stage crash: child was not SIGKILLed cleanly: status={status}")
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(child, signal.SIGKILL)
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(child, 0)
+    stages = sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*"))
+    if len(stages) != 1:
+        errors.append(f"external lock stage crash: expected one staged alias, got {len(stages)}")
+        return
+    stage = stages[0]
+    if not stage.is_file() or stage.read_bytes() != manager.canonical_json(manager.external_lock_binding(target)):
+        errors.append("external lock stage crash: staged alias is not the exact canonical binding")
+    before_read = snapshot_bootstrap_tree(lock.parent)
+    try:
+        with manager.external_target_lock(target):
+            errors.append("external lock stage crash: read-only lock repaired staged alias")
+    except manager.ManagerError as exc:
+        if "publication is incomplete" not in str(exc):
+            errors.append(f"external lock stage crash: read-only failed for wrong reason: {exc}")
+    after_read = snapshot_bootstrap_tree(lock.parent)
+    if after_read != before_read:
+        errors.append("external lock stage crash: read-only path mutated staged alias state")
+    try:
+        with manager.external_target_lock(target, recover_publication=True):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock stage crash: mutator recovery failed: {exc}")
+        return
+    if stage.exists():
+        errors.append("external lock stage crash: recovered mutator left staged alias")
+    if not lock.is_file():
+        errors.append("external lock stage crash: recovered mutator did not publish final anchor")
+
+    target = (tmp / "external-lock-stage-multiple").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    stage_one = write_external_lock_stage(manager, lock, target, 1)
+    stage_two = write_external_lock_stage(manager, lock, target, 2)
+    try:
+        with manager.external_target_lock(target, recover_publication=True):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock multiple stage recovery: mutator failed: {exc}")
+    if stage_one.exists() or stage_two.exists():
+        errors.append("external lock multiple stage recovery: proven stages remain after recovery")
+    if not lock.is_file():
+        errors.append("external lock multiple stage recovery: final anchor was not published")
+
+    target = (tmp / "external-lock-stage-missing-source-valid-final").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    expected = manager.canonical_json(manager.external_lock_binding(target))
+    stage = write_external_lock_stage(manager, lock, target, 1)
+    original_rename = manager.rename_no_replace
+
+    def missing_source_valid_final(source: Path, destination: Path, label: str) -> bool:
+        if label == "external lock stage recovery" and destination == lock:
+            cleanup_test_owned_paths(source)
+            write_external_lock_seed(manager, destination, expected)
+            raise manager.ManagerError("forced missing source with valid final winner")
+        return original_rename(source, destination, label)
+
+    manager.rename_no_replace = missing_source_valid_final
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                pass
+        except manager.ManagerError as exc:
+            errors.append(f"external lock missing-source valid-final winner: mutator failed: {exc}")
+    finally:
+        manager.rename_no_replace = original_rename
+    if stage.exists():
+        errors.append("external lock missing-source valid-final winner: source stage remains")
+    if not lock.is_file():
+        errors.append("external lock missing-source valid-final winner: final anchor is missing")
+
+    target = (tmp / "external-lock-stage-drain").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
+    final_identity = lock.lstat().st_dev, lock.lstat().st_ino
+    stage = write_external_lock_stage(manager, lock, target, 1)
+    second_stage = write_external_lock_stage(manager, lock, target, 2)
+    try:
+        with manager.external_target_lock(target, recover_publication=True):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock stage drain: mutator failed to drain proven stage: {exc}")
+    if stage.exists() or second_stage.exists():
+        errors.append("external lock stage drain: proven stage remains after mutator drain")
+    if lock.is_file() and final_identity != (lock.lstat().st_dev, lock.lstat().st_ino):
+        errors.append("external lock stage drain: final anchor identity changed during drain")
+
+    target = (tmp / "external-lock-stage-replaced-before-drain").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
+    stage = write_external_lock_stage(manager, lock, target, 1)
+    expected = manager.canonical_json(manager.external_lock_binding(target))
+    original_stages = manager.require_external_lock_stages(lock, expected)
+    stage.unlink()
+    write_external_lock_stage(manager, lock, target, 1)
+    before_replace = snapshot_bootstrap_tree(lock.parent)
+    original_require_stages = manager.require_external_lock_stages
+    manager.require_external_lock_stages = lambda lock_arg, expected_arg: original_stages
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external lock stage replacement: replaced stage was accepted for drain")
+        except manager.ManagerError:
+            pass
+    finally:
+        manager.require_external_lock_stages = original_require_stages
+    after_replace = snapshot_bootstrap_tree(lock.parent)
+    if after_replace != before_replace:
+        errors.append("external lock stage replacement: replaced stage was mutated")
+
+    adversarial_cases: list[tuple[str, Any]] = []
+
+    def make_unknown(lock: Path, target: Path) -> None:
+        write_external_lock_seed(
+            manager,
+            lock.with_name(f"{manager.external_lock_stage_prefix(lock)}not-bounded"),
+            manager.canonical_json(manager.external_lock_binding(target)),
+        )
+
+    def make_partial(lock: Path, target: Path) -> None:
+        write_external_lock_stage(manager, lock, target, 1, content=b'{"schema_version": ')
+
+    def make_symlink(lock: Path, target: Path) -> None:
+        os.symlink("missing", external_lock_stage_path(manager, lock, 1))
+
+    def make_hardlink(lock: Path, target: Path) -> None:
+        stage = write_external_lock_stage(manager, lock, target, 1)
+        os.link(stage, lock.with_name(f"{stage.name}.alias"))
+
+    def make_wrong_target(lock: Path, target: Path) -> None:
+        other = (tmp / "external-lock-stage-wrong-target-other").resolve(strict=False)
+        write_external_lock_stage(
+            manager,
+            lock,
+            target,
+            1,
+            content=manager.canonical_json(manager.external_lock_binding(other)),
+        )
+
+    def make_excessive(lock: Path, target: Path) -> None:
+        for index in range(1, manager.EXTERNAL_LOCK_STAGE_ACCEPT_MAX + 2):
+            write_external_lock_stage(manager, lock, target, index)
+
+    def make_overlong_name(lock: Path, target: Path) -> None:
+        write_external_lock_seed(
+            manager,
+            lock.with_name(f"{manager.external_lock_stage_prefix(lock)}1.12345678901234567890"),
+            manager.canonical_json(manager.external_lock_binding(target)),
+        )
+
+    adversarial_cases.extend(
+        [
+            ("unknown stage name", make_unknown),
+            ("overlong stage name", make_overlong_name),
+            ("partial stage", make_partial),
+            ("symlink stage", make_symlink),
+            ("hardlink stage", make_hardlink),
+            ("wrong-target stage", make_wrong_target),
+            ("excessive stages", make_excessive),
+        ]
+    )
+    for label, maker in adversarial_cases:
+        target = (tmp / f"external-lock-stage-{label.replace(' ', '-')}").resolve(strict=False)
+        lock = manager.external_lock_path(target)
+        maker(lock, target)
+
+        def recover_target(target: Path = target) -> None:
+            with manager.external_target_lock(target, recover_publication=True):
+                pass
+
+        assert_external_lock_stage_unchanged(
+            manager,
+            lock,
+            recover_target,
+            errors,
+            f"external lock {label}",
+        )
+        cleanup_test_owned_paths(*sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*")))
 
 
 def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -1878,7 +2457,7 @@ def fork_external_lock_holder(
         try:
             if waiting is not None:
                 waiting.write_text("waiting\n", encoding="utf-8")
-            with manager.external_target_lock(target, blocking=True) as lock:
+            with manager.external_target_lock(target, blocking=True, recover_publication=True) as lock:
                 info = lock.lstat()
                 ready.write_text(f"{info.st_dev}:{info.st_ino}\n", encoding="utf-8")
                 while not release.exists():
@@ -1889,6 +2468,60 @@ def fork_external_lock_holder(
             os._exit(125)
         os._exit(0)
     return pid
+
+
+def fork_external_lock_rejector(
+    manager: Any,
+    target: Path,
+    ready: Path,
+    error_file: Path,
+) -> int:
+    pid = os.fork()
+    if pid == 0:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                error_file.write_text("unexpectedly acquired target lock\n", encoding="utf-8")
+                os._exit(125)
+        except manager.ManagerError as exc:
+            if "target is already locked" not in str(exc):
+                error_file.write_text(f"wrong rejection: {exc}\n", encoding="utf-8")
+                os._exit(125)
+            ready.write_text("rejected\n", encoding="utf-8")
+        os._exit(0)
+    return pid
+
+
+def run_external_lock_different_target_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target_a = (tmp / "external-lock-different-a").resolve(strict=False)
+    target_b = (tmp / "external-lock-different-b").resolve(strict=False)
+    ready_a = tmp / "different-a-ready"
+    ready_b = tmp / "different-b-ready"
+    release_a = tmp / "different-release-a"
+    release_b = tmp / "different-release-b"
+    error_a = tmp / "different-a-error"
+    error_b = tmp / "different-b-error"
+    child_a = fork_external_lock_holder(manager, target_a, ready_a, release_a, error_a)
+    child_b: int | None = None
+    try:
+        if not wait_for_path(ready_a, 5):
+            errors.append(
+                "external lock different target regression: first holder did not acquire "
+                f"(error={error_a.read_text(encoding='utf-8') if error_a.exists() else ''!r})"
+            )
+            return
+        child_b = fork_external_lock_holder(manager, target_b, ready_b, release_b, error_b)
+        if not wait_for_path(ready_b, 2):
+            errors.append(
+                "external lock different target regression: second target did not acquire concurrently "
+                f"(error={error_b.read_text(encoding='utf-8') if error_b.exists() else ''!r})"
+            )
+            return
+    finally:
+        release_a.write_text("release\n", encoding="utf-8")
+        release_b.write_text("release\n", encoding="utf-8")
+        wait_for_child(child_a, 5, errors, "external lock different target first holder")
+        if child_b is not None:
+            wait_for_child(child_b, 5, errors, "external lock different target second holder")
 
 
 def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -1944,6 +2577,15 @@ def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[
             errors.append(
                 "external lock handover regression: lock inode changed across handoff "
                 f"({first_inode} -> {second_inode})"
+            )
+        c_ready = tmp / "handover-c-ready"
+        c_error = tmp / "handover-c-error"
+        child_c = fork_external_lock_rejector(manager, target, c_ready, c_error)
+        code_c = wait_for_child(child_c, 5, errors, "external lock handover regression third contender")
+        if code_c not in (0, None) or not c_ready.exists():
+            errors.append(
+                "external lock handover regression: third process did not fail on held target "
+                f"(rc={code_c}, error={c_error.read_text(encoding='utf-8') if c_error.exists() else ''!r})"
             )
         try:
             with manager.external_target_lock(target):
@@ -2188,13 +2830,18 @@ def run_public_manager_regressions(errors: list[str]) -> None:
             if stat.S_IMODE(injected_system_root.lstat().st_mode) != 0o1777:
                 errors.append("public manager regressions: injected bootstrap root must be 01777")
             manager.bootstrap_system_temp_root = lambda: injected_system_root
+            run_external_lock_cold_read_regressions(manager, tmp, errors)
+            run_external_product_root_rollback_regression(manager, tmp, errors)
             run_external_lock_binding_regressions(manager, tmp, errors)
             run_external_lock_publication_regressions(manager, tmp, errors)
+            run_external_lock_namespace_validation_regressions(manager, tmp, errors)
+            run_external_lock_stage_recovery_regressions(manager, tmp, errors)
             run_stamp_provenance_regressions(manager, tmp, errors)
             run_launch_runtime_symlink_regressions(manager, tmp, errors)
             run_launch_lock_regression(manager, tmp, errors)
             run_external_lock_internal_rename_regression(manager, tmp, errors)
             run_external_lock_handover_regression(manager, tmp, errors)
+            run_external_lock_different_target_regression(manager, tmp, errors)
     except Exception as exc:
         errors.append(f"public manager regressions failed: {exc}")
     finally:
