@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -24,6 +25,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -114,6 +116,15 @@ LOCK_RUNTIME_DIR = ".nddev-runtime/locks"
 LOCK_DIR_NAME = "setup-manager.lock"
 EXTERNAL_LOCK_SCHEMA = 1
 EXTERNAL_LOCK_NAME_SUFFIX = ".lock"
+AT_FDCWD_BY_SYSTEM = {"darwin": -2, "linux": -100}
+RENAME_EXCL_DARWIN = 0x00000004
+RENAME_NOREPLACE_LINUX = 1
+RENAMEAT2_SYSCALL_BY_MACHINE = {
+    "amd64": 316,
+    "x86_64": 316,
+    "aarch64": 276,
+    "arm64": 276,
+}
 BACKUP_RUNTIME_DIR = ".nddev-runtime/backups/setup"
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 TRUSTED_BASH = "/bin/bash"
@@ -301,6 +312,24 @@ def write_complete(descriptor: int, content: bytes, label: str) -> None:
         if written <= 0:
             fail(f"{label} write made no progress")
         remaining = remaining[written:]
+
+
+def fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open directory for durability sync {path}: {exc}")
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        fail(f"cannot sync directory {path}: {exc}")
+    finally:
+        os.close(descriptor)
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -2592,35 +2621,113 @@ def external_lock_binding(target: Path) -> dict[str, Any]:
     }
 
 
-def open_external_lock_file(lock: Path) -> int:
+def external_lock_open_flags() -> int:
     flags = os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    return flags
+
+
+def rename_no_replace(source: Path, destination: Path, label: str) -> bool:
+    system = platform.system().lower()
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if system == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameatx_np = libc.renameatx_np
+        renameatx_np.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameatx_np.restype = ctypes.c_int
+        result = renameatx_np(
+            AT_FDCWD_BY_SYSTEM["darwin"],
+            source_bytes,
+            AT_FDCWD_BY_SYSTEM["darwin"],
+            destination_bytes,
+            RENAME_EXCL_DARWIN,
+        )
+    elif system == "linux":
+        machine = platform.machine().lower()
+        syscall_number = RENAMEAT2_SYSCALL_BY_MACHINE.get(machine)
+        if syscall_number is None:
+            fail(f"{label} no-replace publication is unsupported on this architecture")
+        libc = ctypes.CDLL(None, use_errno=True)
+        syscall = libc.syscall
+        syscall.restype = ctypes.c_long
+        result = syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(AT_FDCWD_BY_SYSTEM["linux"]),
+            ctypes.c_char_p(source_bytes),
+            ctypes.c_int(AT_FDCWD_BY_SYSTEM["linux"]),
+            ctypes.c_char_p(destination_bytes),
+            ctypes.c_uint(RENAME_NOREPLACE_LINUX),
+        )
+    else:
+        fail(f"{label} no-replace publication is unsupported on this platform")
+    if result == 0:
+        return True
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        return False
+    if error in {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+        fail(f"{label} no-replace publication primitive is unavailable")
+    fail(f"{label} no-replace publication failed: {os.strerror(error)}")
+
+
+def publish_missing_external_lock_file(lock: Path, target: Path) -> None:
+    payload = canonical_json(external_lock_binding(target))
+    stage_name = f".{lock.name}.nddev.tmp.{os.getpid()}.{time.time_ns()}"
+    stage = lock.with_name(stage_name)
+    descriptor: int | None = None
+    published = False
+    try:
+        descriptor = os.open(
+            stage,
+            external_lock_open_flags() | os.O_CREAT | os.O_EXCL,
+            OWNER_FILE_MODE,
+        )
+        os.fchmod(descriptor, OWNER_FILE_MODE)
+        write_complete(descriptor, payload, "external target lock staged binding")
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        if not rename_no_replace(stage, lock, "external target lock"):
+            stage.unlink()
+            fsync_directory(lock.parent)
+            return
+        published = True
+        fsync_directory(lock.parent)
+    except BaseException:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        if stage.exists():
+            with contextlib.suppress(OSError):
+                stage.unlink()
+            if not published:
+                with contextlib.suppress(ManagerError):
+                    fsync_directory(lock.parent)
+        raise
+
+
+def open_external_lock_file(lock: Path, target: Path) -> int:
+    flags = external_lock_open_flags()
     try:
         descriptor = os.open(lock, flags)
-        created = False
     except FileNotFoundError:
+        publish_missing_external_lock_file(lock, target)
         try:
-            descriptor = os.open(lock, flags | os.O_CREAT | os.O_EXCL, OWNER_FILE_MODE)
-            created = True
-        except FileExistsError:
-            try:
-                descriptor = os.open(lock, flags)
-                created = False
-            except OSError as exc:
-                fail(f"cannot open external target lock file: {exc}")
+            descriptor = os.open(lock, flags)
         except OSError as exc:
-            fail(f"cannot create external target lock file: {exc}")
+            fail(f"cannot open external target lock file after publication: {exc}")
     except OSError as exc:
         fail(f"cannot open external target lock file: {exc}")
-    try:
-        if created:
-            os.fchmod(descriptor, OWNER_FILE_MODE)
-    except BaseException:
-        os.close(descriptor)
-        raise
     return descriptor
 
 
@@ -2661,12 +2768,7 @@ def ensure_external_lock_binding(descriptor: int, target: Path) -> None:
     expected = external_lock_binding(target)
     existing = read_external_lock_binding(descriptor)
     if existing is None:
-        content = canonical_json(expected)
-        os.ftruncate(descriptor, 0)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        write_complete(descriptor, content, "external target lock binding")
-        os.fsync(descriptor)
-        return
+        fail("external target lock binding is empty")
     if existing != expected:
         fail("external target lock binding mismatch")
 
@@ -2675,7 +2777,7 @@ def ensure_external_lock_binding(descriptor: int, target: Path) -> None:
 def external_target_lock(target: Path, *, blocking: bool = False) -> Iterator[Path]:
     canonical_target = canonical_target_identity(target)
     lock = external_lock_path(canonical_target)
-    descriptor = open_external_lock_file(lock)
+    descriptor = open_external_lock_file(lock, canonical_target)
     locked = False
     try:
         operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB

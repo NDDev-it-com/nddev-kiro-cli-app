@@ -1488,6 +1488,7 @@ def write_external_lock_seed(manager: Any, lock: Path, content: bytes) -> None:
 
 def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
     cases = [
+        ("empty", b""),
         ("malformed", b'{"schema_version": '),
         ("non-object", b'[]\n'),
     ]
@@ -1500,6 +1501,9 @@ def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[
                 errors.append(f"external lock binding {label}: invalid binding was accepted")
         except manager.ManagerError as exc:
             expected = (
+                "external target lock binding is empty"
+                if label == "empty"
+                else
                 "cannot read valid JSON"
                 if label == "malformed"
                 else "must contain a JSON object"
@@ -1518,6 +1522,80 @@ def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[
     except manager.ManagerError as exc:
         if "external target lock binding mismatch" not in str(exc):
             errors.append(f"external lock binding mismatch: wrong rejection: {exc}")
+
+    target = (tmp / "external-lock-wrong-mode").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
+    lock.chmod(0o644)
+    try:
+        with manager.external_target_lock(target):
+            errors.append("external lock wrong mode: unsafe mode was accepted")
+    except manager.ManagerError as exc:
+        if "mode 0600" not in str(exc):
+            errors.append(f"external lock wrong mode: wrong rejection: {exc}")
+
+    target = (tmp / "external-lock-hardlink").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
+    alias = lock.with_name(f"{lock.name}.alias")
+    os.link(lock, alias)
+    try:
+        try:
+            with manager.external_target_lock(target):
+                errors.append("external lock hardlink: hard-linked lock was accepted")
+        except manager.ManagerError as exc:
+            if "link" not in str(exc):
+                errors.append(f"external lock hardlink: wrong rejection: {exc}")
+    finally:
+        alias.unlink(missing_ok=True)
+
+
+def run_external_lock_publication_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "external-lock-publication").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    with manager.external_target_lock(target):
+        pass
+    if not lock.is_file():
+        errors.append("external lock publication: lock file was not published")
+        return
+    try:
+        content = lock.read_bytes()
+        if manager.parse_json_object(content, "external lock publication") != manager.external_lock_binding(target):
+            errors.append("external lock publication: published binding does not match target")
+    except manager.ManagerError as exc:
+        errors.append(f"external lock publication: cannot read published binding: {exc}")
+    if sorted(lock.parent.glob(f".{lock.name}.nddev.tmp.*")):
+        errors.append("external lock publication: staged publication temp residue remains")
+
+    target = (tmp / "external-lock-parent-fsync").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    original_fsync_directory = manager.fsync_directory
+
+    def fail_parent_fsync(path: Path) -> None:
+        if Path(path) == lock.parent:
+            raise manager.ManagerError("forced external lock parent fsync failure")
+        original_fsync_directory(path)
+
+    manager.fsync_directory = fail_parent_fsync
+    try:
+        try:
+            with manager.external_target_lock(target):
+                errors.append("external lock parent fsync fault: acquisition unexpectedly succeeded")
+        except manager.ManagerError as exc:
+            if "forced external lock parent fsync failure" not in str(exc):
+                errors.append(f"external lock parent fsync fault: wrong failure: {exc}")
+    finally:
+        manager.fsync_directory = original_fsync_directory
+    if not lock.is_file():
+        errors.append("external lock parent fsync fault: final lock was removed after publication")
+        return
+    if sorted(lock.parent.glob(f".{lock.name}.nddev.tmp.*")):
+        errors.append("external lock parent fsync fault: staged publication temp residue remains")
+    try:
+        with manager.external_target_lock(target):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock parent fsync fault: final lock did not reopen cleanly: {exc}")
 
 
 def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -2111,6 +2189,7 @@ def run_public_manager_regressions(errors: list[str]) -> None:
                 errors.append("public manager regressions: injected bootstrap root must be 01777")
             manager.bootstrap_system_temp_root = lambda: injected_system_root
             run_external_lock_binding_regressions(manager, tmp, errors)
+            run_external_lock_publication_regressions(manager, tmp, errors)
             run_stamp_provenance_regressions(manager, tmp, errors)
             run_launch_runtime_symlink_regressions(manager, tmp, errors)
             run_launch_lock_regression(manager, tmp, errors)
