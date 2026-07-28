@@ -28,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -136,8 +136,9 @@ SOFTWARE_STAMP_SCHEMA = 1
 LOCK_RUNTIME_DIR = ".nddev-runtime/locks"
 LOCK_DIR_NAME = "setup-manager.lock"
 EXTERNAL_LOCK_SCHEMA = 1
-EXTERNAL_BOOTSTRAP_LOCK_NAME = "bootstrap-lifecycle.lock"
+EXTERNAL_BOOTSTRAP_LOCK_NAME = "global.lock"
 EXTERNAL_LOCK_NAME_SUFFIX = ".lock"
+EXTERNAL_LOCK_ALIAS_SCAN_MAX = 128
 BACKUP_RUNTIME_DIR = ".nddev-runtime/backups/setup"
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 TRUSTED_BASH = "/bin/bash"
@@ -322,6 +323,13 @@ class ExternalLockFile:
     parent_snapshot: dict[str, TreeSnapshotEntry] | None
     created_identity: tuple[int, int] | None
     committed: bool = False
+
+
+@dataclass(frozen=True)
+class ProductRootCreation:
+    root: Path
+    created: bool
+    parent_snapshot: DirectorySnapshot | None
 
 
 @dataclass(frozen=True)
@@ -2016,8 +2024,7 @@ def preflight_software_target(target: Path, *, allow_partial: bool) -> dict[str,
 
 def software_status(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
-    with external_target_scope(target) as locked_target:
-        return software_status_body(locked_target)
+    return run_read_only_target_operation(target, software_status_body)
 
 
 def validated_transaction_parent(target: Path) -> Path:
@@ -4007,22 +4014,53 @@ def require_bootstrap_system_root(path: Path) -> Path:
     return resolved
 
 
-def bootstrap_product_root() -> Path:
+def external_product_root_path() -> Path:
     system_root = require_bootstrap_system_root(bootstrap_system_temp_root())
     uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
-    root = system_root / f"{PRODUCT_NAME}-{uid}"
+    return system_root / f"{PRODUCT_NAME}-{uid}"
+
+
+def rollback_created_product_root(handle: ProductRootCreation, label: str) -> None:
+    if not handle.created:
+        return
+    remove_tree_exact_retry(handle.root, label)
+    if handle.parent_snapshot is not None:
+        restore_directory_identity(
+            handle.root.parent,
+            handle.parent_snapshot,
+            "bootstrap system temp root",
+        )
+
+
+def prepare_bootstrap_product_root(*, create: bool) -> ProductRootCreation | None:
+    root = external_product_root_path()
     info = lstat_optional(root)
-    created = False
     if info is None:
+        if not create:
+            return None
+        parent_snapshot = snapshot_directory_identity(root.parent, "bootstrap system temp root")
+        handle = ProductRootCreation(root=root, created=True, parent_snapshot=parent_snapshot)
         try:
-            root.mkdir(mode=OWNER_DIR_MODE)
-            created = True
+            handle.root.mkdir(mode=OWNER_DIR_MODE)
+            os.chmod(handle.root, OWNER_DIR_MODE)
+            require_owner_private_directory(handle.root, "bootstrap product lock root")
+            fsync_directory(handle.root.parent)
+            return handle
         except FileExistsError:
             pass
-    if created:
-        os.chmod(root, OWNER_DIR_MODE)
+        except BaseException:
+            rollback_created_product_root(handle, "bootstrap product lock root")
+            raise
+        info = lstat_optional(root)
     require_owner_private_directory(root, "bootstrap product lock root")
-    return root
+    return ProductRootCreation(root=root, created=False, parent_snapshot=None)
+
+
+def bootstrap_product_root(*, create: bool = True) -> Path:
+    handle = prepare_bootstrap_product_root(create=create)
+    if handle is None:
+        fail("bootstrap product lock root is missing")
+    return handle.root
 
 
 def external_lock_digest_for_canonical_target(canonical_target: Path) -> str:
@@ -4033,19 +4071,35 @@ def external_lock_digest(target: Path) -> str:
     return external_lock_digest_for_canonical_target(canonical_target_identity(target))
 
 
-def external_lock_path(target: Path) -> Path:
-    return bootstrap_product_root() / f"{external_lock_digest(target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
+def external_lock_path(target: Path, *, create: bool = True) -> Path:
+    return bootstrap_product_root(create=create) / (
+        f"{external_lock_digest(target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
+    )
 
 
-def external_lock_path_for_canonical_target(canonical_target: Path) -> Path:
+def external_lock_path_for_canonical_target(
+    canonical_target: Path,
+    *,
+    create: bool = True,
+) -> Path:
     digest = external_lock_digest_for_canonical_target(canonical_target)
-    return bootstrap_product_root() / f"{digest}{EXTERNAL_LOCK_NAME_SUFFIX}"
+    return bootstrap_product_root(create=create) / f"{digest}{EXTERNAL_LOCK_NAME_SUFFIX}"
+
+
+def external_product_lock_binding() -> dict[str, Any]:
+    return {
+        "schema_version": EXTERNAL_LOCK_SCHEMA,
+        "product_name": PRODUCT_NAME,
+        "anchor": "product",
+        "lock_name": EXTERNAL_BOOTSTRAP_LOCK_NAME,
+    }
 
 
 def external_lock_binding_for_canonical_target(canonical_target: Path) -> dict[str, Any]:
     return {
         "schema_version": EXTERNAL_LOCK_SCHEMA,
         "product_name": PRODUCT_NAME,
+        "anchor": "target",
         "canonical_target": str(canonical_target),
         "lock_digest": external_lock_digest_for_canonical_target(canonical_target),
     }
@@ -4055,8 +4109,8 @@ def external_lock_binding(target: Path) -> dict[str, Any]:
     return external_lock_binding_for_canonical_target(canonical_target_identity(target))
 
 
-def external_bootstrap_lock_path() -> Path:
-    return bootstrap_product_root() / EXTERNAL_BOOTSTRAP_LOCK_NAME
+def external_bootstrap_lock_path(*, create: bool = True) -> Path:
+    return bootstrap_product_root(create=create) / EXTERNAL_BOOTSTRAP_LOCK_NAME
 
 
 def close_external_lock_file(handle: ExternalLockFile) -> None:
@@ -4158,7 +4212,143 @@ def capture_external_lock_parent_snapshot(handle: ExternalLockFile) -> None:
         )
 
 
-def open_external_lock_descriptor(lock: Path) -> ExternalLockFile:
+def external_anchor_exists_no_create(lock: Path) -> bool:
+    info = lstat_optional(lock)
+    if info is None:
+        return False
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        fail(f"external anchor must be a regular non-symlink file: {lock}")
+    return True
+
+
+def validate_external_lock_descriptor_base(
+    lock: Path,
+    descriptor: int,
+    label: str,
+) -> tuple[os.stat_result, os.stat_result]:
+    opened = os.fstat(descriptor)
+    if not stat.S_ISREG(opened.st_mode):
+        fail(f"{label} must be a regular file")
+    require_current_user_owned(opened, label)
+    require_exact_mode(opened, label, OWNER_FILE_MODE)
+    try:
+        final = lock.lstat()
+    except FileNotFoundError:
+        fail(f"{label} is missing")
+    if stat.S_ISLNK(final.st_mode) or not stat.S_ISREG(final.st_mode):
+        fail(f"{label} must be a regular non-symlink file")
+    require_current_user_owned(final, label)
+    require_exact_mode(final, label, OWNER_FILE_MODE)
+    if identity_of(opened) != identity_of(final):
+        raise ConcurrentTargetChange(f"{label} changed while it was opened")
+    return opened, final
+
+
+def validate_external_lock_descriptor(
+    lock: Path,
+    descriptor: int,
+    label: str,
+) -> None:
+    opened, final = validate_external_lock_descriptor_base(lock, descriptor, label)
+    if opened.st_nlink != 1:
+        fail(f"{label} must have exactly one link")
+    if final.st_nlink != 1:
+        fail(f"{label} path must have exactly one link")
+
+
+def external_lock_publication_alias_prefix(lock: Path) -> str:
+    return f".{lock.name}."
+
+
+def find_external_lock_publication_alias(
+    lock: Path,
+    expected_identity: tuple[int, int],
+    label: str,
+) -> Path:
+    prefix = external_lock_publication_alias_prefix(lock)
+    aliases: list[Path] = []
+    scanned = 0
+    try:
+        with os.scandir(lock.parent) as entries:
+            for entry in entries:
+                if not entry.name.startswith(prefix):
+                    continue
+                scanned += 1
+                if scanned > EXTERNAL_LOCK_ALIAS_SCAN_MAX:
+                    fail(f"{label} publication alias scan exceeded bounded limit")
+                alias = lock.parent / entry.name
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                    fail(f"{label} publication alias must be a regular non-symlink file")
+                require_current_user_owned(info, f"{label} publication alias")
+                require_exact_mode(info, f"{label} publication alias", OWNER_FILE_MODE)
+                if identity_of(info) != expected_identity:
+                    fail(f"{label} publication alias does not match final anchor")
+                aliases.append(alias)
+    except OSError as exc:
+        fail(f"cannot scan {label} publication aliases: {exc}")
+    if len(aliases) != 1:
+        fail(f"{label} must have exactly one recoverable publication alias")
+    return aliases[0]
+
+
+def recover_external_lock_publication_alias(
+    lock: Path,
+    descriptor: int,
+    expected: dict[str, Any],
+    label: str,
+) -> None:
+    opened, final = validate_external_lock_descriptor_base(lock, descriptor, label)
+    if opened.st_nlink == 1 and final.st_nlink == 1:
+        return
+    if opened.st_nlink != final.st_nlink:
+        raise ConcurrentTargetChange(f"{label} link count changed while it was opened")
+    if opened.st_nlink != 2:
+        fail(f"{label} has unknown hard-link aliases")
+    require_external_lock_binding_matches(descriptor, expected, label)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError as exc:
+        fail(f"cannot lock {label} for publication alias recovery: {exc}")
+    try:
+        opened, final = validate_external_lock_descriptor_base(lock, descriptor, label)
+        if opened.st_nlink == 1 and final.st_nlink == 1:
+            return
+        if opened.st_nlink != final.st_nlink:
+            raise ConcurrentTargetChange(f"{label} link count changed during recovery")
+        if opened.st_nlink != 2:
+            fail(f"{label} has unknown hard-link aliases")
+        alias = find_external_lock_publication_alias(lock, identity_of(opened), label)
+        alias.unlink()
+        fsync_directory(lock.parent)
+        validate_external_lock_descriptor(lock, descriptor, label)
+        require_external_lock_binding_matches(descriptor, expected, label)
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+def require_external_lock_binding_matches(
+    descriptor: int,
+    expected: dict[str, Any],
+    label: str,
+) -> None:
+    existing = read_external_lock_binding(descriptor)
+    if existing is None:
+        fail(f"{label} binding is empty")
+    if existing != expected:
+        fail(f"{label} binding mismatch")
+
+
+def open_existing_external_lock_descriptor(
+    lock: Path,
+    expected: dict[str, Any],
+    *,
+    label: str,
+) -> ExternalLockFile | None:
     flags = os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
@@ -4166,63 +4356,152 @@ def open_external_lock_descriptor(lock: Path) -> ExternalLockFile:
         flags |= os.O_NOFOLLOW
     try:
         descriptor = os.open(lock, flags)
-        created = False
-        created_identity = None
-        parent_snapshot = None
     except FileNotFoundError:
-        parent_snapshot = snapshot_tree_exact(lock.parent, allow_symlinks=True)
-        try:
-            descriptor = os.open(lock, flags | os.O_CREAT | os.O_EXCL, OWNER_FILE_MODE)
-            created = True
-            created_identity = None
-        except FileExistsError:
-            try:
-                descriptor = os.open(lock, flags)
-                created = False
-                created_identity = None
-                parent_snapshot = None
-            except OSError as exc:
-                fail(f"cannot open external target lock file: {exc}")
-        except OSError as exc:
-            fail(f"cannot create external target lock file: {exc}")
+        return None
     except OSError as exc:
-        fail(f"cannot open external target lock file: {exc}")
+        fail(f"cannot open {label}: {exc}")
     handle = ExternalLockFile(
         lock=lock,
         descriptor=descriptor,
-        created=created,
-        parent_snapshot=parent_snapshot,
-        created_identity=created_identity,
+        created=False,
+        parent_snapshot=None,
+        created_identity=None,
+        committed=True,
     )
     try:
-        if created:
-            handle.created_identity = identity_of(os.fstat(handle.descriptor))
-            os.fchmod(handle.descriptor, OWNER_FILE_MODE)
-            fsync_directory(lock.parent)
-    except BaseException as exc:
-        abort_external_lock_file(handle, "external target lock file", exc)
+        validate_external_lock_descriptor_base(lock, descriptor, label)
+        require_external_lock_binding_matches(descriptor, expected, label)
+        recover_external_lock_publication_alias(lock, descriptor, expected, label)
+        validate_external_lock_descriptor(lock, descriptor, label)
+    except BaseException:
+        close_external_lock_file(handle)
+        raise
     return handle
 
 
+def publish_external_lock_descriptor_no_replace(
+    lock: Path,
+    expected: dict[str, Any],
+    *,
+    label: str,
+) -> ExternalLockFile:
+    parent_snapshot = snapshot_tree_exact(lock.parent, allow_symlinks=True)
+    content = canonical_json(expected)
+    fd = -1
+    temporary = Path()
+    final_identity: tuple[int, int] | None = None
+    final_visible = False
+    try:
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{lock.name}.", dir=str(lock.parent))
+        temporary = Path(temporary_name)
+        write_complete(fd, content, f"{label} temporary binding")
+        os.fchmod(fd, OWNER_FILE_MODE)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        try:
+            os.link(temporary, lock)
+        except FileExistsError:
+            final_visible = True
+            temporary.unlink()
+            fsync_directory(lock.parent)
+            existing = open_existing_external_lock_descriptor(lock, expected, label=label)
+            if existing is None:
+                raise ConcurrentTargetChange(f"{label} disappeared during publication")
+            return existing
+        final_visible = True
+        final_identity = identity_of(lock.lstat())
+        temporary.unlink()
+        fsync_directory(lock.parent)
+        handle = open_existing_external_lock_descriptor(lock, expected, label=label)
+        if handle is None:
+            raise ConcurrentTargetChange(f"{label} disappeared after publication")
+        handle.created = True
+        handle.parent_snapshot = parent_snapshot
+        handle.created_identity = final_identity
+        return handle
+    except BaseException as exc:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        if temporary != Path():
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+        if parent_snapshot is not None and not final_visible:
+            handle = ExternalLockFile(
+                lock=lock,
+                descriptor=-1,
+                created=True,
+                parent_snapshot=parent_snapshot,
+                created_identity=final_identity,
+            )
+            restore_external_lock_parent_graph(handle, label)
+        if isinstance(exc, ManagerError):
+            raise
+        raise ManagerError(f"{label} publication failed: {exc}") from exc
+
+
+def open_external_lock_descriptor_for_binding(
+    lock: Path,
+    expected: dict[str, Any] | None,
+    *,
+    create: bool,
+    label: str,
+) -> ExternalLockFile:
+    if expected is None:
+        expected = external_product_lock_binding() if lock.name == EXTERNAL_BOOTSTRAP_LOCK_NAME else {}
+    existing = open_existing_external_lock_descriptor(lock, expected, label=label)
+    if existing is not None:
+        return existing
+    if not create:
+        fail(f"{label} is missing")
+    return publish_external_lock_descriptor_no_replace(lock, expected, label=label)
+
+
+def open_external_lock_descriptor(lock: Path) -> ExternalLockFile:
+    expected = (
+        external_product_lock_binding()
+        if lock.name == EXTERNAL_BOOTSTRAP_LOCK_NAME
+        else read_existing_external_lock_binding(lock)
+    )
+    return open_external_lock_descriptor_for_binding(
+        lock,
+        expected=expected,
+        create=True,
+        label="external lock",
+    )
+
+
 def open_external_lock_file(lock: Path) -> int:
-    handle = open_external_lock_descriptor(lock)
-    commit_external_lock_file(handle)
+    expected = read_existing_external_lock_binding(lock)
+    handle = open_existing_external_lock_descriptor(lock, expected, label="external lock")
+    if handle is None:
+        fail("external lock is missing")
     return handle.descriptor
 
 
 def require_external_lock_descriptor(lock: Path, descriptor: int) -> None:
-    opened = os.fstat(descriptor)
-    if not stat.S_ISREG(opened.st_mode):
-        fail("external target lock must be a regular file")
-    if opened.st_nlink != 1:
-        fail("external target lock must have exactly one link")
-    require_current_user_owned(opened, "external target lock")
-    require_exact_mode(opened, "external target lock", OWNER_FILE_MODE)
-    final = require_owner_private_file(lock, "external target lock")
-    if final.st_nlink != 1:
-        fail("external target lock path must have exactly one link")
-    if identity_of(opened) != identity_of(final):
-        raise ConcurrentTargetChange("external target lock changed while it was opened")
+    validate_external_lock_descriptor(lock, descriptor, "external target lock")
+
+
+def read_existing_external_lock_binding(lock: Path) -> dict[str, Any]:
+    flags = os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock, flags)
+    except OSError as exc:
+        fail(f"cannot open external lock binding: {exc}")
+    try:
+        validate_external_lock_descriptor_base(lock, descriptor, "external lock")
+        binding = read_external_lock_binding(descriptor)
+        if binding is None:
+            fail("external lock binding is empty")
+        return binding
+    finally:
+        os.close(descriptor)
 
 
 def read_external_lock_binding(descriptor: int) -> dict[str, Any] | None:
@@ -4245,52 +4524,88 @@ def read_external_lock_binding(descriptor: int) -> dict[str, Any] | None:
 
 def ensure_external_lock_binding(descriptor: int, target: Path) -> None:
     expected = external_lock_binding(target)
-    ensure_external_lock_binding_matches(descriptor, expected)
+    require_external_lock_binding_matches(descriptor, expected, "external target lock")
 
 
 def ensure_external_lock_binding_matches(descriptor: int, expected: dict[str, Any]) -> None:
-    existing = read_external_lock_binding(descriptor)
-    if existing is None:
-        content = canonical_json(expected)
-        os.ftruncate(descriptor, 0)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        write_complete(descriptor, content, "external target lock binding")
-        os.fsync(descriptor)
-        return
-    if existing != expected:
-        fail("external target lock binding mismatch")
+    require_external_lock_binding_matches(descriptor, expected, "external target lock")
+
+
+def flock_external_lock(
+    handle: ExternalLockFile,
+    *,
+    shared: bool,
+    blocking: bool,
+    label: str,
+) -> None:
+    operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+    if not blocking:
+        operation |= fcntl.LOCK_NB
+    try:
+        fcntl.flock(handle.descriptor, operation)
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+            fail(f"target is already locked: {handle.lock}")
+        fail(f"cannot lock {label}: {exc}")
+    validate_external_lock_descriptor(handle.lock, handle.descriptor, label)
+
+
+def unlock_external_lock(handle: ExternalLockFile) -> None:
+    with contextlib.suppress(OSError):
+        fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
+    with contextlib.suppress(OSError):
+        close_external_lock_file(handle)
 
 
 @contextlib.contextmanager
-def external_bootstrap_lock(*, blocking: bool = False) -> Iterator[Path]:
-    lock = external_bootstrap_lock_path()
-    handle = open_external_lock_descriptor(lock)
+def external_bootstrap_lock(
+    *,
+    blocking: bool = False,
+    shared: bool = False,
+    create: bool = True,
+) -> Iterator[Path]:
+    root_handle = prepare_bootstrap_product_root(create=create)
+    if root_handle is None:
+        fail("external product anchor is missing")
+    lock = root_handle.root / EXTERNAL_BOOTSTRAP_LOCK_NAME
+    handle: ExternalLockFile | None = None
     locked = False
     try:
-        operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+        handle = open_external_lock_descriptor_for_binding(
+            lock,
+            external_product_lock_binding(),
+            create=create,
+            label="external product lock",
+        )
         try:
-            fcntl.flock(handle.descriptor, operation)
-        except OSError as exc:
-            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
-                fail(f"target is already locked: {lock}")
-            fail(f"cannot lock target externally: {exc}")
+            flock_external_lock(
+                handle,
+                shared=shared,
+                blocking=blocking,
+                label="external product lock",
+            )
+        except BaseException:
+            if handle.created and not handle.committed and root_handle.created:
+                rollback_created_product_root(root_handle, "bootstrap product lock root")
+            raise
         locked = True
-        require_external_lock_descriptor(lock, handle.descriptor)
         commit_external_lock_file(handle)
     except BaseException as exc:
-        if locked:
-            with contextlib.suppress(OSError):
-                fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
+        if locked and handle is not None:
+            unlock_external_lock(handle)
             locked = False
-        abort_external_lock_file(handle, "external bootstrap lock", exc)
+        elif handle is not None:
+            close_external_lock_file(handle)
+        if root_handle.created and not external_anchor_exists_no_create(lock):
+            rollback_created_product_root(root_handle, "bootstrap product lock root")
+        if isinstance(exc, ManagerError):
+            raise
+        raise ManagerError(f"external product lock failed: {exc}") from exc
     try:
         yield lock
     finally:
-        if locked:
-            with contextlib.suppress(OSError):
-                fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
-        with contextlib.suppress(OSError):
-            close_external_lock_file(handle)
+        if locked and handle is not None:
+            unlock_external_lock(handle)
 
 
 @contextlib.contextmanager
@@ -4300,39 +4615,33 @@ def external_lifecycle_lock(target: Path, *, blocking: bool = False) -> Iterator
     with external_bootstrap_lock(blocking=blocking):
         canonical_target = canonical_target_identity(target)
         lock = external_lock_path_for_canonical_target(canonical_target)
-        handle = open_external_lock_descriptor(lock)
-        try:
-            operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
-            try:
-                fcntl.flock(handle.descriptor, operation)
-            except OSError as exc:
-                if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
-                    fail(f"target is already locked: {lock}")
-                fail(f"cannot lock target externally: {exc}")
-            target_locked = True
-            require_external_lock_descriptor(lock, handle.descriptor)
-            capture_external_lock_parent_snapshot(handle)
-            ensure_external_lock_binding_matches(
-                handle.descriptor,
-                external_lock_binding_for_canonical_target(canonical_target),
-            )
-            require_external_lock_descriptor(lock, handle.descriptor)
-            commit_external_lock_file(handle)
-        except BaseException as exc:
-            if target_locked:
-                with contextlib.suppress(OSError):
-                    fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
-                target_locked = False
-            abort_external_lock_file(handle, "external target lock", exc)
+        handle = open_external_lock_descriptor_for_binding(
+            lock,
+            external_lock_binding_for_canonical_target(canonical_target),
+            create=True,
+            label="external target lock",
+        )
+        commit_external_lock_file(handle)
+    try:
+        assert handle is not None
+        flock_external_lock(
+            handle,
+            shared=False,
+            blocking=blocking,
+            label="external target lock",
+        )
+        target_locked = True
+    except BaseException:
+        if handle is not None:
+            close_external_lock_file(handle)
+        raise
     try:
         yield canonical_target, lock
     finally:
-        if target_locked:
-            assert handle is not None
-            with contextlib.suppress(OSError):
-                fcntl.flock(handle.descriptor, fcntl.LOCK_UN)
         if handle is not None:
-            with contextlib.suppress(OSError):
+            if target_locked:
+                unlock_external_lock(handle)
+            else:
                 close_external_lock_file(handle)
 
 
@@ -4346,6 +4655,97 @@ def external_target_scope(target: Path, *, blocking: bool = False) -> Iterator[P
 def external_target_lock(target: Path, *, blocking: bool = False) -> Iterator[Path]:
     with external_lifecycle_lock(target, blocking=blocking) as (_canonical_target, lock):
         yield lock
+
+
+def external_product_anchor_path_no_create() -> Path:
+    return external_product_root_path() / EXTERNAL_BOOTSTRAP_LOCK_NAME
+
+
+def external_product_anchor_exists_no_create() -> bool:
+    return external_anchor_exists_no_create(external_product_anchor_path_no_create())
+
+
+def run_read_only_with_product_anchor(
+    target: Path,
+    operation: Callable[[Path], dict[str, Any]],
+) -> dict[str, Any]:
+    root_handle = prepare_bootstrap_product_root(create=False)
+    if root_handle is None:
+        fail("external product anchor is missing")
+    product_lock = root_handle.root / EXTERNAL_BOOTSTRAP_LOCK_NAME
+    product_handle = open_existing_external_lock_descriptor(
+        product_lock,
+        external_product_lock_binding(),
+        label="external product lock",
+    )
+    if product_handle is None:
+        fail("external product anchor is missing")
+    product_locked = False
+    target_handle: ExternalLockFile | None = None
+    target_locked = False
+    try:
+        flock_external_lock(
+            product_handle,
+            shared=True,
+            blocking=False,
+            label="external product lock",
+        )
+        product_locked = True
+        canonical_target = canonical_target_identity(target)
+        target_lock = external_lock_path_for_canonical_target(canonical_target, create=False)
+        target_handle = open_existing_external_lock_descriptor(
+            target_lock,
+            external_lock_binding_for_canonical_target(canonical_target),
+            label="external target lock",
+        )
+        if target_handle is None:
+            try:
+                return operation(canonical_target)
+            finally:
+                unlock_external_lock(product_handle)
+                product_locked = False
+        flock_external_lock(
+            target_handle,
+            shared=True,
+            blocking=False,
+            label="external target lock",
+        )
+        target_locked = True
+    except BaseException:
+        if target_handle is not None:
+            if target_locked:
+                unlock_external_lock(target_handle)
+                target_locked = False
+            else:
+                close_external_lock_file(target_handle)
+        if product_locked:
+            unlock_external_lock(product_handle)
+        else:
+            close_external_lock_file(product_handle)
+        raise
+    unlock_external_lock(product_handle)
+    product_locked = False
+    try:
+        assert target_handle is not None
+        return operation(canonical_target)
+    finally:
+        if target_handle is not None:
+            if target_locked:
+                unlock_external_lock(target_handle)
+            else:
+                close_external_lock_file(target_handle)
+
+
+def run_read_only_target_operation(
+    target: Path,
+    operation: Callable[[Path], dict[str, Any]],
+) -> dict[str, Any]:
+    if not external_product_anchor_exists_no_create():
+        canonical_target = canonical_target_identity(target)
+        result = operation(canonical_target)
+        if not external_product_anchor_exists_no_create():
+            return result
+    return run_read_only_with_product_anchor(target, operation)
 
 
 def require_lock_root_directory(path: Path, label: str) -> os.stat_result:
@@ -5233,13 +5633,12 @@ def current_status_body(target: Path) -> dict[str, Any]:
 
 def current_status(target: Path) -> dict[str, Any]:
     require_supported_host_preflight()
-    with external_target_scope(target) as locked_target:
-        return current_status_body(locked_target)
+    return run_read_only_target_operation(target, current_status_body)
 
 
 def plan_setup(target: Path, setup_id: str, permission_profile_id: str) -> dict[str, Any]:
     require_supported_host_preflight()
-    with external_target_scope(target) as locked_target:
+    def plan_body(locked_target: Path) -> dict[str, Any]:
         target = locked_target
         setup = render_setup(setup_id)
         profile = render_permission_profile(permission_profile_id)
@@ -5295,6 +5694,7 @@ def plan_setup(target: Path, setup_id: str, permission_profile_id: str) -> dict[
             "current_permission_profile_id": status["permission_profile_id"],
             "drift": status["drift"],
         }
+    return run_read_only_target_operation(target, plan_body)
 
 
 def require_clean_managed(target: Path) -> dict[str, Any]:

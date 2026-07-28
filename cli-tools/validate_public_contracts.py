@@ -237,7 +237,9 @@ LOCK_ROOT_REF = "target/.nddev-runtime/locks/setup-manager.lock"
 LOCK_MECHANISM = "fcntl-flock-persistent-file"
 EXTERNAL_LOCK_MECHANISM = "fixed-system-temp-fcntl-flock-persistent-file"
 EXTERNAL_LOCK_ROOT_REF = "fixed-system-temp/nddev-kiro-cli-app-uid"
+EXTERNAL_PRODUCT_LOCK_FILENAME_REF = "global.lock"
 EXTERNAL_LOCK_FILENAME_REF = "sha256(product namespace + canonical absolute target).lock"
+EXTERNAL_LOCK_PUBLICATION_REF = "atomic-hardlink-no-replace"
 LOCK_FILE_MODE = "0600"
 LOCK_DIRECTORY_IDLE_MODE = "0700"
 LOCK_DIRECTORY_HELD_MODE = "0500"
@@ -773,6 +775,27 @@ def check_profile(profile_id: str, errors: list[str]) -> None:
         errors.append(f"profiles/{profile_id}: profile directory missing")
 
 
+def check_monotonic_external_lock_fields(
+    surface: dict[str, Any],
+    label: str,
+    errors: list[str],
+) -> None:
+    if surface.get("external_product_lock_filename") != EXTERNAL_PRODUCT_LOCK_FILENAME_REF:
+        errors.append(f"{label}: external product lock filename mismatch")
+    if surface.get("external_lock_publication") != EXTERNAL_LOCK_PUBLICATION_REF:
+        errors.append(f"{label}: external lock publication primitive mismatch")
+    if surface.get("external_lock_final_path_publication_commit_point") is not True:
+        errors.append(f"{label}: external lock commit point mismatch")
+    if surface.get("external_lock_parent_fsync_after_final_path_publication") is not True:
+        errors.append(f"{label}: external lock parent fsync phase mismatch")
+    if surface.get("external_lock_hardlink_alias_recovery") is not True:
+        errors.append(f"{label}: external lock hardlink alias recovery missing")
+    if surface.get("read_only_external_lock_no_create") is not True:
+        errors.append(f"{label}: read-only external lock no-create contract missing")
+    if surface.get("target_lock_published_by_mutation_only") is not True:
+        errors.append(f"{label}: target lock publication boundary mismatch")
+
+
 def check_setup(errors: list[str]) -> None:
     setup_id = "nddev-builder"
     root = ROOT / "setups" / setup_id
@@ -858,6 +881,7 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
         errors.append(f"{label}: external lock preflight ordering mismatch")
     if runtime.get("external_lock_never_unlinked") is not True:
         errors.append(f"{label}: external lock unlink policy mismatch")
+    check_monotonic_external_lock_fields(runtime, label, errors)
     if runtime.get("external_lock_not_exposed_to_child") is not True:
         errors.append(f"{label}: external lock child boundary mismatch")
     if runtime.get("fixed_system_temp_root_for_external_lock") is not True:
@@ -1264,6 +1288,7 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: external lock preflight ordering mismatch")
     if software.get("external_lock_never_unlinked") is not True:
         errors.append(f"{label}: external lock unlink policy mismatch")
+    check_monotonic_external_lock_fields(software, label, errors)
     if software.get("lock_acquisition_order") != ["external", "internal"]:
         errors.append(f"{label}: lock acquisition order mismatch")
     if software.get("lock_release_order") != ["internal", "external"]:
@@ -1353,6 +1378,11 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         errors.append("config/nddev-contract.json: external lock preflight ordering mismatch")
     if managed_state.get("external_lock_never_unlinked") is not True:
         errors.append("config/nddev-contract.json: external lock unlink policy mismatch")
+    check_monotonic_external_lock_fields(
+        managed_state,
+        "config/nddev-contract.json",
+        errors,
+    )
     if managed_state.get("lock_acquisition_order") != ["external", "internal"]:
         errors.append("config/nddev-contract.json: lock acquisition order mismatch")
     if managed_state.get("lock_release_order") != ["internal", "external"]:
@@ -1457,6 +1487,11 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
     ):
         if safety.get(key) is not True:
             errors.append(f"config/nddev-contract.json: safety.{key} required")
+    check_monotonic_external_lock_fields(
+        safety,
+        "config/nddev-contract.json: safety",
+        errors,
+    )
     if safety.get("directory_lock_used") is not False:
         errors.append("config/nddev-contract.json: removable directory lock must be disabled")
 
@@ -1512,6 +1547,11 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: external lock preflight ordering missing")
     if authentication.get("external_lock_never_unlinked") is not True:
         errors.append("references/kiro-cli-baseline.json: external lock unlink policy missing")
+    check_monotonic_external_lock_fields(
+        authentication,
+        "references/kiro-cli-baseline.json",
+        errors,
+    )
     if authentication.get("external_lock_not_exposed_to_child") is not True:
         errors.append("references/kiro-cli-baseline.json: external lock child boundary missing")
     if authentication.get("lock_file_persistent") is not True:
@@ -1571,6 +1611,11 @@ def check_baseline(
             )
         if software.get("external_lock_never_unlinked") is not True:
             errors.append("references/kiro-cli-baseline.json: external lock unlink policy mismatch")
+        check_monotonic_external_lock_fields(
+            software,
+            "references/kiro-cli-baseline.json",
+            errors,
+        )
         if software.get("lock_acquisition_order") != ["external", "internal"]:
             errors.append("references/kiro-cli-baseline.json: lock acquisition order mismatch")
         if software.get("lock_release_order") != ["internal", "external"]:
@@ -1894,6 +1939,147 @@ def write_external_lock_seed(manager: Any, lock: Path, content: bytes) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def external_publication_aliases(manager: Any, lock: Path) -> list[Path]:
+    prefix = manager.external_lock_publication_alias_prefix(lock)
+    return sorted(path for path in lock.parent.iterdir() if path.name.startswith(prefix))
+
+
+def fork_crash_after_external_lock_link(
+    manager: Any,
+    kind: str,
+    target: Path,
+    error_file: Path,
+) -> int:
+    pid = os.fork()
+    if pid == 0:
+        original_link = manager.os.link
+
+        def crashing_link(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+            original_link(source, destination, *args, **kwargs)
+            os._exit(77)
+
+        try:
+            manager.os.link = crashing_link
+            if kind == "product":
+                with manager.external_bootstrap_lock():
+                    pass
+            elif kind == "target":
+                with manager.external_target_lock(target):
+                    pass
+            else:
+                raise RuntimeError(f"unknown external lock crash kind: {kind}")
+        except BaseException as exc:
+            with contextlib.suppress(Exception):
+                error_file.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            os._exit(125)
+        os._exit(0)
+    return pid
+
+
+def assert_external_lock_alias_recovered(
+    manager: Any,
+    lock: Path,
+    expected: dict[str, Any],
+    label: str,
+    errors: list[str],
+) -> None:
+    aliases = external_publication_aliases(manager, lock)
+    if len(aliases) != 1:
+        errors.append(f"{label}: expected one crashed publication alias, got {len(aliases)}")
+        return
+    before = lock.lstat()
+    alias_before = aliases[0].lstat()
+    if before.st_nlink != 2 or identity_of_stat(before) != identity_of_stat(alias_before):
+        errors.append(f"{label}: crashed alias does not share final lock inode")
+        return
+    try:
+        handle = manager.open_existing_external_lock_descriptor(lock, expected, label=label)
+    except manager.ManagerError as exc:
+        errors.append(f"{label}: recovery opener failed: {exc}")
+        return
+    if handle is None:
+        errors.append(f"{label}: recovery opener returned no handle")
+        return
+    manager.close_external_lock_file(handle)
+    after = lock.lstat()
+    if aliases[0].exists():
+        errors.append(f"{label}: crashed publication alias was not removed")
+    if after.st_nlink != 1:
+        errors.append(f"{label}: final lock link count after recovery is {after.st_nlink}")
+    if identity_of_stat(after) != identity_of_stat(before):
+        errors.append(f"{label}: final lock inode changed during alias recovery")
+    try:
+        handle = manager.open_existing_external_lock_descriptor(lock, expected, label=label)
+    except manager.ManagerError as exc:
+        errors.append(f"{label}: post-recovery opener failed: {exc}")
+        return
+    if handle is not None:
+        manager.close_external_lock_file(handle)
+
+
+def identity_of_stat(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def run_external_lock_crash_recovery_regressions(
+    manager: Any,
+    tmp: Path,
+    errors: list[str],
+) -> None:
+    original_bootstrap_root = manager.bootstrap_system_temp_root
+    crash_system_root = tmp / "crash-recovery-system-temp"
+    crash_system_root.mkdir(mode=0o777)
+    crash_system_root.chmod(0o1777)
+    manager.bootstrap_system_temp_root = lambda: crash_system_root
+    try:
+        product_error = tmp / "product-crash-error"
+        product_pid = fork_crash_after_external_lock_link(
+            manager,
+            "product",
+            (tmp / "unused-product-target").resolve(strict=False),
+            product_error,
+        )
+        product_code = wait_for_child(product_pid, 5, errors, "product lock crash recovery")
+        if product_code != 77:
+            errors.append(
+                "product lock crash recovery: child did not exit after final-path publication "
+                f"(rc={product_code}, error={product_error.read_text(encoding='utf-8') if product_error.exists() else ''!r})"
+            )
+            return
+        product_lock = manager.external_product_root_path() / manager.EXTERNAL_BOOTSTRAP_LOCK_NAME
+        assert_external_lock_alias_recovered(
+            manager,
+            product_lock,
+            manager.external_product_lock_binding(),
+            "external product lock crash recovery",
+            errors,
+        )
+
+        target = (tmp / "target-lock-crash-recovery").resolve(strict=False)
+        with manager.external_bootstrap_lock():
+            pass
+        target_error = tmp / "target-crash-error"
+        target_pid = fork_crash_after_external_lock_link(manager, "target", target, target_error)
+        target_code = wait_for_child(target_pid, 5, errors, "target lock crash recovery")
+        if target_code != 77:
+            errors.append(
+                "target lock crash recovery: child did not exit after final-path publication "
+                f"(rc={target_code}, error={target_error.read_text(encoding='utf-8') if target_error.exists() else ''!r})"
+            )
+            return
+        canonical = manager.canonical_target_identity(target)
+        target_lock = manager.external_lock_path_for_canonical_target(canonical)
+        assert_external_lock_alias_recovered(
+            manager,
+            target_lock,
+            manager.external_lock_binding_for_canonical_target(canonical),
+            "external target lock crash recovery",
+            errors,
+        )
+    finally:
+        manager.bootstrap_system_temp_root = original_bootstrap_root
 
 
 def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -2541,6 +2727,7 @@ def check_python_portability(errors: list[str]) -> None:
 
 def run_side_effect_free_read_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
     target = (tmp / "read-side-effect-free-target").resolve(strict=False)
+    before = snapshot_bootstrap_tree(manager.external_product_root_path())
     status = manager.current_status(target)
     software_status = manager.software_status(target)
     plan = manager.plan_setup(
@@ -2554,16 +2741,23 @@ def run_side_effect_free_read_regressions(manager: Any, tmp: Path, errors: list[
         errors.append("plan side-effect regression: missing target plan mismatch")
     if target.exists():
         errors.append("read side-effect regression: status/plan created the target")
+    after = snapshot_bootstrap_tree(manager.external_product_root_path())
+    if after != before:
+        errors.append("read side-effect regression: cold status/plan created external lock state")
 
 
 def run_lifecycle_order_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
     target = (tmp / "lifecycle-order-target").resolve(strict=False)
-    events: list[str] = []
+    events: list[Any] = []
     original_bootstrap = manager.external_bootstrap_lock
     original_canonical = manager.canonical_target_identity
     original_status_body = manager.current_status_body
     original_snapshot = manager.setup_transaction_snapshot
     original_internal = manager.internal_target_lock
+    original_flock = manager.flock_external_lock
+    original_unlock = manager.unlock_external_lock
+    product_depth = 0
+    record_lock_depth = False
 
     @contextlib.contextmanager
     def traced_bootstrap(*args: Any, **kwargs: Any) -> Any:
@@ -2573,11 +2767,11 @@ def run_lifecycle_order_regressions(manager: Any, tmp: Path, errors: list[str]) 
             yield lock
 
     def traced_canonical(path: Path) -> Path:
-        events.append("canonical-target")
+        events.append(("canonical-target", product_depth) if record_lock_depth else "canonical-target")
         return original_canonical(path)
 
     def traced_status_body(path: Path) -> dict[str, Any]:
-        events.append("status-body")
+        events.append(("status-body", product_depth) if record_lock_depth else "status-body")
         return original_status_body(path)
 
     def traced_snapshot(path: Path) -> dict[str, Any]:
@@ -2591,20 +2785,45 @@ def run_lifecycle_order_regressions(manager: Any, tmp: Path, errors: list[str]) 
             events.append("internal-held")
             yield locked
 
+    def traced_flock(*args: Any, **kwargs: Any) -> None:
+        nonlocal product_depth
+        original_flock(*args, **kwargs)
+        label = kwargs.get("label")
+        if label == "external product lock":
+            product_depth += 1
+            events.append(("product-held", kwargs.get("shared")))
+
+    def traced_unlock(handle: Any) -> None:
+        nonlocal product_depth
+        if handle.lock.name == manager.EXTERNAL_BOOTSTRAP_LOCK_NAME and product_depth > 0:
+            product_depth -= 1
+            events.append(("product-release", product_depth))
+        original_unlock(handle)
+
     try:
         manager.external_bootstrap_lock = traced_bootstrap
         manager.canonical_target_identity = traced_canonical
         manager.current_status_body = traced_status_body
+        record_lock_depth = True
         manager.current_status(target)
-        if events[:4] != [
-            "bootstrap-call",
-            "bootstrap-held",
-            "canonical-target",
-            "status-body",
-        ]:
-            errors.append(f"status lifecycle order mismatch: {events}")
+        if events != [("canonical-target", 0), ("status-body", 0)]:
+            errors.append(f"cold status lifecycle order mismatch: {events}")
+
+        with original_bootstrap():
+            pass
+        events.clear()
+        manager.flock_external_lock = traced_flock
+        manager.unlock_external_lock = traced_unlock
+        manager.current_status(target)
+        if events[:3] != [
+            ("product-held", True),
+            ("canonical-target", 1),
+            ("status-body", 1),
+        ] or events[-1:] != [("product-release", 0)]:
+            errors.append(f"seeded status lifecycle order mismatch: {events}")
 
         events.clear()
+        record_lock_depth = False
         manager.current_status_body = original_status_body
         manager.setup_transaction_snapshot = traced_snapshot
         manager.internal_target_lock = traced_internal
@@ -2629,6 +2848,8 @@ def run_lifecycle_order_regressions(manager: Any, tmp: Path, errors: list[str]) 
         manager.current_status_body = original_status_body
         manager.setup_transaction_snapshot = original_snapshot
         manager.internal_target_lock = original_internal
+        manager.flock_external_lock = original_flock
+        manager.unlock_external_lock = original_unlock
 
 
 def run_public_manager_regressions(errors: list[str]) -> None:
@@ -2657,6 +2878,7 @@ def run_public_manager_regressions(errors: list[str]) -> None:
             manager.bootstrap_system_temp_root = lambda: injected_system_root
             run_lifecycle_order_regressions(manager, tmp, errors)
             run_side_effect_free_read_regressions(manager, tmp, errors)
+            run_external_lock_crash_recovery_regressions(manager, tmp, errors)
             run_external_lock_binding_regressions(manager, tmp, errors)
             run_stamp_provenance_regressions(manager, tmp, errors)
             run_launch_runtime_symlink_regressions(manager, tmp, errors)

@@ -19,6 +19,13 @@
     "external_lock_binding_schema": 1,
     "external_lock_acquired_before_target_inspection": true,
     "external_lock_never_unlinked": true,
+    "external_product_lock_filename": "global.lock",
+    "external_lock_publication": "atomic-hardlink-no-replace",
+    "external_lock_final_path_publication_commit_point": true,
+    "external_lock_parent_fsync_after_final_path_publication": true,
+    "external_lock_hardlink_alias_recovery": true,
+    "read_only_external_lock_no_create": true,
+    "target_lock_published_by_mutation_only": true,
     "external_lock_not_exposed_to_child": true,
     "fixed_system_temp_root_for_external_lock": true,
     "lock_acquisition_order": [
