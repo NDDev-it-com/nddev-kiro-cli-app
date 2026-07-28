@@ -1524,6 +1524,52 @@ def fsync_existing_path(path: Path, *, directory: bool) -> None:
         os.close(descriptor)
 
 
+def snapshot_directory_identity(path: Path, label: str) -> DirectorySnapshot:
+    info = require_directory(path, label)
+    return DirectorySnapshot(
+        existed=True,
+        mode=stat.S_IMODE(info.st_mode),
+        inode=info.st_ino,
+        mtime_ns=info.st_mtime_ns,
+    )
+
+
+def directory_identity_matches(path: Path, expected: DirectorySnapshot) -> bool:
+    try:
+        info = lstat_optional(path)
+        if not expected.existed:
+            return info is None
+        return (
+            info is not None
+            and not stat.S_ISLNK(info.st_mode)
+            and stat.S_ISDIR(info.st_mode)
+            and stat.S_IMODE(info.st_mode) == expected.mode
+            and info.st_ino == expected.inode
+            and info.st_mtime_ns == expected.mtime_ns
+        )
+    except ManagerError:
+        return False
+
+
+def restore_directory_identity(path: Path, expected: DirectorySnapshot, label: str) -> None:
+    if not expected.existed:
+        if lstat_optional(path) is not None:
+            remove_tree_exact(path)
+        return
+    info = require_directory(path, label)
+    if info.st_ino != expected.inode:
+        fail(f"{label} identity changed")
+    if expected.mode is None or expected.mtime_ns is None:
+        fail(f"{label} snapshot is invalid")
+    if stat.S_IMODE(info.st_mode) != expected.mode or info.st_mtime_ns != expected.mtime_ns:
+        require_current_user_owned(info, label)
+        os.chmod(path, expected.mode)
+        refreshed = path.lstat()
+        os.utime(path, ns=(refreshed.st_atime_ns, expected.mtime_ns), follow_symlinks=False)
+    fsync_existing_path(path, directory=True)
+    fsync_directory(path.parent)
+
+
 def restore_tree_entry_metadata(path: Path, entry: TreeSnapshotEntry) -> None:
     os.chmod(path, entry.mode)
     refreshed = path.lstat()
@@ -1967,11 +2013,13 @@ def fsync_directory(path: Path) -> None:
 
 @contextlib.contextmanager
 def software_stage(target: Path) -> Iterator[Path]:
+    parent_snapshot = snapshot_directory_identity(target.parent, "software stage parent")
     stage = create_transaction_dir(target, "software-stage")
     try:
         yield stage
     finally:
         cleanup_transaction_tree(stage, "software stage")
+        restore_directory_identity(target.parent, parent_snapshot, "software stage parent")
         require_no_software_transaction_residue(target, "software stage")
 
 
@@ -2239,9 +2287,12 @@ def software_install_transaction_matches(
     target_mode: int | None,
     target_inode: int | None,
     target_mtime_ns: int | None,
+    target_parent: DirectorySnapshot,
     software_parent_manifest: dict[str, TreeManifestEntry] | None,
 ) -> bool:
     try:
+        if not directory_identity_matches(target.parent, target_parent):
+            return False
         target_info = lstat_optional(target)
         if not target_existed:
             return target_info is None
@@ -2266,6 +2317,7 @@ def restore_software_install_transaction_once(
     target_mode: int | None,
     target_inode: int | None,
     target_mtime_ns: int | None,
+    target_parent: DirectorySnapshot,
     software_parent_manifest: dict[str, TreeManifestEntry] | None,
     software_parent_initial_mode: int | None,
     final_root: Path,
@@ -2314,6 +2366,7 @@ def restore_software_install_transaction_once(
         fsync_directory(target.parent)
     if software_parent_manifest is None and lstat_optional(software_parent(target)) is not None:
         remove_tree_exact(software_parent(target))
+    restore_directory_identity(target.parent, target_parent, "software transaction parent")
 
 
 def restore_software_install_transaction(
@@ -2323,6 +2376,7 @@ def restore_software_install_transaction(
     target_mode: int | None,
     target_inode: int | None,
     target_mtime_ns: int | None,
+    target_parent: DirectorySnapshot,
     software_parent_manifest: dict[str, TreeManifestEntry] | None,
     software_parent_initial_mode: int | None,
     final_root: Path,
@@ -2341,6 +2395,7 @@ def restore_software_install_transaction(
                 target_mode=target_mode,
                 target_inode=target_inode,
                 target_mtime_ns=target_mtime_ns,
+                target_parent=target_parent,
                 software_parent_manifest=software_parent_manifest,
                 software_parent_initial_mode=software_parent_initial_mode,
                 final_root=final_root,
@@ -2358,6 +2413,7 @@ def restore_software_install_transaction(
             target_mode=target_mode,
             target_inode=target_inode,
             target_mtime_ns=target_mtime_ns,
+            target_parent=target_parent,
             software_parent_manifest=software_parent_manifest,
         ):
             return
@@ -2389,6 +2445,10 @@ def install_prepared_software_root(
     target_mode = stat.S_IMODE(target_info.st_mode) if target_info is not None else None
     target_inode = target_info.st_ino if target_info is not None else None
     target_mtime_ns = target_info.st_mtime_ns if target_info is not None else None
+    target_parent = snapshot_directory_identity(
+        target.parent,
+        "software transaction parent",
+    )
     software_parent_manifest = snapshot_tree_manifest(software_parent(target))
     try:
         if target_info is None:
@@ -2478,6 +2538,7 @@ def install_prepared_software_root(
             target_mode=target_mode,
             target_inode=target_inode,
             target_mtime_ns=target_mtime_ns,
+            target_parent=target_parent,
             software_parent_manifest=software_parent_manifest,
             software_parent_initial_mode=software_parent_initial_mode,
             final_root=final_root,
@@ -2706,6 +2767,10 @@ def software_remove(target: Path) -> dict[str, Any]:
                 target_mode = stat.S_IMODE(target_info.st_mode) if target_info is not None else None
                 target_inode = target_info.st_ino if target_info is not None else None
                 target_mtime_ns = target_info.st_mtime_ns if target_info is not None else None
+                target_parent = snapshot_directory_identity(
+                    target.parent,
+                    "software transaction parent",
+                )
                 software_parent_initial_mode = stat.S_IMODE(software_parent(target).lstat().st_mode)
                 software_parent_manifest = snapshot_tree_manifest(software_parent(target))
                 rollback_parent: Path | None = None
@@ -2724,7 +2789,6 @@ def software_remove(target: Path) -> dict[str, Any]:
                     os.replace(root, rollback_root)
                     fsync_directory(root.parent)
                     fsync_directory(rollback_parent)
-                    remove_empty_directory_if_present(root.parent)
                     absent = software_status_body(target)
                     if absent["state"] not in {"missing", "absent"}:
                         fail(f"Kiro CLI software remove postcondition failed: {absent['state']}")
@@ -2739,6 +2803,7 @@ def software_remove(target: Path) -> dict[str, Any]:
                         target_mode=target_mode,
                         target_inode=target_inode,
                         target_mtime_ns=target_mtime_ns,
+                        target_parent=target_parent,
                         software_parent_manifest=software_parent_manifest,
                         software_parent_initial_mode=software_parent_initial_mode,
                         final_root=root,
@@ -2973,8 +3038,13 @@ def canonical_target_identity(path: Path) -> Path:
         fail("--target must be an absolute path")
     if path.name in {"", ".", ".."} or any(part in {".", ".."} for part in path.parts):
         fail("--target must have a stable literal basename")
-    require_real_directory_ancestors(path.parent, "canonical --target parent")
-    parent = path.parent.resolve(strict=True)
+    try:
+        parent = path.parent.resolve(strict=True)
+    except FileNotFoundError:
+        fail(f"canonical --target parent is missing: {path.parent}")
+    except RuntimeError:
+        fail(f"canonical --target parent cannot be resolved: {path.parent}")
+    require_real_directory_ancestors(parent, "canonical --target parent")
     return parent / path.name
 
 
@@ -4782,6 +4852,7 @@ def setup_transaction_snapshot(target: Path) -> dict[str, Any]:
         "target_mode": target_mode,
         "target_inode": target_inode,
         "target_mtime_ns": target_mtime_ns,
+        "target_parent": snapshot_directory_identity(target.parent, "setup transaction parent"),
         "managed_files": managed_files,
         "managed": snapshot_managed_files(target, managed_files),
         "backup_pool": snapshot_tree_exact(backup_pool(target)),
@@ -4818,6 +4889,8 @@ def remove_empty_runtime_dirs(target: Path) -> None:
 
 def setup_transaction_matches(target: Path, snapshot: dict[str, Any]) -> bool:
     if setup_transaction_residue(target):
+        return False
+    if not directory_identity_matches(target.parent, snapshot["target_parent"]):
         return False
     if not snapshot["target_existed"]:
         return lstat_optional(target) is None
@@ -4867,6 +4940,11 @@ def ensure_restored_target_directory(target: Path, mode: int, inode: int, mtime_
 def restore_setup_transaction_once(target: Path, snapshot: dict[str, Any]) -> None:
     if not snapshot["target_existed"]:
         remove_tree_exact(target)
+        restore_directory_identity(
+            target.parent,
+            snapshot["target_parent"],
+            "setup transaction parent",
+        )
         return
     target_mode = snapshot["target_mode"]
     target_inode = snapshot["target_inode"]
@@ -4891,6 +4969,11 @@ def restore_setup_transaction_once(target: Path, snapshot: dict[str, Any]) -> No
     os.utime(target, ns=(refreshed.st_atime_ns, target_mtime_ns))
     fsync_existing_path(target, directory=True)
     fsync_directory(target.parent)
+    restore_directory_identity(
+        target.parent,
+        snapshot["target_parent"],
+        "setup transaction parent",
+    )
 
 
 def restore_setup_transaction(target: Path, snapshot: dict[str, Any]) -> None:
