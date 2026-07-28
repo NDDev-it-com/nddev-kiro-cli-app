@@ -785,7 +785,9 @@ def freedesktop_os_release() -> Mapping[str, str]:
     try:
         return parse_os_release_content(Path("/etc/os-release").read_text(encoding="utf-8"))
     except OSError as exc:
-        raise ManagerError("Ubuntu software installs require structured os-release detection") from exc
+        raise ManagerError(
+            "Ubuntu software installs require structured os-release detection"
+        ) from exc
 
 
 def require_ubuntu_os_release(os_release: Mapping[str, str] | None = None) -> None:
@@ -6420,6 +6422,36 @@ def external_product_anchor_exists_no_create() -> bool:
     return external_anchor_exists_no_create(external_product_anchor_path_no_create())
 
 
+def cold_product_namespace_snapshot_no_create() -> dict[str, Any] | None:
+    root = external_product_root_path()
+    info = lstat_optional(root)
+    if info is None:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("external product namespace must be an owner-private directory without product anchor")
+    require_current_user_owned(info, "external product namespace")
+    require_exact_mode(info, "external product namespace", OWNER_DIR_MODE)
+    scanned = 0
+    try:
+        with os.scandir(root) as entries:
+            for _entry in entries:
+                scanned += 1
+                if scanned > EXTERNAL_LOCK_ALIAS_SCAN_MAX:
+                    fail("external product namespace scan exceeded bounded limit")
+                fail("external product namespace must be empty without product anchor")
+    except OSError as exc:
+        fail(f"cannot inspect external product namespace: {exc}")
+    return {
+        "dev": info.st_dev,
+        "ino": info.st_ino,
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": info.st_uid,
+        "nlink": info.st_nlink,
+        "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
+    }
+
+
 def run_read_only_with_product_anchor(
     target: Path,
     operation: Callable[[Path], dict[str, Any]],
@@ -6495,11 +6527,17 @@ def run_read_only_target_operation(
     target: Path,
     operation: Callable[[Path], dict[str, Any]],
 ) -> dict[str, Any]:
+    if external_product_anchor_exists_no_create():
+        return run_read_only_with_product_anchor(target, operation)
+    cold_snapshot = cold_product_namespace_snapshot_no_create()
     if not external_product_anchor_exists_no_create():
         canonical_target = canonical_target_identity(target)
         result = operation(canonical_target)
-        if not external_product_anchor_exists_no_create():
+        if external_product_anchor_exists_no_create():
+            return run_read_only_with_product_anchor(target, operation)
+        if cold_product_namespace_snapshot_no_create() == cold_snapshot:
             return result
+        fail("external product namespace changed during cold read")
     return run_read_only_with_product_anchor(target, operation)
 
 
