@@ -2046,7 +2046,12 @@ def assert_external_lock_alias_recovered(
         errors.append(f"{label}: crashed alias does not share final lock inode")
         return
     try:
-        handle = manager.open_existing_external_lock_descriptor(lock, expected, label=label)
+        handle = manager.open_existing_external_lock_descriptor(
+            lock,
+            expected,
+            label=label,
+            recover_publication_alias=True,
+        )
     except manager.ManagerError as exc:
         errors.append(f"{label}: recovery opener failed: {exc}")
         return

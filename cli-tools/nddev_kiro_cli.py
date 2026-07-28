@@ -5184,6 +5184,7 @@ def open_existing_external_lock_descriptor(
     expected: dict[str, Any],
     *,
     label: str,
+    recover_publication_alias: bool = False,
 ) -> ExternalLockFile | None:
     flags = os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
@@ -5207,7 +5208,8 @@ def open_existing_external_lock_descriptor(
     try:
         validate_external_lock_descriptor_base(lock, descriptor, label)
         require_external_lock_binding_matches(descriptor, expected, label)
-        recover_external_lock_publication_alias(lock, descriptor, expected, label)
+        if recover_publication_alias:
+            recover_external_lock_publication_alias(lock, descriptor, expected, label)
         validate_external_lock_descriptor(lock, descriptor, label)
     except BaseException:
         close_external_lock_file(handle)
@@ -5241,7 +5243,12 @@ def publish_external_lock_descriptor_no_replace(
             final_visible = True
             temporary.unlink()
             fsync_directory(lock.parent)
-            existing = open_existing_external_lock_descriptor(lock, expected, label=label)
+            existing = open_existing_external_lock_descriptor(
+                lock,
+                expected,
+                label=label,
+                recover_publication_alias=True,
+            )
             if existing is None:
                 raise ConcurrentTargetChange(f"{label} disappeared during publication")
             return existing
@@ -5249,7 +5256,12 @@ def publish_external_lock_descriptor_no_replace(
         final_identity = identity_of(lock.lstat())
         temporary.unlink()
         fsync_directory(lock.parent)
-        handle = open_existing_external_lock_descriptor(lock, expected, label=label)
+        handle = open_existing_external_lock_descriptor(
+            lock,
+            expected,
+            label=label,
+            recover_publication_alias=True,
+        )
         if handle is None:
             raise ConcurrentTargetChange(f"{label} disappeared after publication")
         handle.created = True
@@ -5288,7 +5300,12 @@ def open_external_lock_descriptor_for_binding(
         expected = (
             external_product_lock_binding() if lock.name == EXTERNAL_BOOTSTRAP_LOCK_NAME else {}
         )
-    existing = open_existing_external_lock_descriptor(lock, expected, label=label)
+    existing = open_existing_external_lock_descriptor(
+        lock,
+        expected,
+        label=label,
+        recover_publication_alias=True,
+    )
     if existing is not None:
         return existing
     if not create:
@@ -5453,26 +5470,25 @@ def external_lifecycle_lock(target: Path, *, blocking: bool = False) -> Iterator
     with external_bootstrap_lock(blocking=blocking):
         canonical_target = canonical_target_identity(target)
         lock = external_lock_path_for_canonical_target(canonical_target)
-        handle = open_external_lock_descriptor_for_binding(
-            lock,
-            external_lock_binding_for_canonical_target(canonical_target),
-            create=True,
-            label="external target lock",
-        )
-        commit_external_lock_file(handle)
-    try:
-        assert handle is not None
-        flock_external_lock(
-            handle,
-            shared=False,
-            blocking=blocking,
-            label="external target lock",
-        )
-        target_locked = True
-    except BaseException:
-        if handle is not None:
-            close_external_lock_file(handle)
-        raise
+        try:
+            handle = open_external_lock_descriptor_for_binding(
+                lock,
+                external_lock_binding_for_canonical_target(canonical_target),
+                create=True,
+                label="external target lock",
+            )
+            commit_external_lock_file(handle)
+            flock_external_lock(
+                handle,
+                shared=False,
+                blocking=blocking,
+                label="external target lock",
+            )
+            target_locked = True
+        except BaseException:
+            if handle is not None:
+                close_external_lock_file(handle)
+            raise
     try:
         yield canonical_target, lock
     finally:
