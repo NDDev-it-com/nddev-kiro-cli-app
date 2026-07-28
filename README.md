@@ -73,18 +73,20 @@ software makes launch unavailable until repaired.
 Launch Kiro with the isolated target:
 
 ```bash
-python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --
+python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --workspace /absolute/project --
 ```
 
 `launch` requires clean current managed setup state and clean target-owned
 software; `status --json` reports the same `launch_allowed` outcome. Launch uses
 an isolated target runtime, strips provider credential state, uses a
 deterministic child environment, revalidates the target-owned executable before
-handoff, and holds lifecycle exclusion until the child exits. Managed-scope
-overrides are rejected before launch. Exact runtime paths, lifecycle exclusion
-mechanics, environment keys, executable checks, and blocked override arguments
-are owned by `cli-tools/nddev_kiro_cli.py`, `config/nddev-contract.json`, and
-`build/manifest.json`.
+handoff, runs the child in the explicit workspace directory, and holds lifecycle
+exclusion until the child exits. If `--workspace` is omitted, the manager uses
+the caller working directory captured at startup. Managed-scope overrides are
+rejected before launch. Exact runtime paths, lifecycle exclusion mechanics,
+environment keys, executable checks, workspace binding, and blocked override
+arguments are owned by `cli-tools/nddev_kiro_cli.py`,
+`config/nddev-contract.json`, and `build/manifest.json`.
 
 ## Builder Content
 

@@ -197,11 +197,16 @@ MANAGED_LAUNCH_BLOCKED_COMMANDS = [
 MANAGED_LAUNCH_BLOCKED_OPTIONS = [
     "--agent",
     "--classic",
+    "--cwd",
+    "--directory",
+    "--folder",
     "--no-interactive",
+    "--project",
     "--require-mcp-startup",
     "--trust-all-tools",
     "--trust-tools",
     "--v3",
+    "--workspace",
 ]
 SUPPORTED_PLATFORMS = [
     "macos-universal-dmg",
@@ -490,6 +495,18 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
         errors.append(f"{label}: managed launch command guard mismatch")
     if runtime.get("managed_launch_blocked_options") != MANAGED_LAUNCH_BLOCKED_OPTIONS:
         errors.append(f"{label}: managed launch option guard mismatch")
+    if runtime.get("workspace_argument") != "--workspace":
+        errors.append(f"{label}: launch workspace argument mismatch")
+    if runtime.get("workspace_default") != "captured-caller-cwd":
+        errors.append(f"{label}: launch workspace default mismatch")
+    if runtime.get("workspace_must_be_existing_absolute_accessible_directory") is not True:
+        errors.append(f"{label}: launch workspace validation mismatch")
+    if runtime.get("workspace_passed_as_child_cwd") is not True:
+        errors.append(f"{label}: launch child cwd binding mismatch")
+    if runtime.get("native_workspace_argument") is not None:
+        errors.append(f"{label}: native workspace argument must be null")
+    if runtime.get("native_workspace_argument_status") != "unsupported-by-official-cli-reference":
+        errors.append(f"{label}: native workspace argument status mismatch")
     if runtime.get("trusted_system_path") not in (None, TRUSTED_SYSTEM_PATH):
         errors.append(f"{label}: trusted system PATH mismatch")
     if runtime.get("launch_lock_held_until_child_exit") is not True:
@@ -1145,6 +1162,18 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: executable revalidation missing")
     if authentication.get("launch_runtime_directories_target_relative_owner_private") is not True:
         errors.append("references/kiro-cli-baseline.json: launch runtime directory trust missing")
+    if authentication.get("workspace_argument") != "--workspace":
+        errors.append("references/kiro-cli-baseline.json: workspace argument mismatch")
+    if authentication.get("workspace_default") != "captured-caller-cwd":
+        errors.append("references/kiro-cli-baseline.json: workspace default mismatch")
+    if authentication.get("workspace_must_be_existing_absolute_accessible_directory") is not True:
+        errors.append("references/kiro-cli-baseline.json: workspace validation missing")
+    if authentication.get("workspace_passed_as_child_cwd") is not True:
+        errors.append("references/kiro-cli-baseline.json: child cwd workspace binding missing")
+    if authentication.get("native_workspace_argument") is not None:
+        errors.append("references/kiro-cli-baseline.json: native workspace argument must be null")
+    if authentication.get("native_workspace_argument_status") != "unsupported-by-official-cli-reference":
+        errors.append("references/kiro-cli-baseline.json: native workspace status mismatch")
     release = baseline.get("release", {})
     if release.get("install_script_sha256") != INSTALLER_SHA256:
         errors.append("references/kiro-cli-baseline.json: install script sha256 mismatch")
@@ -2261,6 +2290,87 @@ def run_launch_runtime_symlink_regressions(manager: Any, tmp: Path, errors: list
             errors.append(f"launch runtime {name}: child executable ran through symlinked runtime root")
 
 
+def run_launch_workspace_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "launch-workspace").resolve(strict=False)
+    prepare_managed_target(manager, target)
+    install_fake_software(manager, target, "#!/bin/sh\nexit 0\n")
+    workspace = tmp / "workspace"
+    private_dir(manager, workspace)
+    args = manager.parse_args(
+        [
+            "launch",
+            "--target",
+            str(target),
+            "--workspace",
+            str(workspace),
+            "--",
+            "chat",
+        ]
+    )
+    if args.workspace != str(workspace) or args.child_args != ["--", "chat"]:
+        errors.append("launch workspace parser: --workspace was not parsed as a manager option")
+
+    for label, raw_workspace in (
+        ("relative", "relative-workspace"),
+        ("missing", str(tmp / "missing-workspace")),
+    ):
+        try:
+            manager.resolve_launch_workspace(raw_workspace, tmp)
+            errors.append(f"launch workspace {label}: invalid workspace was accepted")
+        except manager.ManagerError:
+            pass
+
+    workspace_link = tmp / "workspace-link"
+    os.symlink(workspace, workspace_link)
+    try:
+        manager.resolve_launch_workspace(str(workspace_link), tmp)
+        errors.append("launch workspace symlink: symlink final directory was accepted")
+    except manager.ManagerError:
+        pass
+
+    captured: dict[str, Any] = {}
+    original_call = manager.subprocess.call
+
+    def fake_call(argv: list[str], *, env: dict[str, str], cwd: str) -> int:
+        captured["argv"] = argv
+        captured["env"] = env
+        captured["cwd"] = cwd
+        return 7
+
+    manager.subprocess.call = fake_call
+    try:
+        code = manager.launch(target, ["chat"], manager.resolve_launch_workspace(str(workspace), tmp))
+    finally:
+        manager.subprocess.call = original_call
+    if code != 7:
+        errors.append(f"launch workspace cwd: child exit code was not forwarded: {code}")
+    if captured.get("cwd") != str(workspace.resolve(strict=True)):
+        errors.append(f"launch workspace cwd: child cwd mismatch: {captured.get('cwd')!r}")
+    if captured.get("argv", [None])[1:] != [manager.MANAGED_LAUNCH_ENGINE_ARGUMENT, "chat"]:
+        errors.append(f"launch workspace argv: launch arguments mismatch: {captured.get('argv')!r}")
+
+    blocked = [
+        "--workspace",
+        "--workspace=/tmp",
+        "--project",
+        "--project=/tmp",
+        "--cwd",
+        "--cwd=/tmp",
+        "--directory",
+        "--directory=/tmp",
+        "--folder",
+        "--folder=/tmp",
+        "-C",
+        "-C/tmp",
+    ]
+    for option in blocked:
+        try:
+            manager.launch(target, [option], workspace)
+            errors.append(f"launch workspace override {option}: override was accepted")
+        except manager.ManagerError:
+            pass
+
+
 def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
     target = (tmp / "launch-lock").resolve(strict=False)
     prepare_managed_target(manager, target)
@@ -2838,6 +2948,7 @@ def run_public_manager_regressions(errors: list[str]) -> None:
             run_external_lock_stage_recovery_regressions(manager, tmp, errors)
             run_stamp_provenance_regressions(manager, tmp, errors)
             run_launch_runtime_symlink_regressions(manager, tmp, errors)
+            run_launch_workspace_regression(manager, tmp, errors)
             run_launch_lock_regression(manager, tmp, errors)
             run_external_lock_internal_rename_regression(manager, tmp, errors)
             run_external_lock_handover_regression(manager, tmp, errors)

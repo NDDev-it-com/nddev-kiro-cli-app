@@ -188,7 +188,13 @@
     "software_launcher_artifact_immutable": true,
     "same_uid_malicious_process_not_sandboxed": true,
     "launch_executable_revalidated_before_handoff": true,
-    "launch_runtime_directories_target_relative_owner_private": true
+    "launch_runtime_directories_target_relative_owner_private": true,
+    "workspace_argument": "--workspace",
+    "workspace_default": "captured-caller-cwd",
+    "workspace_must_be_existing_absolute_accessible_directory": true,
+    "workspace_passed_as_child_cwd": true,
+    "native_workspace_argument": null,
+    "native_workspace_argument_status": "unsupported-by-official-cli-reference"
   },
   "software_installation": {
     "manager_install_mode": "target-owned-official-artifact",

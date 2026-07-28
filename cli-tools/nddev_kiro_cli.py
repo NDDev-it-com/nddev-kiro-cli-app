@@ -147,11 +147,16 @@ MANAGED_LAUNCH_ENGINE_STATUS = "early-access-required"
 MANAGED_LAUNCH_BLOCKED_OPTIONS = (
     "--agent",
     "--classic",
+    "--cwd",
+    "--directory",
+    "--folder",
     "--no-interactive",
+    "--project",
     "--require-mcp-startup",
     "--trust-all-tools",
     "--trust-tools",
     "--v3",
+    "--workspace",
 )
 MANAGED_LAUNCH_BLOCKED_COMMANDS = (
     "agent",
@@ -4213,9 +4218,39 @@ def reject_managed_launch_overrides(child_args: list[str]) -> None:
             option = argument.split("=", 1)[0]
             if option in blocked_options:
                 fail(f"launch refuses managed-scope Kiro CLI option: {option}")
+        elif argument.startswith("-C"):
+            fail("launch refuses managed-scope Kiro CLI option: -C")
 
 
-def launch(target: Path, child_args: list[str]) -> int:
+def capture_caller_workspace() -> Path:
+    try:
+        return Path.cwd()
+    except OSError as exc:
+        fail(f"cannot capture caller workspace: {exc}")
+
+
+def resolve_launch_workspace(raw_workspace: str | None, caller_workspace: Path) -> Path:
+    workspace = caller_workspace if raw_workspace is None else Path(raw_workspace).expanduser()
+    if not workspace.is_absolute():
+        fail("--workspace must be an absolute path")
+    info = require_directory(workspace, "launch workspace")
+    if not os.access(workspace, os.R_OK | os.X_OK):
+        fail("launch workspace must be accessible")
+    try:
+        resolved = workspace.resolve(strict=True)
+    except OSError as exc:
+        fail(f"cannot resolve launch workspace: {exc}")
+    resolved_info = require_directory(resolved, "launch workspace")
+    if identity_of(info) != identity_of(resolved_info):
+        raise ConcurrentTargetChange("launch workspace changed while it was resolved")
+    if not os.access(resolved, os.R_OK | os.X_OK):
+        fail("launch workspace must be accessible")
+    return resolved
+
+
+def launch(target: Path, child_args: list[str], workspace: Path | None = None) -> int:
+    if workspace is None:
+        workspace = resolve_launch_workspace(None, capture_caller_workspace())
     reject_managed_launch_overrides(child_args)
     with target_lock(target, create_target=False):
         require_clean_managed(target)
@@ -4223,7 +4258,7 @@ def launch(target: Path, child_args: list[str]) -> int:
         env = build_launch_env(target)
         executable = revalidate_software_executable(target)
         launch_args = [MANAGED_LAUNCH_ENGINE_ARGUMENT, *child_args]
-        return subprocess.call([str(executable), *launch_args], env=env)
+        return subprocess.call([str(executable), *launch_args], env=env, cwd=str(workspace))
 
 
 def emit(payload: dict[str, Any] | list[Any], *, as_json: bool) -> None:
@@ -4272,6 +4307,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     launch_parser = subparsers.add_parser("launch")
     launch_parser.add_argument("--target")
+    launch_parser.add_argument("--workspace")
     launch_parser.add_argument("child_args", nargs=argparse.REMAINDER)
     return parser.parse_args(argv)
 
@@ -4283,6 +4319,7 @@ def wants_json(argv: list[str]) -> bool:
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     try:
+        caller_workspace = capture_caller_workspace()
         args = parse_args(raw_argv)
         if args.command == "list":
             emit(
@@ -4369,7 +4406,8 @@ def main(argv: list[str] | None = None) -> int:
             child_args = list(args.child_args)
             if child_args and child_args[0] == "--":
                 child_args = child_args[1:]
-            return launch(resolve_target(args.target), child_args)
+            workspace = resolve_launch_workspace(args.workspace, caller_workspace)
+            return launch(resolve_target(args.target), child_args, workspace)
         fail(f"unsupported command: {args.command}")
     except ManagerError as exc:
         if wants_json(raw_argv):

@@ -43,6 +43,12 @@
     "software_immutable_directory_mode": "0500",
     "launch_executable_revalidated_before_handoff": true,
     "launch_runtime_directories_target_relative_owner_private": true,
+    "workspace_argument": "--workspace",
+    "workspace_default": "captured-caller-cwd",
+    "workspace_must_be_existing_absolute_accessible_directory": true,
+    "workspace_passed_as_child_cwd": true,
+    "native_workspace_argument": null,
+    "native_workspace_argument_status": "unsupported-by-official-cli-reference",
     "managed_launch_blocked_commands": [
       "agent",
       "diagnostic",
@@ -58,11 +64,16 @@
     "managed_launch_blocked_options": [
       "--agent",
       "--classic",
+      "--cwd",
+      "--directory",
+      "--folder",
       "--no-interactive",
+      "--project",
       "--require-mcp-startup",
       "--trust-all-tools",
       "--trust-tools",
-      "--v3"
+      "--v3",
+      "--workspace"
     ],
     "baseline": "references/kiro-cli-baseline.json"
   },
