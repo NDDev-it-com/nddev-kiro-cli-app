@@ -14,6 +14,11 @@ platform support, native discovery surfaces, managed projection, and runtime
 requirements. Use `cli-tools/nddev_kiro_cli.py list --json` for the active
 setup and permission-profile catalog.
 
+Product-supported hosts are macOS arm64/x64 and Ubuntu glibc arm64/x64. The
+baseline preserves the full official upstream asset catalog as vendor
+observation, including non-Ubuntu Linux, musl, and Windows assets, but those are
+not manager-supported product install targets.
+
 ## Usage
 
 List the content setup and permission profiles:
@@ -69,6 +74,8 @@ manager build reports `needs-update` instead of becoming hard-invalid, and
 stamp after strict target trust checks. `software-status --json` reports whether
 the target-owned software matches the current baseline owner; non-current
 software makes launch unavailable until repaired.
+Ubuntu support requires structured `os-release` identity `ID=ubuntu` and glibc;
+the public contract records no official Ubuntu version floor.
 
 Launch Kiro with the isolated target:
 

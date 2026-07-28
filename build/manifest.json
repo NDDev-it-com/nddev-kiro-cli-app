@@ -5,7 +5,7 @@
   "runtime": {
     "product": "Kiro CLI",
     "executable": "kiro-cli",
-    "current_version": "2.14.2",
+    "current_version": "2.15.0",
     "engine_argument": "--v3",
     "engine_status": "early-access-required",
     "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -151,5 +151,66 @@
       "steering/nddev-builder.md"
     ]
   },
-  "public_validator": "cli-tools/validate_public_contracts.py"
+  "public_validator": "cli-tools/validate_public_contracts.py",
+  "software_distribution": {
+    "supported_platforms": [
+      "macos-arm64",
+      "macos-x64",
+      "ubuntu-glibc-arm64",
+      "ubuntu-glibc-x64"
+    ],
+    "vendor_observed_platforms": [
+      "universal-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc"
+    ],
+    "unsupported_platforms": [
+      "windows",
+      "non-ubuntu-linux",
+      "linux-musl",
+      "unsupported-architecture"
+    ],
+    "platform_detection": "platform.system + platform.machine + platform.freedesktop_os_release + platform.libc_ver",
+    "public_platform_override_arguments": [],
+    "official_ubuntu_version_floor": null,
+    "official_ubuntu_glibc_floor": null,
+    "product_host_package_map": {
+      "macos-arm64": {
+        "vendor_target_triple": "universal-apple-darwin",
+        "vendor_os": "macos",
+        "vendor_architecture": "universal",
+        "vendor_file_type": "dmg",
+        "vendor_variant": "full",
+        "download": "2.15.0/Kiro CLI.dmg"
+      },
+      "macos-x64": {
+        "vendor_target_triple": "universal-apple-darwin",
+        "vendor_os": "macos",
+        "vendor_architecture": "universal",
+        "vendor_file_type": "dmg",
+        "vendor_variant": "full",
+        "download": "2.15.0/Kiro CLI.dmg"
+      },
+      "ubuntu-glibc-arm64": {
+        "vendor_target_triple": "aarch64-unknown-linux-gnu",
+        "vendor_os": "linux",
+        "vendor_architecture": "aarch64",
+        "vendor_file_type": "zip",
+        "vendor_variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux.zip"
+      },
+      "ubuntu-glibc-x64": {
+        "vendor_target_triple": "x86_64-unknown-linux-gnu",
+        "vendor_os": "linux",
+        "vendor_architecture": "x86_64",
+        "vendor_file_type": "zip",
+        "vendor_variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux.zip"
+      }
+    },
+    "current_artifacts_ref": "references/kiro-cli-baseline.json:install_manifest.packages"
+  }
 }

@@ -45,7 +45,7 @@
     "stamp_file": "NDDEV-KIRO-CLI-SETUP.json",
     "stamp_schema": 2,
     "legacy_stamp_schema": 1,
-    "backup_schema": 2,
+    "backup_schema": 3,
     "legacy_backup_schema": 1,
     "backup_slots": 10,
     "new_target_mode": "0700",
@@ -385,19 +385,21 @@
     "transaction_parent_policy": "owner-private-or-sticky-same-filesystem",
     "official_manifest": {
       "url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
-      "version": "2.14.2",
-      "sha256": "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe",
+      "version": "2.15.0",
+      "sha256": "30c3b6e497117ae29307ce06e7049e83168b7e52c468f3f5d24027a73022b5ed",
       "size": 9313
     },
     "supported_platforms": [
-      "macos-universal-dmg",
-      "linux-x86_64-glibc-zip",
-      "linux-aarch64-glibc-zip",
-      "linux-x86_64-musl-zip",
-      "linux-aarch64-musl-zip"
+      "macos-arm64",
+      "macos-x64",
+      "ubuntu-glibc-arm64",
+      "ubuntu-glibc-x64"
     ],
     "unsupported_platforms": [
-      "windows"
+      "windows",
+      "non-ubuntu-linux",
+      "linux-musl",
+      "unsupported-architecture"
     ],
     "install_only_absent": true,
     "update_repairs_safe_partial": true,
@@ -425,11 +427,58 @@
       "limitations": [
         "macOS branch writes /Applications",
         "macOS branch launches the app after install",
-        "Linux branch installs into HOME/.local/bin and is only usable inside isolated staging"
+        "Ubuntu .deb flow uses the system package manager and is not target-owned",
+        "Generic Linux, musl, rpm, AppImage, tar, and Windows assets are vendor observations only"
       ]
     },
     "current_artifacts_ref": "references/kiro-cli-baseline.json:install_manifest.packages",
-    "integrity_pinned": true
+    "integrity_pinned": true,
+    "vendor_observed_platforms": [
+      "universal-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc"
+    ],
+    "platform_detection": "platform.system + platform.machine + platform.freedesktop_os_release + platform.libc_ver",
+    "public_platform_override_arguments": [],
+    "official_ubuntu_version_floor": null,
+    "official_ubuntu_glibc_floor": null,
+    "product_host_package_map": {
+      "macos-arm64": {
+        "vendor_target_triple": "universal-apple-darwin",
+        "vendor_os": "macos",
+        "vendor_architecture": "universal",
+        "vendor_file_type": "dmg",
+        "vendor_variant": "full",
+        "download": "2.15.0/Kiro CLI.dmg"
+      },
+      "macos-x64": {
+        "vendor_target_triple": "universal-apple-darwin",
+        "vendor_os": "macos",
+        "vendor_architecture": "universal",
+        "vendor_file_type": "dmg",
+        "vendor_variant": "full",
+        "download": "2.15.0/Kiro CLI.dmg"
+      },
+      "ubuntu-glibc-arm64": {
+        "vendor_target_triple": "aarch64-unknown-linux-gnu",
+        "vendor_os": "linux",
+        "vendor_architecture": "aarch64",
+        "vendor_file_type": "zip",
+        "vendor_variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux.zip"
+      },
+      "ubuntu-glibc-x64": {
+        "vendor_target_triple": "x86_64-unknown-linux-gnu",
+        "vendor_os": "linux",
+        "vendor_architecture": "x86_64",
+        "vendor_file_type": "zip",
+        "vendor_variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux.zip"
+      }
+    }
   },
   "migration": {
     "legacy_setup_ids": [

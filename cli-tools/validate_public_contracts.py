@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import importlib.util
+import io
+import json
 import os
 import re
 import shlex
@@ -102,9 +103,7 @@ FOCUSED_SKILL_ROUTES = {
         "creator-checker-release.md",
     ],
 }
-FOCUSED_SKILL_FILES = [
-    f"skills/{name}/SKILL.md" for name in FOCUSED_SKILL_ROUTES
-]
+FOCUSED_SKILL_FILES = [f"skills/{name}/SKILL.md" for name in FOCUSED_SKILL_ROUTES]
 BUILDER_FILES = [
     "agents/nddev-builder.md",
     "skills/nddev-builder/SKILL.md",
@@ -140,11 +139,7 @@ EXPECTED_SETTINGS = {
     "chat.ui": "tui",
     "telemetry.enabled": False,
 }
-EXPECTED_FULL_AUTO_PERMISSIONS = (
-    "rules:\n"
-    "  - capability: all\n"
-    "    effect: allow\n"
-)
+EXPECTED_FULL_AUTO_PERMISSIONS = "rules:\n  - capability: all\n    effect: allow\n"
 EXPECTED_SAFE_PERMISSIONS = (
     "rules:\n"
     "  - capability: fs_read\n"
@@ -204,12 +199,28 @@ MANAGED_LAUNCH_BLOCKED_OPTIONS = [
     "--v3",
 ]
 SUPPORTED_PLATFORMS = [
-    "macos-universal-dmg",
-    "linux-x86_64-glibc-zip",
-    "linux-aarch64-glibc-zip",
-    "linux-x86_64-musl-zip",
-    "linux-aarch64-musl-zip",
+    "macos-arm64",
+    "macos-x64",
+    "ubuntu-glibc-arm64",
+    "ubuntu-glibc-x64",
 ]
+VENDOR_OBSERVED_PLATFORMS = [
+    "universal-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+]
+UNSUPPORTED_PLATFORMS = [
+    "windows",
+    "non-ubuntu-linux",
+    "linux-musl",
+    "unsupported-architecture",
+]
+PLATFORM_DETECTION = (
+    "platform.system + platform.machine + platform.freedesktop_os_release + platform.libc_ver"
+)
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 LOCK_ROOT_REF = "target/.nddev-runtime/locks/setup-manager.lock"
 LOCK_MECHANISM = "fcntl-flock-persistent-file"
@@ -233,8 +244,334 @@ TARGET_ENVIRONMENT_SCOPE = {
     "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log",
     "PATH": TRUSTED_SYSTEM_PATH,
 }
-MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
+MANIFEST_SHA256 = "30c3b6e497117ae29307ce06e7049e83168b7e52c468f3f5d24027a73022b5ed"
+MANIFEST_SIZE = 9313
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
+EXPECTED_INSTALL_PACKAGES = [
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "tarXz",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux.tar.xz",
+        "sha256": "6a4d44512c9b8727c548a68099afd7bc25817423a6f2a70c51a41ff074721d28",
+        "size": 492600764,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "deb",
+        "architecture": "x86_64",
+        "variant": "full",
+        "download": "2.15.0/kiro-cli.deb",
+        "sha256": "8fa1963e900588efa57a130b18b7e26692fd74631e86695fd167528b8dd35927",
+        "size": 584889868,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "tarGz",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux.tar.gz",
+        "sha256": "ebb13ddb9926c474cc17622321a27ba754d3a0dbfd06a96e637b66c12a1ad101",
+        "size": 554239818,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "appImage",
+        "architecture": "x86_64",
+        "variant": "full",
+        "download": "2.15.0/kiro-cli.appimage",
+        "sha256": "90e2845591254004c982edac303345e14fbeeead49cf22df49d762f1455cb0f2",
+        "size": 730604736,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "tarZst",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux.tar.zst",
+        "sha256": "4f802756809de8c4ec845c5bd0129454cc81bbf3c82ee762951ee94ea0711f9e",
+        "size": 502693053,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "zip",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux.zip",
+        "sha256": "1b3fe0d70b0fb371d243378f64e0c39c0a26102942a6d291d2d19a4886f06164",
+        "size": 554217247,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "tarXz",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux.tar.xz",
+        "sha256": "86ed14d5c2ddf02dd12104875266bac388a7da3fc945141b2bc2ea3129d0b387",
+        "size": 441426904,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "tarGz",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux.tar.gz",
+        "sha256": "a53f2f885120cd8b1bbf841ed494380542f6da24d8df72e69924bca7d0cd1087",
+        "size": 509164766,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "tarZst",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux.tar.zst",
+        "sha256": "7a16526992754ed99ff5b4e7bdec2d1b4a8ef931de98c100a5878e9ca116edb8",
+        "size": 457158009,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "universal-apple-darwin",
+        "os": "macos",
+        "fileType": "dmg",
+        "architecture": "universal",
+        "variant": "full",
+        "download": "2.15.0/Kiro CLI.dmg",
+        "sha256": "2da916f2647f1a97685dc0c1aaee9a412447e2235a5395b3399ccfaa3d5ad644",
+        "size": 681750654,
+        "channel": "stable",
+        "cliPath": "Contents/MacOS/kiro-cli",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "zip",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux.zip",
+        "sha256": "5b071cb12e2a3eab9f6ee48ea912bf8cab569ed9aa0c15c46abf572b57cdf8b2",
+        "size": 509173932,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "tarZst",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux-musl.tar.zst",
+        "sha256": "6578d980f0ace21a9a7fac3a5b13826d5004cdbee14d334340f2cc328e692ad2",
+        "size": 458702042,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "tarXz",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux-musl.tar.xz",
+        "sha256": "82fc5c7508b98177e6d96a58a788a4d985be4aa89e7d2a16d9858d461be3cff4",
+        "size": 448205424,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "tarGz",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux-musl.tar.gz",
+        "sha256": "7ed8c06dd3a4033642b6b5dad2b1845c18509a58b45f48512ba29d2dee20dbf9",
+        "size": 511187462,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "zip",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux-musl.zip",
+        "sha256": "2744d79cbae5ce86b9d4d24fdf8345c4bc9b571882aaf738f812a4b5abd1fbd5",
+        "size": 511195711,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "tarGz",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux-musl.tar.gz",
+        "sha256": "73c7fa139f314ec306b1e0983fea964bf744f151d100a1faea24afd56a144a2e",
+        "size": 508337456,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "tarXz",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux-musl.tar.xz",
+        "sha256": "0f0ceec46a6e488963d1f8a4f37a20ee685bc524f33577c8052a545843c2f1a8",
+        "size": 440604464,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "tarZst",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux-musl.tar.zst",
+        "sha256": "4d1bff56ef97d84c56159257f45ffe427f91397a01ad0c7118bee89db891e42d",
+        "size": 456128861,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "zip",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux-musl.zip",
+        "sha256": "df79880f45ed38564493c8da34017562f9070b7a0b74c6be3f52ea78524b2e04",
+        "size": 508339039,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "rpm",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux.rpm",
+        "sha256": "0cdef59910afac941a7afeb26ae825eec60b0ca8b4e72d0a5cedc5e1cf01e9b9",
+        "size": 508178921,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-gnu",
+        "os": "linux",
+        "fileType": "rpm",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux.rpm",
+        "sha256": "83797b363112d288d5335e910f17befb4569fed05cc5281cf235840c3d21b559",
+        "size": 553103262,
+        "channel": "stable",
+    },
+    {
+        "kind": "msi",
+        "targetTriple": "x86_64-pc-windows-msvc",
+        "os": "windows",
+        "fileType": "msi",
+        "architecture": "x86_64",
+        "variant": "full",
+        "download": "2.15.0/kiro-cli-x86_64-pc-windows-msvc.msi",
+        "sha256": "42cb4f90a89dcc3b3a91e1bf6a68c7576f33893507b9f2b0ab591c1da64925c3",
+        "size": 250130432,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "x86_64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "rpm",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux-musl.rpm",
+        "sha256": "40c5da0042928e23883e8f533033647cd2741689363b134cc2900b0bb3c0469c",
+        "size": 509994594,
+        "channel": "stable",
+    },
+    {
+        "kind": "deb",
+        "targetTriple": "aarch64-unknown-linux-musl",
+        "os": "linux",
+        "fileType": "rpm",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux-musl.rpm",
+        "sha256": "abe293c507f05bbe538924cf784ef7e0330d325f02165251d96fc750074242a7",
+        "size": 507383239,
+        "channel": "stable",
+    },
+]
+PRODUCT_HOST_PACKAGE_MAP = {
+    "macos-arm64": {
+        "vendor_target_triple": "universal-apple-darwin",
+        "vendor_os": "macos",
+        "vendor_architecture": "universal",
+        "vendor_file_type": "dmg",
+        "vendor_variant": "full",
+        "download": "2.15.0/Kiro CLI.dmg",
+    },
+    "macos-x64": {
+        "vendor_target_triple": "universal-apple-darwin",
+        "vendor_os": "macos",
+        "vendor_architecture": "universal",
+        "vendor_file_type": "dmg",
+        "vendor_variant": "full",
+        "download": "2.15.0/Kiro CLI.dmg",
+    },
+    "ubuntu-glibc-arm64": {
+        "vendor_target_triple": "aarch64-unknown-linux-gnu",
+        "vendor_os": "linux",
+        "vendor_architecture": "aarch64",
+        "vendor_file_type": "zip",
+        "vendor_variant": "headless",
+        "download": "2.15.0/kirocli-aarch64-linux.zip",
+    },
+    "ubuntu-glibc-x64": {
+        "vendor_target_triple": "x86_64-unknown-linux-gnu",
+        "vendor_os": "linux",
+        "vendor_architecture": "x86_64",
+        "vendor_file_type": "zip",
+        "vendor_variant": "headless",
+        "download": "2.15.0/kirocli-x86_64-linux.zip",
+    },
+}
 CLAUDE_BRIDGE_BYTES = b"@../AGENTS.md\n"
 RELEASE_WORKFLOW_USES = (
     "NDDev-it-com/ci-workflows/.github/workflows/release-supply-chain.yml"
@@ -464,15 +801,13 @@ def check_setup(errors: list[str]) -> None:
         routed = relative.removeprefix("skills/nddev-builder/")
         if f"`{routed}`" not in entry_skill:
             errors.append(
-                f"setups/{setup_id}/skills/nddev-builder/SKILL.md: "
-                f"missing route to {routed}"
+                f"setups/{setup_id}/skills/nddev-builder/SKILL.md: missing route to {routed}"
             )
     for skill_name, references in FOCUSED_SKILL_ROUTES.items():
         skill_uri = f"skill://~/.kiro/skills/{skill_name}/SKILL.md"
         if f"`{skill_uri}`" not in entry_skill:
             errors.append(
-                f"setups/{setup_id}/skills/nddev-builder/SKILL.md: "
-                f"missing route to {skill_uri}"
+                f"setups/{setup_id}/skills/nddev-builder/SKILL.md: missing route to {skill_uri}"
             )
         text = check_text(f"setups/{setup_id}/skills/{skill_name}/SKILL.md", errors)
         check_focused_skill(skill_name, references, text, errors)
@@ -566,6 +901,28 @@ def check_builder(builder: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: agent tools must be ['*']")
 
 
+def check_product_platform_scope(scope: Any, label: str, errors: list[str]) -> None:
+    if not isinstance(scope, dict):
+        errors.append(f"{label}: software platform scope required")
+        return
+    if scope.get("supported_platforms") != SUPPORTED_PLATFORMS:
+        errors.append(f"{label}: supported platforms mismatch")
+    if scope.get("vendor_observed_platforms") != VENDOR_OBSERVED_PLATFORMS:
+        errors.append(f"{label}: vendor observed platforms mismatch")
+    if scope.get("unsupported_platforms") != UNSUPPORTED_PLATFORMS:
+        errors.append(f"{label}: unsupported platforms mismatch")
+    if scope.get("platform_detection") != PLATFORM_DETECTION:
+        errors.append(f"{label}: platform detection mismatch")
+    if scope.get("public_platform_override_arguments") != []:
+        errors.append(f"{label}: public platform override arguments must be absent")
+    if scope.get("official_ubuntu_version_floor") is not None:
+        errors.append(f"{label}: Ubuntu version floor must be null")
+    if scope.get("official_ubuntu_glibc_floor") is not None:
+        errors.append(f"{label}: Ubuntu glibc floor must be null")
+    if scope.get("product_host_package_map") != PRODUCT_HOST_PACKAGE_MAP:
+        errors.append(f"{label}: product host package map mismatch")
+
+
 def check_manifest(manifest: dict[str, Any], version_text: str, errors: list[str]) -> None:
     if manifest.get("build_version") != version_text:
         errors.append("build/manifest.json: build_version mismatch")
@@ -584,6 +941,11 @@ def check_manifest(manifest: dict[str, Any], version_text: str, errors: list[str
         errors.append("build/manifest.json: runtime required")
     else:
         check_runtime(runtime, "build/manifest.json", errors)
+    check_product_platform_scope(
+        manifest.get("software_distribution"),
+        "build/manifest.json",
+        errors,
+    )
     check_builder(manifest.get("builder"), "build/manifest.json", errors)
 
 
@@ -628,7 +990,9 @@ def contract_required_runtime_roots(
         roots.update(release_path_roots_from_ref(runtime_compatibility.get("baseline_ref")))
     software_distribution = contract.get("software_distribution", {})
     if isinstance(software_distribution, dict):
-        roots.update(release_path_roots_from_ref(software_distribution.get("current_artifacts_ref")))
+        roots.update(
+            release_path_roots_from_ref(software_distribution.get("current_artifacts_ref"))
+        )
     profiles = contract.get("permission_profiles", {}).get("profiles", {})
     if isinstance(profiles, dict):
         for profile in profiles.values():
@@ -774,7 +1138,9 @@ def parse_mapping_block(
                 break
             match = re.match(rf"^ {{{child_indent}}}([^:]+):\s+(.+?)\s*$", item)
             if match is None:
-                errors.append(f".github/workflows/release.yml: malformed {key} entry: {item.strip()}")
+                errors.append(
+                    f".github/workflows/release.yml: malformed {key} entry: {item.strip()}"
+                )
                 continue
             result[match.group(1)] = match.group(2)
         if not result:
@@ -826,7 +1192,9 @@ def check_release_workflow(
     runtime_set = set(runtime_paths)
     if not runtime_set.issubset(archive_set):
         missing = sorted(runtime_set - archive_set)
-        errors.append(f".github/workflows/release.yml: runtime_paths not in archive_paths: {missing}")
+        errors.append(
+            f".github/workflows/release.yml: runtime_paths not in archive_paths: {missing}"
+        )
     if tracked is None:
         check_extracted_artifact_closure(archive_set, errors)
     else:
@@ -899,10 +1267,7 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}: software file mode mismatch")
     if software.get("software_executable_mode") != SOFTWARE_IMMUTABLE_EXECUTABLE_MODE:
         errors.append(f"{label}: software executable mode mismatch")
-    if software.get("supported_platforms") != SUPPORTED_PLATFORMS:
-        errors.append(f"{label}: supported platforms mismatch")
-    if software.get("unsupported_platforms") != ["windows"]:
-        errors.append(f"{label}: unsupported platforms mismatch")
+    check_product_platform_scope(software, label, errors)
     if software.get("trusted_bash") not in (None, "/bin/bash"):
         errors.append(f"{label}: trusted bash mismatch")
     if software.get("trusted_system_path") not in (None, TRUSTED_SYSTEM_PATH):
@@ -916,9 +1281,11 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
     if not isinstance(manifest_pin, dict):
         errors.append(f"{label}: official manifest pin required")
     else:
+        if manifest_pin.get("version") != "2.15.0":
+            errors.append(f"{label}: manifest version mismatch")
         if manifest_pin.get("sha256") != MANIFEST_SHA256:
             errors.append(f"{label}: manifest sha256 mismatch")
-        if manifest_pin.get("size") != 9313:
+        if manifest_pin.get("size") != MANIFEST_SIZE:
             errors.append(f"{label}: manifest size mismatch")
     installer = software.get("official_vendor_installer")
     if not isinstance(installer, dict):
@@ -926,7 +1293,10 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
     else:
         if installer.get("sha256") != INSTALLER_SHA256:
             errors.append(f"{label}: installer sha256 mismatch")
-        if installer.get("target_owned") is not False or installer.get("used_by_manager") is not False:
+        if (
+            installer.get("target_owned") is not False
+            or installer.get("used_by_manager") is not False
+        ):
             errors.append(f"{label}: installer limitation mismatch")
 
 
@@ -944,6 +1314,10 @@ def check_contract(contract: dict[str, Any], errors: list[str]) -> None:
         errors.append("config/nddev-contract.json: stamp_schema mismatch")
     if managed_state.get("legacy_stamp_schema") != 1:
         errors.append("config/nddev-contract.json: legacy stamp schema mismatch")
+    if managed_state.get("backup_schema") != 3:
+        errors.append("config/nddev-contract.json: backup schema mismatch")
+    if managed_state.get("legacy_backup_schema") != 1:
+        errors.append("config/nddev-contract.json: legacy backup schema mismatch")
     if managed_state.get("existing_target_mode") != "0700":
         errors.append("config/nddev-contract.json: existing target mode mismatch")
     if managed_state.get("runtime_state_root") != ".nddev-runtime":
@@ -1081,7 +1455,7 @@ def check_baseline(
     version: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    if baseline.get("verified_on") != "2026-07-27":
+    if baseline.get("verified_on") != "2026-07-28":
         errors.append("references/kiro-cli-baseline.json: verified_on mismatch")
     if version is not None and baseline.get("release", {}).get("version") != version.get(
         "kiro_cli_current"
@@ -1150,8 +1524,10 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: install script sha256 mismatch")
     if release.get("install_manifest_sha256") != MANIFEST_SHA256:
         errors.append("references/kiro-cli-baseline.json: install manifest sha256 mismatch")
-    if release.get("install_manifest_size") != 9313:
+    if release.get("install_manifest_size") != MANIFEST_SIZE:
         errors.append("references/kiro-cli-baseline.json: install manifest size mismatch")
+    if baseline.get("install_manifest", {}).get("version") != "2.15.0":
+        errors.append("references/kiro-cli-baseline.json: install manifest version mismatch")
     software = baseline.get("software_installation")
     if not isinstance(software, dict):
         errors.append("references/kiro-cli-baseline.json: software installation missing")
@@ -1169,13 +1545,19 @@ def check_baseline(
         if software.get("external_lock_filename") != EXTERNAL_LOCK_FILENAME_REF:
             errors.append("references/kiro-cli-baseline.json: external lock filename mismatch")
         if software.get("external_lock_file_persistent") is not True:
-            errors.append("references/kiro-cli-baseline.json: persistent external lock file missing")
+            errors.append(
+                "references/kiro-cli-baseline.json: persistent external lock file missing"
+            )
         if software.get("external_lock_file_mode") != LOCK_FILE_MODE:
             errors.append("references/kiro-cli-baseline.json: external lock file mode mismatch")
         if software.get("external_lock_binding_schema") != 1:
-            errors.append("references/kiro-cli-baseline.json: external lock binding schema mismatch")
+            errors.append(
+                "references/kiro-cli-baseline.json: external lock binding schema mismatch"
+            )
         if software.get("external_lock_acquired_before_target_inspection") is not True:
-            errors.append("references/kiro-cli-baseline.json: external lock preflight ordering mismatch")
+            errors.append(
+                "references/kiro-cli-baseline.json: external lock preflight ordering mismatch"
+            )
         if software.get("external_lock_never_unlinked") is not True:
             errors.append("references/kiro-cli-baseline.json: external lock unlink policy mismatch")
         if software.get("lock_acquisition_order") != ["external", "internal"]:
@@ -1200,10 +1582,11 @@ def check_baseline(
             errors.append("references/kiro-cli-baseline.json: trusted system PATH mismatch")
         if software.get("official_vendor_installer_supported") is not False:
             errors.append("references/kiro-cli-baseline.json: installer limitation missing")
-        if software.get("supported_platforms") != SUPPORTED_PLATFORMS:
-            errors.append("references/kiro-cli-baseline.json: supported platforms mismatch")
-        if software.get("unsupported_platforms") != ["windows"]:
-            errors.append("references/kiro-cli-baseline.json: unsupported platforms mismatch")
+        check_product_platform_scope(
+            software,
+            "references/kiro-cli-baseline.json",
+            errors,
+        )
         if software.get("update_installs_absent") is not False:
             errors.append("references/kiro-cli-baseline.json: absent update must be disabled")
         if software.get("absent_update_behavior") != "domain-error-install-first":
@@ -1213,15 +1596,25 @@ def check_baseline(
         if software.get("source_override_arguments") != []:
             errors.append("references/kiro-cli-baseline.json: source overrides must be absent")
         if software.get("test_source_environment_switches") != []:
-            errors.append("references/kiro-cli-baseline.json: test source env switches must be absent")
+            errors.append(
+                "references/kiro-cli-baseline.json: test source env switches must be absent"
+            )
         if software.get("manager_build_version_mismatch") != "needs-update":
-            errors.append("references/kiro-cli-baseline.json: manager build mismatch behavior mismatch")
+            errors.append(
+                "references/kiro-cli-baseline.json: manager build mismatch behavior mismatch"
+            )
         if software.get("remove_tolerates_missing_or_malformed_stamp_after_trust") is not True:
-            errors.append("references/kiro-cli-baseline.json: malformed stamp remove behavior mismatch")
+            errors.append(
+                "references/kiro-cli-baseline.json: malformed stamp remove behavior mismatch"
+            )
         if software.get("status_launch_allowed_requires_clean_software") is not True:
-            errors.append("references/kiro-cli-baseline.json: launch_allowed software precondition missing")
+            errors.append(
+                "references/kiro-cli-baseline.json: launch_allowed software precondition missing"
+            )
         if software.get("stamp_provenance_bound_to_current_baseline") is not True:
-            errors.append("references/kiro-cli-baseline.json: software stamp provenance binding missing")
+            errors.append(
+                "references/kiro-cli-baseline.json: software stamp provenance binding missing"
+            )
         if software.get("software_launcher_artifact_immutable") is not True:
             errors.append("references/kiro-cli-baseline.json: immutable launcher artifact missing")
         if software.get("software_parent_mode") != SOFTWARE_IMMUTABLE_DIR_MODE:
@@ -1237,6 +1630,8 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: install packages missing")
     elif not all(isinstance(item, dict) and item.get("sha256") for item in packages):
         errors.append("references/kiro-cli-baseline.json: package sha256 missing")
+    elif packages != EXPECTED_INSTALL_PACKAGES:
+        errors.append("references/kiro-cli-baseline.json: install package catalog mismatch")
 
 
 def check_manager_source(text: str, errors: list[str]) -> None:
@@ -1244,7 +1639,9 @@ def check_manager_source(text: str, errors: list[str]) -> None:
         if token in text:
             errors.append(f"cli-tools/nddev_kiro_cli.py: disallowed test/source switch {token!r}")
     if "def write_complete(" not in text or "written <= 0" not in text:
-        errors.append("cli-tools/nddev_kiro_cli.py: complete write loop must reject no-progress writes")
+        errors.append(
+            "cli-tools/nddev_kiro_cli.py: complete write loop must reject no-progress writes"
+        )
 
 
 def check_claude_bridge(errors: list[str]) -> None:
@@ -1318,7 +1715,7 @@ def private_dir(manager: Any, path: Path) -> None:
 
 
 def fake_package(manager: Any) -> Any:
-    return manager.select_baseline_package("linux", "x86_64", "glibc")
+    return manager.select_baseline_package("ubuntu", "x86_64", "glibc")
 
 
 def install_fake_software(manager: Any, target: Path, script: str) -> Path:
@@ -1363,7 +1760,9 @@ def assert_status_blocks_launch(
 ) -> None:
     status = manager.software_status(target)
     if status.get("state") != expected_state:
-        errors.append(f"{label}: expected software state {expected_state}, got {status.get('state')}")
+        errors.append(
+            f"{label}: expected software state {expected_state}, got {status.get('state')}"
+        )
     if expected_drift not in status.get("drift", []):
         errors.append(f"{label}: expected drift {expected_drift!r}, got {status.get('drift')}")
     managed_status = manager.current_status(target)
@@ -1489,7 +1888,7 @@ def write_external_lock_seed(manager: Any, lock: Path, content: bytes) -> None:
 def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
     cases = [
         ("malformed", b'{"schema_version": '),
-        ("non-object", b'[]\n'),
+        ("non-object", b"[]\n"),
     ]
     for label, content in cases:
         target = (tmp / f"external-lock-binding-{label}").resolve(strict=False)
@@ -1500,9 +1899,7 @@ def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[
                 errors.append(f"external lock binding {label}: invalid binding was accepted")
         except manager.ManagerError as exc:
             expected = (
-                "cannot read valid JSON"
-                if label == "malformed"
-                else "must contain a JSON object"
+                "cannot read valid JSON" if label == "malformed" else "must contain a JSON object"
             )
             if expected not in str(exc):
                 errors.append(f"external lock binding {label}: wrong rejection: {exc}")
@@ -1527,7 +1924,11 @@ def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str])
     script = f"#!/bin/sh\nprintf run > {shlex.quote(str(marker))}\nexit 0\n"
     stamp_path = install_fake_software(manager, target, script)
 
-    mutate_stamp(manager, stamp_path, lambda stamp: stamp["package"].__setitem__("download", "2.14.2/tampered.zip"))
+    mutate_stamp(
+        manager,
+        stamp_path,
+        lambda stamp: stamp["package"].__setitem__("download", "tampered/kiro.zip"),
+    )
     assert_status_blocks_launch(
         manager,
         target,
@@ -1540,7 +1941,9 @@ def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str])
 
     marker.unlink(missing_ok=True)
     stamp_path = install_fake_software(manager, target, script)
-    mutate_stamp(manager, stamp_path, lambda stamp: stamp["package"].__setitem__("sha256", "0" * 64))
+    mutate_stamp(
+        manager, stamp_path, lambda stamp: stamp["package"].__setitem__("sha256", "0" * 64)
+    )
     assert_status_blocks_launch(
         manager,
         target,
@@ -1601,7 +2004,9 @@ def run_launch_runtime_symlink_regressions(manager: Any, tmp: Path, errors: list
         except manager.ManagerError:
             pass
         if marker.exists():
-            errors.append(f"launch runtime {name}: child executable ran through symlinked runtime root")
+            errors.append(
+                f"launch runtime {name}: child executable ran through symlinked runtime root"
+            )
 
 
 def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -1617,11 +2022,7 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
     runtime_files = {
         "home": target / manager.NDDEV_RUNTIME_DIR / "home" / "nddev-runtime-write",
         "tmp": target / manager.NDDEV_RUNTIME_DIR / "tmp" / "nddev-runtime-write",
-        "xdg_config": target
-        / manager.NDDEV_RUNTIME_DIR
-        / "xdg"
-        / "config"
-        / "nddev-runtime-write",
+        "xdg_config": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "config" / "nddev-runtime-write",
         "xdg_data": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "data" / "nddev-runtime-write",
         "xdg_state": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "state" / "nddev-runtime-write",
         "xdg_cache": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "cache" / "nddev-runtime-write",
@@ -1630,17 +2031,17 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
     }
     script = (
         "#!/bin/sh\n"
-        "mkdir -p \"$HOME\" \"$TMPDIR\" \"$XDG_CONFIG_HOME\" \"$XDG_DATA_HOME\" "
-        "\"$XDG_STATE_HOME\" \"$XDG_CACHE_HOME\" \"$(dirname \"$KIRO_CHAT_LOG_FILE\")\" "
-        "\"$KIRO_HOME/settings/session\"\n"
-        "printf home > \"$HOME/nddev-runtime-write\"\n"
-        "printf tmp > \"$TMPDIR/nddev-runtime-write\"\n"
-        "printf config > \"$XDG_CONFIG_HOME/nddev-runtime-write\"\n"
-        "printf data > \"$XDG_DATA_HOME/nddev-runtime-write\"\n"
-        "printf state > \"$XDG_STATE_HOME/nddev-runtime-write\"\n"
-        "printf cache > \"$XDG_CACHE_HOME/nddev-runtime-write\"\n"
-        "printf log > \"$KIRO_CHAT_LOG_FILE\"\n"
-        "printf settings > \"$KIRO_HOME/settings/session/nddev-runtime-write\"\n"
+        'mkdir -p "$HOME" "$TMPDIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" '
+        '"$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$(dirname "$KIRO_CHAT_LOG_FILE")" '
+        '"$KIRO_HOME/settings/session"\n'
+        'printf home > "$HOME/nddev-runtime-write"\n'
+        'printf tmp > "$TMPDIR/nddev-runtime-write"\n'
+        'printf config > "$XDG_CONFIG_HOME/nddev-runtime-write"\n'
+        'printf data > "$XDG_DATA_HOME/nddev-runtime-write"\n'
+        'printf state > "$XDG_STATE_HOME/nddev-runtime-write"\n'
+        'printf cache > "$XDG_CACHE_HOME/nddev-runtime-write"\n'
+        'printf log > "$KIRO_CHAT_LOG_FILE"\n'
+        'printf settings > "$KIRO_HOME/settings/session/nddev-runtime-write"\n'
         f"rm -f {shlex.quote(str(lock_file))} 2>/dev/null || true\n"
         f"rmdir {shlex.quote(str(lock_root))} 2>/dev/null || true\n"
         f"if (printf replace > {shlex.quote(str(executable))}) 2>/dev/null; then "
@@ -1732,7 +2133,9 @@ def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> No
         errors.append(f"launch lock regression: lifecycle mutation failed after child exit: {exc}")
 
 
-def run_external_lock_internal_rename_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+def run_external_lock_internal_rename_regression(
+    manager: Any, tmp: Path, errors: list[str]
+) -> None:
     target = (tmp / "external-lock-internal-rename").resolve(strict=False)
     prepare_managed_target(manager, target)
     started = tmp / "internal-rename-child-started"
@@ -1768,7 +2171,9 @@ def run_external_lock_internal_rename_regression(manager: Any, tmp: Path, errors
         if rename_marker.read_text(encoding="utf-8") != "renamed":
             errors.append("internal lock rename regression: child could not rename lock root")
         if lock_root.exists():
-            errors.append("internal lock rename regression: lock root was not renamed during launch")
+            errors.append(
+                "internal lock rename regression: lock root was not renamed during launch"
+            )
         assert_locked_mutations_denied(manager, target, errors, "internal lock rename regression")
     finally:
         stop.write_text("stop\n", encoding="utf-8")
@@ -1848,7 +2253,9 @@ def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[
             errors.append("external lock handover regression: second holder did not attempt lock")
             return
         release_a.write_text("release\n", encoding="utf-8")
-        code_a = wait_for_child(child_a, 5, errors, "external lock handover regression first holder")
+        code_a = wait_for_child(
+            child_a, 5, errors, "external lock handover regression first holder"
+        )
         child_a_reaped = True
         if code_a not in (0, None):
             errors.append(
@@ -1869,17 +2276,23 @@ def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[
             )
         try:
             with manager.external_target_lock(target):
-                errors.append("external lock handover regression: third process acquired while second held lock")
+                errors.append(
+                    "external lock handover regression: third process acquired while second held lock"
+                )
         except manager.ManagerError as exc:
             if "target is already locked" not in str(exc):
-                errors.append(f"external lock handover regression: third process wrong rejection: {exc}")
+                errors.append(
+                    f"external lock handover regression: third process wrong rejection: {exc}"
+                )
         if not lock.is_file():
             errors.append("external lock handover regression: lock file was unlinked while held")
     finally:
         release_a.write_text("release\n", encoding="utf-8")
         release_b.write_text("release\n", encoding="utf-8")
         if child_b is not None:
-            code_b = wait_for_child(child_b, 5, errors, "external lock handover regression second holder")
+            code_b = wait_for_child(
+                child_b, 5, errors, "external lock handover regression second holder"
+            )
             if code_b not in (0, None):
                 errors.append(
                     "external lock handover regression: second holder failed "
@@ -1888,11 +2301,15 @@ def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[
         if not child_a_reaped:
             wait_for_child(child_a, 5, errors, "external lock handover regression first holder")
     if not lock.is_file():
-        errors.append("external lock handover regression: persistent lock file missing after release")
+        errors.append(
+            "external lock handover regression: persistent lock file missing after release"
+        )
     else:
         final_inode = f"{lock.lstat().st_dev}:{lock.lstat().st_ino}"
         if a_ready.exists() and final_inode != a_ready.read_text(encoding="utf-8").strip():
-            errors.append("external lock handover regression: persistent lock inode changed after release")
+            errors.append(
+                "external lock handover regression: persistent lock inode changed after release"
+            )
     try:
         with manager.external_target_lock(target):
             pass
@@ -2095,10 +2512,40 @@ def system_bootstrap_snapshot(manager: Any, resolver: Any) -> tuple[Any, ...]:
     return snapshot_bootstrap_tree(root)
 
 
+def run_side_effect_free_read_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "read-side-effect-free-target").resolve(strict=False)
+    before = system_bootstrap_snapshot(manager, manager.bootstrap_system_temp_root)
+    status = manager.current_status(target)
+    software_status = manager.software_status(target)
+    plan = manager.plan_setup(
+        target, manager.CONTENT_SETUP_ID, manager.DEFAULT_PERMISSION_PROFILE_ID
+    )
+    after = system_bootstrap_snapshot(manager, manager.bootstrap_system_temp_root)
+    if status.get("state") != "missing":
+        errors.append("status side-effect regression: missing target state mismatch")
+    if software_status.get("state") != "missing":
+        errors.append("software-status side-effect regression: missing target state mismatch")
+    if plan.get("mutates") is not False or plan.get("operation") != "install":
+        errors.append("plan side-effect regression: missing target plan mismatch")
+    if target.exists():
+        errors.append("read side-effect regression: status/plan created the target")
+    if after != before:
+        errors.append("read side-effect regression: status/plan changed bootstrap lock root")
+
+
 def run_public_manager_regressions(errors: list[str]) -> None:
     manager = load_manager_for_regressions(errors)
     if manager is None:
         return
+    for command in ("software-probe", "software-install", "software-update"):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                manager.parse_args([command, "--platform", "ubuntu"])
+        except SystemExit as exc:
+            if exc.code == 0:
+                errors.append(f"{command}: public platform override unexpectedly accepted")
+        else:
+            errors.append(f"{command}: public platform override unexpectedly parsed")
     original_bootstrap_root = manager.bootstrap_system_temp_root
     real_before = system_bootstrap_snapshot(manager, original_bootstrap_root)
     try:
@@ -2110,6 +2557,7 @@ def run_public_manager_regressions(errors: list[str]) -> None:
             if stat.S_IMODE(injected_system_root.lstat().st_mode) != 0o1777:
                 errors.append("public manager regressions: injected bootstrap root must be 01777")
             manager.bootstrap_system_temp_root = lambda: injected_system_root
+            run_side_effect_free_read_regressions(manager, tmp, errors)
             run_external_lock_binding_regressions(manager, tmp, errors)
             run_stamp_provenance_regressions(manager, tmp, errors)
             run_launch_runtime_symlink_regressions(manager, tmp, errors)
@@ -2141,8 +2589,8 @@ def main() -> int:
     if version is not None:
         if version.get("build_version") != version_text:
             errors.append("VERSION disagrees with build/version.json:build_version")
-        if version.get("kiro_cli_current") != "2.14.2":
-            errors.append("build/version.json: kiro_cli_current must be 2.14.2")
+        if version.get("kiro_cli_current") != "2.15.0":
+            errors.append("build/version.json: kiro_cli_current must be 2.15.0")
     if manifest is not None:
         check_manifest(manifest, version_text, errors)
     if contract is not None:
