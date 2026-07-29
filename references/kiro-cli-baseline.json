@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verified_on": "2026-07-27",
+  "verified_on": "2026-07-28",
   "verified_version_ref": "build/version.json:kiro_cli_current",
   "runtime": {
     "product": "Kiro CLI",
@@ -12,12 +12,12 @@
   },
   "release": {
     "channel": "stable",
-    "version": "2.14.2",
+    "version": "2.15.1",
     "changelog": "https://kiro.dev/changelog/cli/",
     "install_manifest_url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
-    "install_manifest_last_modified": "Fri, 24 Jul 2026 23:18:19 GMT",
-    "install_manifest_etag": "693de427dd7e307c662580da13913b27",
-    "install_manifest_sha256": "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe",
+    "install_manifest_last_modified": "Tue, 28 Jul 2026 19:19:09 GMT",
+    "install_manifest_etag": "eee978b080d6ed2ac6419bcaab09cf1a",
+    "install_manifest_sha256": "94d5c7c5eeaf2538f03a2296c51d908273411a853f5003126b57d1139ab000c7",
     "install_manifest_size": 9313,
     "install_script_url": "https://cli.kiro.dev/install",
     "install_script_last_modified": "Fri, 03 Jul 2026 01:34:06 GMT",
@@ -49,16 +49,16 @@
   },
   "install_manifest": {
     "url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
-    "version": "2.14.2",
+    "version": "2.15.1",
     "packages": [
       {
         "os": "macos",
         "architecture": "universal",
         "variant": "full",
         "fileType": "dmg",
-        "download": "2.14.2/Kiro CLI.dmg",
-        "sha256": "114d860ce88ae6244de82c6b7fd7bbf411a85665489184d9c9fc7cb9a3a8a81b",
-        "size": 681865214,
+        "download": "2.15.1/Kiro CLI.dmg",
+        "sha256": "e01f2a54389a75b47636671b58fe2cd4b204749e7a3391778ab9eb76ba59a13b",
+        "size": 682140633,
         "cliPath": "Contents/MacOS/kiro-cli"
       },
       {
@@ -66,36 +66,36 @@
         "architecture": "x86_64",
         "variant": "headless",
         "fileType": "zip",
-        "download": "2.14.2/kirocli-x86_64-linux.zip",
-        "sha256": "b144d4b1f8ca0083967fe13a5c35db18bd9543ecede6f1eec166f3b0a04f876a",
-        "size": 553914026
+        "download": "2.15.1/kirocli-x86_64-linux.zip",
+        "sha256": "f17d352eea8f67ed92f6585193ad6a49ef045d6400822ed9f0888021d14754ac",
+        "size": 554394320
       },
       {
         "os": "linux",
         "architecture": "aarch64",
         "variant": "headless",
         "fileType": "zip",
-        "download": "2.14.2/kirocli-aarch64-linux.zip",
-        "sha256": "c6a090372664db8a103b5de1addcf6322a845be853d8e8f38aab9c28a6de6866",
-        "size": 509046194
+        "download": "2.15.1/kirocli-aarch64-linux.zip",
+        "sha256": "83346f95bc8a986d4ba9270720082c36535d652350afd3799bedb9b0f15617cb",
+        "size": 509410555
       },
       {
         "os": "linux",
         "architecture": "x86_64",
         "variant": "headless",
         "fileType": "zip",
-        "download": "2.14.2/kirocli-x86_64-linux-musl.zip",
-        "sha256": "591df5d6f974c1b9c1c324a54b88f7e708f255f8cffdc6e8c61cbfa003ece832",
-        "size": 510905059
+        "download": "2.15.1/kirocli-x86_64-linux-musl.zip",
+        "sha256": "472462588f7205d116f505f1bf1ac0ec8d58b6e5562e8047abbc7623987af245",
+        "size": 511375428
       },
       {
         "os": "linux",
         "architecture": "aarch64",
         "variant": "headless",
         "fileType": "zip",
-        "download": "2.14.2/kirocli-aarch64-linux-musl.zip",
-        "sha256": "b7deac65336778a4edd656cc6fc4b5518372937d8e439df284f136a814c09b57",
-        "size": 507785106
+        "download": "2.15.1/kirocli-aarch64-linux-musl.zip",
+        "sha256": "a71bd0540739bb5211188dbe11b432d5b2589f7acc14d550a4731f98a717b61c",
+        "size": 508272955
       }
     ]
   },
@@ -194,7 +194,70 @@
     "workspace_must_be_existing_absolute_accessible_directory": true,
     "workspace_passed_as_child_cwd": true,
     "native_workspace_argument": null,
-    "native_workspace_argument_status": "unsupported-by-official-cli-reference"
+    "native_workspace_argument_status": "unsupported-by-official-cli-reference",
+    "managed_launch_policy": {
+      "official_grammar": "kiro-cli-2.15.1",
+      "allowed_read_forms": [
+        "agent list",
+        "agent show",
+        "agent validate",
+        "chat",
+        "chat --no-interactive",
+        "chat --resume",
+        "chat --effort VALUE",
+        "diagnostic",
+        "doctor",
+        "integrations status",
+        "inline status",
+        "inline show-customizations",
+        "mcp list",
+        "mcp status --name VALUE",
+        "settings list",
+        "settings list --all",
+        "settings KEY",
+        "theme --folder",
+        "theme --list",
+        "theme list",
+        "theme show",
+        "whoami"
+      ],
+      "blocked_mutation_forms": [
+        "inline enable",
+        "inline disable",
+        "inline set-customization",
+        "integrations install",
+        "integrations reinstall",
+        "integrations uninstall",
+        "issue",
+        "launch",
+        "login",
+        "logout",
+        "mcp add",
+        "mcp import",
+        "mcp remove",
+        "settings --delete",
+        "settings KEY VALUE",
+        "settings KEY=VALUE",
+        "theme THEME",
+        "update",
+        "version"
+      ],
+      "manager_owned_options": [
+        "--agent",
+        "--classic",
+        "--cwd",
+        "--directory",
+        "--project",
+        "--require-mcp-startup",
+        "--trust-all-tools",
+        "--trust-tools",
+        "--tui",
+        "--v3",
+        "--version",
+        "--workspace",
+        "-C"
+      ]
+    }
   },
   "software_installation": {
     "manager_install_mode": "target-owned-official-artifact",

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import importlib.util
+import json
 import os
 import re
 import shlex
@@ -182,38 +182,123 @@ EXPECTED_AGENT_FRONTMATTER = (
     "  - file://~/.kiro/steering/nddev-builder.md\n"
     'welcomeMessage: "NDDev builder context loaded."\n'
 )
-MANAGED_LAUNCH_BLOCKED_COMMANDS = [
-    "agent",
-    "diagnostic",
-    "integrations",
-    "launch",
-    "login",
-    "logout",
-    "mcp",
-    "settings",
-    "update",
-    "whoami",
-]
-MANAGED_LAUNCH_BLOCKED_OPTIONS = [
-    "--agent",
-    "--classic",
-    "--cwd",
-    "--directory",
-    "--folder",
-    "--no-interactive",
-    "--project",
-    "--require-mcp-startup",
-    "--trust-all-tools",
-    "--trust-tools",
-    "--v3",
-    "--workspace",
-]
+MANAGED_LAUNCH_POLICY = {
+    "official_grammar": "kiro-cli-2.15.1",
+    "allowed_read_forms": [
+        "agent list",
+        "agent show",
+        "agent validate",
+        "chat",
+        "chat --no-interactive",
+        "chat --resume",
+        "chat --effort VALUE",
+        "diagnostic",
+        "doctor",
+        "integrations status",
+        "inline status",
+        "inline show-customizations",
+        "mcp list",
+        "mcp status --name VALUE",
+        "settings list",
+        "settings list --all",
+        "settings KEY",
+        "theme --folder",
+        "theme --list",
+        "theme list",
+        "theme show",
+        "whoami",
+    ],
+    "blocked_mutation_forms": [
+        "inline enable",
+        "inline disable",
+        "inline set-customization",
+        "integrations install",
+        "integrations reinstall",
+        "integrations uninstall",
+        "issue",
+        "launch",
+        "login",
+        "logout",
+        "mcp add",
+        "mcp import",
+        "mcp remove",
+        "settings --delete",
+        "settings KEY VALUE",
+        "settings KEY=VALUE",
+        "theme THEME",
+        "update",
+        "version",
+    ],
+    "manager_owned_options": [
+        "--agent",
+        "--classic",
+        "--cwd",
+        "--directory",
+        "--project",
+        "--require-mcp-startup",
+        "--trust-all-tools",
+        "--trust-tools",
+        "--tui",
+        "--v3",
+        "--version",
+        "--workspace",
+        "-C",
+    ],
+}
 SUPPORTED_PLATFORMS = [
     "macos-universal-dmg",
     "linux-x86_64-glibc-zip",
     "linux-aarch64-glibc-zip",
     "linux-x86_64-musl-zip",
     "linux-aarch64-musl-zip",
+]
+EXPECTED_INSTALL_PACKAGES = [
+    {
+        "os": "macos",
+        "architecture": "universal",
+        "variant": "full",
+        "fileType": "dmg",
+        "download": "2.15.1/Kiro CLI.dmg",
+        "sha256": "e01f2a54389a75b47636671b58fe2cd4b204749e7a3391778ab9eb76ba59a13b",
+        "size": 682140633,
+        "cliPath": "Contents/MacOS/kiro-cli",
+    },
+    {
+        "os": "linux",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.15.1/kirocli-x86_64-linux.zip",
+        "sha256": "f17d352eea8f67ed92f6585193ad6a49ef045d6400822ed9f0888021d14754ac",
+        "size": 554394320,
+    },
+    {
+        "os": "linux",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.15.1/kirocli-aarch64-linux.zip",
+        "sha256": "83346f95bc8a986d4ba9270720082c36535d652350afd3799bedb9b0f15617cb",
+        "size": 509410555,
+    },
+    {
+        "os": "linux",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.15.1/kirocli-x86_64-linux-musl.zip",
+        "sha256": "472462588f7205d116f505f1bf1ac0ec8d58b6e5562e8047abbc7623987af245",
+        "size": 511375428,
+    },
+    {
+        "os": "linux",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.15.1/kirocli-aarch64-linux-musl.zip",
+        "sha256": "a71bd0540739bb5211188dbe11b432d5b2589f7acc14d550a4731f98a717b61c",
+        "size": 508272955,
+    },
 ]
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 LOCK_ROOT_REF = "target/.nddev-runtime/locks/setup-manager.lock"
@@ -238,7 +323,7 @@ TARGET_ENVIRONMENT_SCOPE = {
     "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log",
     "PATH": TRUSTED_SYSTEM_PATH,
 }
-MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
+MANIFEST_SHA256 = "94d5c7c5eeaf2538f03a2296c51d908273411a853f5003126b57d1139ab000c7"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
 CLAUDE_BRIDGE_BYTES = b"@../AGENTS.md\n"
 RELEASE_WORKFLOW_USES = (
@@ -487,14 +572,14 @@ def check_setup(errors: list[str]) -> None:
 
 
 def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> None:
+    if runtime.get("current_version") not in (None, "2.15.1"):
+        errors.append(f"{label}: current_version mismatch")
     if runtime.get("engine_argument") != "--v3":
         errors.append(f"{label}: launch must force --v3")
     if runtime.get("engine_status") != "early-access-required":
         errors.append(f"{label}: engine_status mismatch")
-    if runtime.get("managed_launch_blocked_commands") != MANAGED_LAUNCH_BLOCKED_COMMANDS:
-        errors.append(f"{label}: managed launch command guard mismatch")
-    if runtime.get("managed_launch_blocked_options") != MANAGED_LAUNCH_BLOCKED_OPTIONS:
-        errors.append(f"{label}: managed launch option guard mismatch")
+    if runtime.get("managed_launch_policy") != MANAGED_LAUNCH_POLICY:
+        errors.append(f"{label}: managed launch policy mismatch")
     if runtime.get("workspace_argument") != "--workspace":
         errors.append(f"{label}: launch workspace argument mismatch")
     if runtime.get("workspace_default") != "captured-caller-cwd":
@@ -1098,7 +1183,7 @@ def check_baseline(
     version: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    if baseline.get("verified_on") != "2026-07-27":
+    if baseline.get("verified_on") != "2026-07-28":
         errors.append("references/kiro-cli-baseline.json: verified_on mismatch")
     if version is not None and baseline.get("release", {}).get("version") != version.get(
         "kiro_cli_current"
@@ -1174,6 +1259,8 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: native workspace argument must be null")
     if authentication.get("native_workspace_argument_status") != "unsupported-by-official-cli-reference":
         errors.append("references/kiro-cli-baseline.json: native workspace status mismatch")
+    if authentication.get("managed_launch_policy") != MANAGED_LAUNCH_POLICY:
+        errors.append("references/kiro-cli-baseline.json: managed launch policy mismatch")
     release = baseline.get("release", {})
     if release.get("install_script_sha256") != INSTALLER_SHA256:
         errors.append("references/kiro-cli-baseline.json: install script sha256 mismatch")
@@ -1264,8 +1351,8 @@ def check_baseline(
     packages = baseline.get("install_manifest", {}).get("packages")
     if not isinstance(packages, list) or not packages:
         errors.append("references/kiro-cli-baseline.json: install packages missing")
-    elif not all(isinstance(item, dict) and item.get("sha256") for item in packages):
-        errors.append("references/kiro-cli-baseline.json: package sha256 missing")
+    elif packages != EXPECTED_INSTALL_PACKAGES:
+        errors.append("references/kiro-cli-baseline.json: exact install packages mismatch")
 
 
 def check_manager_source(text: str, errors: list[str]) -> None:
@@ -2255,7 +2342,7 @@ def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str])
     script = f"#!/bin/sh\nprintf run > {shlex.quote(str(marker))}\nexit 0\n"
     stamp_path = install_fake_software(manager, target, script)
 
-    mutate_stamp(manager, stamp_path, lambda stamp: stamp["package"].__setitem__("download", "2.14.2/tampered.zip"))
+    mutate_stamp(manager, stamp_path, lambda stamp: stamp["package"].__setitem__("download", "2.15.1/tampered.zip"))
     assert_status_blocks_launch(
         manager,
         target,
@@ -2409,6 +2496,104 @@ def run_launch_workspace_regression(manager: Any, tmp: Path, errors: list[str]) 
         try:
             manager.launch(target, [option], workspace)
             errors.append(f"launch workspace override {option}: override was accepted")
+        except manager.ManagerError:
+            pass
+
+
+def run_launch_grammar_regression(manager: Any, errors: list[str]) -> None:
+    allowed = [
+        [],
+        ["chat"],
+        ["chat", "--no-interactive", "x=y is prompt text"],
+        ["chat", "--resume"],
+        ["chat", "--resume-id=session-1"],
+        ["chat", "--effort", "high"],
+        ["chat", "--format=json"],
+        ["whoami"],
+        ["whoami", "--format=json"],
+        ["whoami", "-f", "json", "--verbose"],
+        ["diagnostic"],
+        ["diagnostic", "--format=json", "-v"],
+        ["diagnostic", "--force"],
+        ["doctor"],
+        ["doctor", "--all", "--strict", "--format=json"],
+        ["doctor", "-a", "-s", "-f", "json"],
+        ["theme", "--list"],
+        ["theme", "--folder"],
+        ["theme", "list"],
+        ["theme", "show"],
+        ["integrations", "status", "--format=json"],
+        ["integrations", "status", "-f", "json"],
+        ["inline", "status"],
+        ["inline", "show-customizations"],
+        ["mcp", "list"],
+        ["mcp", "status", "--name", "default"],
+        ["mcp", "status", "--name=default"],
+        ["settings", "list"],
+        ["settings", "list", "--all"],
+        ["settings", "list", "--all", "--format=json"],
+        ["settings", "telemetry.enabled"],
+        ["agent", "list"],
+        ["agent", "show", "nddev-builder"],
+        ["agent", "validate", "nddev-builder"],
+        ["explain", "x=y", "in", "code"],
+    ]
+    for args in allowed:
+        try:
+            manager.reject_managed_launch_overrides(list(args))
+        except manager.ManagerError as exc:
+            errors.append(f"launch grammar allowed {args!r}: rejected: {exc}")
+
+    blocked = [
+        ["--no-interactive"],
+        ["chat", "--agent", "nddev-builder"],
+        ["chat", "--trust-all-tools"],
+        ["chat", "--workspace=/tmp"],
+        ["chat", "--project", "/tmp"],
+        ["chat", "--cwd=/tmp"],
+        ["chat", "--directory", "/tmp"],
+        ["chat", "--classic"],
+        ["chat", "--tui"],
+        ["chat", "--v3"],
+        ["chat", "--version"],
+        ["chat", "-C", "/tmp"],
+        ["chat", "-C/tmp"],
+        ["update", "-y"],
+        ["login"],
+        ["logout"],
+        ["issue"],
+        ["launch"],
+        ["version"],
+        ["theme", "dark"],
+        ["theme", "--folder=/tmp"],
+        ["inline", "enable"],
+        ["inline", "disable"],
+        ["inline", "set-customization"],
+        ["integrations", "install"],
+        ["integrations", "reinstall"],
+        ["integrations", "uninstall"],
+        ["integrations", "status", "--silent"],
+        ["integrations", "status", "-s"],
+        ["mcp", "add"],
+        ["mcp", "remove"],
+        ["mcp", "import"],
+        ["mcp", "status"],
+        ["mcp", "status", "--name"],
+        ["settings", "telemetry.enabled", "true"],
+        ["settings", "telemetry.enabled=true"],
+        ["settings", "--delete", "telemetry.enabled"],
+        ["settings", "-d", "telemetry.enabled"],
+        ["settings", "open"],
+        ["settings", "list", "--delete=telemetry.enabled"],
+        ["diagnostic", "-y"],
+        ["theme", "-d"],
+        ["agent", "create"],
+        ["agent", "set-default"],
+    ]
+    for args in blocked:
+        try:
+            manager.reject_managed_launch_overrides(list(args))
+            errors.append(f"launch grammar blocked {args!r}: accepted")
         except manager.ManagerError:
             pass
 
@@ -2971,6 +3156,8 @@ def run_public_manager_regressions(errors: list[str]) -> None:
     manager = load_manager_for_regressions(errors)
     if manager is None:
         return
+    if getattr(manager, "MANAGED_LAUNCH_GRAMMAR_VERSION", None) != "kiro-cli-2.15.1":
+        errors.append("public manager regressions: launch grammar version mismatch")
     original_bootstrap_root = manager.bootstrap_system_temp_root
     real_before = system_bootstrap_snapshot(manager, original_bootstrap_root)
     try:
@@ -2992,6 +3179,7 @@ def run_public_manager_regressions(errors: list[str]) -> None:
             run_stamp_provenance_regressions(manager, tmp, errors)
             run_launch_runtime_symlink_regressions(manager, tmp, errors)
             run_launch_workspace_regression(manager, tmp, errors)
+            run_launch_grammar_regression(manager, errors)
             run_launch_lock_regression(manager, tmp, errors)
             run_external_lock_internal_rename_regression(manager, tmp, errors)
             run_external_lock_handover_regression(manager, tmp, errors)
@@ -3021,8 +3209,8 @@ def main() -> int:
     if version is not None:
         if version.get("build_version") != version_text:
             errors.append("VERSION disagrees with build/version.json:build_version")
-        if version.get("kiro_cli_current") != "2.14.2":
-            errors.append("build/version.json: kiro_cli_current must be 2.14.2")
+        if version.get("kiro_cli_current") != "2.15.1":
+            errors.append("build/version.json: kiro_cli_current must be 2.15.1")
     if manifest is not None:
         check_manifest(manifest, version_text, errors)
     if contract is not None:

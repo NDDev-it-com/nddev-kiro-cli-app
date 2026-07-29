@@ -144,30 +144,40 @@ DOWNLOAD_METADATA_MAX_BYTES = 4 * 1024 * 1024
 BACKUP_TREE_MAX_FILES = 256
 MANAGED_LAUNCH_ENGINE_ARGUMENT = "--v3"
 MANAGED_LAUNCH_ENGINE_STATUS = "early-access-required"
-MANAGED_LAUNCH_BLOCKED_OPTIONS = (
+MANAGED_LAUNCH_GRAMMAR_VERSION = "kiro-cli-2.15.1"
+MANAGED_LAUNCH_MANAGER_OWNED_OPTIONS = (
     "--agent",
     "--classic",
     "--cwd",
     "--directory",
-    "--folder",
-    "--no-interactive",
     "--project",
     "--require-mcp-startup",
+    "--tui",
     "--trust-all-tools",
     "--trust-tools",
     "--v3",
+    "--version",
     "--workspace",
 )
-MANAGED_LAUNCH_BLOCKED_COMMANDS = (
-    "agent",
-    "diagnostic",
-    "integrations",
+MANAGED_LAUNCH_MANAGER_OWNED_SHORT_PREFIXES = ("-C",)
+MANAGED_LAUNCH_BLOCKED_TOP_LEVEL_COMMANDS = (
+    "issue",
     "launch",
     "login",
     "logout",
+    "update",
+    "version",
+)
+MANAGED_LAUNCH_READ_ONLY_COMMANDS = (
+    "agent",
+    "chat",
+    "diagnostic",
+    "doctor",
+    "integrations",
+    "inline",
     "mcp",
     "settings",
-    "update",
+    "theme",
     "whoami",
 )
 SETTINGS_MANAGED_KEYS = (
@@ -3751,7 +3761,7 @@ def load_backup(
         fail("--backup must be between 0 and 9")
     ensure_target_directory(target, create=False)
     pool = ensure_backup_pool(target)
-    slot_dir = backup_pool(target) / str(slot)
+    slot_dir = pool / str(slot)
     validate_owner_private_tree(slot_dir, f"backup slot {slot}")
     envelope_path = slot_dir / BACKUP_NAME
     if envelope_path.is_symlink() or not envelope_path.is_file():
@@ -4237,21 +4247,247 @@ def require_clean_software(target: Path) -> Path:
     return revalidate_software_executable(target)
 
 
-def reject_managed_launch_overrides(child_args: list[str]) -> None:
-    if child_args:
-        first = child_args[0]
-        if first in MANAGED_LAUNCH_BLOCKED_COMMANDS:
-            fail(f"launch refuses managed-scope Kiro CLI command: {first}")
-    blocked_options = set(MANAGED_LAUNCH_BLOCKED_OPTIONS)
-    for argument in child_args:
+def launch_option_name(argument: str) -> str:
+    if argument.startswith("--"):
+        return argument.split("=", 1)[0]
+    if argument.startswith("-") and argument != "-":
+        return argument[:2]
+    return argument
+
+
+def split_launch_command_args(
+    command: str,
+    args: list[str],
+    *,
+    allowed_flags: set[str],
+    value_options: set[str],
+    optional_value_options: set[str] | None = None,
+) -> tuple[list[str], set[str]]:
+    optional_value_options = (
+        set() if optional_value_options is None else optional_value_options
+    )
+    positionals: list[str] = []
+    options: set[str] = set()
+    index = 0
+    while index < len(args):
+        argument = args[index]
         if argument == "--":
-            continue
+            positionals.extend(args[index + 1 :])
+            break
         if argument.startswith("--"):
-            option = argument.split("=", 1)[0]
-            if option in blocked_options:
-                fail(f"launch refuses managed-scope Kiro CLI option: {option}")
-        elif argument.startswith("-C"):
-            fail("launch refuses managed-scope Kiro CLI option: -C")
+            option, separator, _ = argument.partition("=")
+            if (
+                option not in allowed_flags
+                and option not in value_options
+                and option not in optional_value_options
+            ):
+                fail(f"launch refuses unsupported {command} option: {option}")
+            if option in allowed_flags and separator:
+                fail(f"launch refuses {command} flag with value: {option}")
+            options.add(option)
+            if option in value_options and not separator:
+                index += 1
+                if index >= len(args) or args[index].startswith("-"):
+                    fail(f"launch refuses {command} option without value: {option}")
+            elif option in optional_value_options and not separator and index + 1 < len(args):
+                next_argument = args[index + 1]
+                if next_argument != "--" and not next_argument.startswith("-"):
+                    index += 1
+            index += 1
+            continue
+        if argument.startswith("-") and argument != "-":
+            option = launch_option_name(argument)
+            if argument != option:
+                fail(f"launch refuses combined or attached short option: {argument}")
+            if (
+                option not in allowed_flags
+                and option not in value_options
+                and option not in optional_value_options
+            ):
+                fail(f"launch refuses unsupported {command} option: {option}")
+            options.add(option)
+            if option in value_options:
+                index += 1
+                if index >= len(args) or args[index].startswith("-"):
+                    fail(f"launch refuses {command} option without value: {option}")
+            elif option in optional_value_options and index + 1 < len(args):
+                next_argument = args[index + 1]
+                if next_argument != "--" and not next_argument.startswith("-"):
+                    index += 1
+            index += 1
+            continue
+        positionals.append(argument)
+        index += 1
+    return positionals, options
+
+
+def reject_launch_assignment(argument: str, command: str) -> None:
+    if "=" in argument and not argument.startswith("--"):
+        fail(f"launch refuses {command} assignment form: {argument}")
+
+
+def require_no_launch_positionals(command: str, positionals: list[str]) -> None:
+    if positionals:
+        fail(f"launch refuses positional arguments for {command}: {positionals[0]}")
+
+
+def validate_chat_launch_args(args: list[str]) -> None:
+    split_launch_command_args(
+        "chat",
+        args,
+        allowed_flags={
+            "--list-models",
+            "--list-sessions",
+            "--no-interactive",
+            "--resume",
+            "--resume-picker",
+            "--wrap",
+            "-r",
+        },
+        value_options={
+            "--effort",
+            "--format",
+            "--resume-id",
+        },
+    )
+
+
+def validate_read_only_launch_command(command: str, args: list[str]) -> None:
+    if command == "whoami":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--verbose", "-v"},
+            value_options={"--format", "-f"},
+        )
+        require_no_launch_positionals(command, positionals)
+        return
+    if command == "diagnostic":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--force", "--verbose", "-v"},
+            value_options={"--format", "-f"},
+        )
+        require_no_launch_positionals(command, positionals)
+        return
+    if command == "doctor":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--all", "--strict", "-a", "-s"},
+            value_options={"--format", "-f"},
+        )
+        require_no_launch_positionals(command, positionals)
+        return
+    if command == "theme":
+        positionals, options = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--folder", "--list"},
+            value_options=set(),
+        )
+        if positionals and positionals not in (["list"], ["show"]):
+            fail(f"launch refuses theme setter: {positionals[0]}")
+        if len(positionals) > 1:
+            fail(f"launch refuses extra theme argument: {positionals[1]}")
+        if not positionals and not options:
+            fail("launch refuses ambiguous theme command")
+        return
+    if command == "integrations":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags=set(),
+            value_options={"--format", "-f"},
+        )
+        if positionals != ["status"]:
+            fail("launch refuses integrations mutation or ambiguous command")
+        return
+    if command == "inline":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags=set(),
+            value_options={"--format", "-f"},
+        )
+        if not positionals or positionals[0] not in {"show-customizations", "status"}:
+            fail("launch refuses inline mutation or ambiguous command")
+        if len(positionals) > 1:
+            fail(f"launch refuses extra inline argument: {positionals[1]}")
+        return
+    if command == "agent":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags=set(),
+            value_options={"--format", "-f"},
+        )
+        if not positionals or positionals[0] not in {"list", "show", "validate"}:
+            fail("launch refuses agent mutation or ambiguous command")
+        if len(positionals) > 2:
+            fail(f"launch refuses extra agent argument: {positionals[2]}")
+        return
+    if command == "mcp":
+        positionals, options = split_launch_command_args(
+            command,
+            args,
+            allowed_flags=set(),
+            value_options={"--format", "--name", "-f"},
+        )
+        if positionals == ["list"]:
+            return
+        if positionals == ["status"] and "--name" in options:
+            return
+        fail("launch refuses mcp mutation or ambiguous command")
+    if command == "settings":
+        positionals, options = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--all"},
+            value_options={"--format", "-f"},
+        )
+        if "--all" in options and (not positionals or positionals[0] != "list"):
+            fail("launch refuses settings --all outside list")
+        for argument in positionals:
+            reject_launch_assignment(argument, command)
+        if positionals == ["list"]:
+            return
+        if len(positionals) == 1 and positionals[0] != "open":
+            return
+        fail("launch refuses settings mutation or ambiguous command")
+
+
+def reject_managed_launch_overrides(child_args: list[str]) -> None:
+    if not child_args:
+        return
+    command = child_args[0]
+    args = child_args[1:]
+    scan_args = args if command in MANAGED_LAUNCH_READ_ONLY_COMMANDS else child_args
+    for argument in scan_args:
+        if argument == "--":
+            break
+        if argument.startswith("--"):
+            option = launch_option_name(argument)
+            if option in MANAGED_LAUNCH_MANAGER_OWNED_OPTIONS:
+                fail(f"launch refuses manager-owned Kiro CLI option: {option}")
+        for prefix in MANAGED_LAUNCH_MANAGER_OWNED_SHORT_PREFIXES:
+            if argument.startswith(prefix):
+                fail(f"launch refuses manager-owned Kiro CLI option: {prefix}")
+    if command in MANAGED_LAUNCH_BLOCKED_TOP_LEVEL_COMMANDS:
+        fail(f"launch refuses managed-scope Kiro CLI command: {command}")
+    if command == "chat":
+        validate_chat_launch_args(args)
+        return
+    if command in MANAGED_LAUNCH_READ_ONLY_COMMANDS:
+        validate_read_only_launch_command(command, args)
+        return
+    if command.startswith("-"):
+        fail(
+            "launch refuses top-level Kiro CLI option without explicit chat: "
+            f"{launch_option_name(command)}"
+        )
+    reject_launch_assignment(command, "top-level")
 
 
 def capture_caller_workspace() -> Path:
