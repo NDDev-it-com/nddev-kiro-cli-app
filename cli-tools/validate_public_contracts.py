@@ -4,20 +4,11 @@
 from __future__ import annotations
 
 import ast
-import contextlib
-import hashlib
-import importlib.util
-import io
 import json
-import os
 import re
-import shlex
-import signal
 import stat
 import subprocess
 import sys
-import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -229,9 +220,7 @@ OFFICIAL_UBUNTU_GLIBC_FLOOR = {
     "ubuntu-glibc-arm64": "2.39",
     "ubuntu-glibc-x64": "2.34",
 }
-PLATFORM_DETECTION = (
-    "platform.system + platform.machine + platform.freedesktop_os_release or /etc/os-release + platform.libc_ver"
-)
+PLATFORM_DETECTION = "platform.system + platform.machine + platform.freedesktop_os_release or /etc/os-release + platform.libc_ver"
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 LOCK_ROOT_REF = "target/.nddev-runtime/locks/setup-manager.lock"
 LOCK_MECHANISM = "fcntl-flock-persistent-file"
@@ -276,7 +265,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux.tar.xz",
         "sha256": "a29da53c08174642aed1182b275443d9bc599866c15064cab4fcf7c8275da08c",
         "size": 492741300,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -288,7 +277,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux.tar.gz",
         "sha256": "ee7ff91894419b0ad9eb1e03535e32352ee938483912cc78f315648d7e4af648",
         "size": 554395785,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -300,7 +289,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kiro-cli.deb",
         "sha256": "0e78aa84789282b58899696bb21f98194ac66182a796dd40190ac33cfeff00b9",
         "size": 585058432,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -312,7 +301,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux.tar.zst",
         "sha256": "a1f89b0b66caae8fe685310c9b0dd4fb76071fa280d69b0c4c23acff6a558143",
         "size": 502845643,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -324,7 +313,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kiro-cli.appimage",
         "sha256": "952ed96b05cda54ccfa4ac8341b8142520720ba00c4150648173a5fdcedb165a",
         "size": 730768576,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -336,7 +325,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux.tar.gz",
         "sha256": "f09d2bb0d64892ba51eb8e438b77423fa6f7e94f2f86ca1a7e66b356ae4d116c",
         "size": 509411664,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -348,7 +337,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux.zip",
         "sha256": "f17d352eea8f67ed92f6585193ad6a49ef045d6400822ed9f0888021d14754ac",
         "size": 554394320,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -360,7 +349,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux.tar.xz",
         "sha256": "1c28931392868e485e1d8afd0bfee9a1330a85369073dd4c59982ad3312eb3bb",
         "size": 441558164,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -372,7 +361,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux.tar.zst",
         "sha256": "ae477a97a98dc484e4849a9599c91f05a534c7747016e3d9fac4073ee0ff9ddb",
         "size": 457317125,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -385,7 +374,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "sha256": "e01f2a54389a75b47636671b58fe2cd4b204749e7a3391778ab9eb76ba59a13b",
         "size": 682140633,
         "cliPath": "Contents/MacOS/kiro-cli",
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -397,7 +386,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux.zip",
         "sha256": "83346f95bc8a986d4ba9270720082c36535d652350afd3799bedb9b0f15617cb",
         "size": 509410555,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -409,7 +398,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux-musl.tar.gz",
         "sha256": "57f43591487f2952cc0c96d025ad23d2d1daf4c229f7db2e8fdfb4b88e0a9156",
         "size": 511391862,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -421,7 +410,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux-musl.tar.xz",
         "sha256": "ac05eb26af3ed47958105e1960e21fe3a7b95fc531d29f9f504593967ec6a6bc",
         "size": 448460316,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -433,7 +422,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux-musl.zip",
         "sha256": "472462588f7205d116f505f1bf1ac0ec8d58b6e5562e8047abbc7623987af245",
         "size": 511375428,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -445,7 +434,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux-musl.tar.zst",
         "sha256": "10036b30567f700ac26922912cae55e24af85f08503213d13f20db60d2a1ca02",
         "size": 458945159,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -457,7 +446,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux-musl.tar.gz",
         "sha256": "967683562a712b1881e6bc070f77e1a8c97f621862bb8b26ed81676879d1c8a1",
         "size": 508287841,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -469,7 +458,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux-musl.tar.xz",
         "sha256": "c8a44871a7fc7cf68cbb60a0f244748a60be332739d99829849a841a39427481",
         "size": 440625336,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -481,7 +470,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux-musl.tar.zst",
         "sha256": "946ee888f3132cef3cd41a02d65ac5abb702c2908585e2664bb505632ad42d6a",
         "size": 456147380,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -493,7 +482,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux-musl.zip",
         "sha256": "a71bd0540739bb5211188dbe11b432d5b2589f7acc14d550a4731f98a717b61c",
         "size": 508272955,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -505,7 +494,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux.rpm",
         "sha256": "ddcb8d55080d4aa30b28545df56369e9c1817f93a5cd1fbce036752f9aee5d01",
         "size": 553254751,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -517,7 +506,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux.rpm",
         "sha256": "b60084550651d5e6b1ee3e2df466c34ef27daf6ca8e4b2a4fc6d3fb267385aff",
         "size": 508443736,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "msi",
@@ -529,7 +518,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kiro-cli-x86_64-pc-windows-msvc.msi",
         "sha256": "aba54c18aa500d1daac90931c91c0d078d87be0adf197337b78a433d319c3d2b",
         "size": 250236928,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -541,7 +530,7 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-aarch64-linux-musl.rpm",
         "sha256": "d671bad4cc6279697082266a17e09a4bf7f2dd8408e569941c68d25e367aab5d",
         "size": 507308528,
-        "channel": "stable"
+        "channel": "stable",
     },
     {
         "kind": "deb",
@@ -553,8 +542,8 @@ EXPECTED_INSTALL_PACKAGES = [
         "download": "2.15.1/kirocli-x86_64-linux-musl.rpm",
         "sha256": "26dafe2ac0bf499e0b79205690d72c49745e2d8422a628cfcb56a966061f259c",
         "size": 510209086,
-        "channel": "stable"
-    }
+        "channel": "stable",
+    },
 ]
 PRODUCT_HOST_PACKAGE_MAP = {
     "macos-arm64": {
@@ -1794,974 +1783,6 @@ def check_claude_bridge(errors: list[str]) -> None:
         errors.append(".claude/CLAUDE.md bridge must exactly import ../AGENTS.md")
 
 
-def load_manager_for_regressions(errors: list[str]) -> Any | None:
-    path = ROOT / "cli-tools/nddev_kiro_cli.py"
-    try:
-        spec = importlib.util.spec_from_file_location("nddev_kiro_cli_public_regression", path)
-        if spec is None or spec.loader is None:
-            errors.append("cli-tools/nddev_kiro_cli.py: cannot build import spec")
-            return None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        original_dont_write_bytecode = sys.dont_write_bytecode
-        sys.dont_write_bytecode = True
-        try:
-            spec.loader.exec_module(module)
-        finally:
-            sys.dont_write_bytecode = original_dont_write_bytecode
-    except Exception as exc:
-        errors.append(f"cli-tools/nddev_kiro_cli.py: cannot import manager: {exc}")
-        return None
-    return module
-
-
-def regression_env() -> dict[str, str]:
-    return {
-        "PATH": TRUSTED_SYSTEM_PATH,
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-    }
-
-
-def private_dir(manager: Any, path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, manager.OWNER_DIR_MODE)
-
-
-def fake_package(manager: Any) -> Any:
-    return manager.select_baseline_package("ubuntu", "x86_64", "glibc")
-
-
-def install_fake_software(manager: Any, target: Path, script: str) -> Path:
-    target = target.resolve(strict=False)
-    root = target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME
-    if root.exists():
-        manager.make_software_parent_mutable(target)
-        manager.make_software_tree_mutable(root)
-    private_dir(manager, target / manager.NDDEV_RUNTIME_DIR)
-    private_dir(manager, target / manager.SOFTWARE_RUNTIME_DIR)
-    private_dir(manager, root)
-    private_dir(manager, root / "bin")
-    executable = root / "bin" / "kiro-cli"
-    executable.write_text(script, encoding="utf-8")
-    os.chmod(executable, 0o700)
-    package = fake_package(manager)
-    tree = manager.scan_software_tree(root, "bin/kiro-cli")
-    stamp = manager.software_stamp_payload(target, package, "bin/kiro-cli", tree)
-    manager.atomic_write(root / manager.SOFTWARE_STAMP_NAME, manager.canonical_json(stamp))
-    manager.harden_installed_software(target, "bin/kiro-cli")
-    return root / manager.SOFTWARE_STAMP_NAME
-
-
-def mutate_stamp(manager: Any, stamp_path: Path, mutator: Any) -> None:
-    root = stamp_path.parent
-    target = root.parent.parent.parent
-    manager.make_software_tree_mutable(root)
-    stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
-    mutator(stamp)
-    manager.atomic_write(stamp_path, manager.canonical_json(stamp))
-    manager.harden_installed_software(target, stamp["executable"]["relative_path"])
-
-
-def assert_status_blocks_launch(
-    manager: Any,
-    target: Path,
-    marker: Path,
-    expected_state: str,
-    expected_drift: str,
-    errors: list[str],
-    label: str,
-) -> None:
-    status = manager.software_status(target)
-    if status.get("state") != expected_state:
-        errors.append(
-            f"{label}: expected software state {expected_state}, got {status.get('state')}"
-        )
-    if expected_drift not in status.get("drift", []):
-        errors.append(f"{label}: expected drift {expected_drift!r}, got {status.get('drift')}")
-    managed_status = manager.current_status(target)
-    if managed_status.get("launch_allowed") is not False:
-        errors.append(f"{label}: launch_allowed must be false")
-    try:
-        manager.launch(target, [])
-        errors.append(f"{label}: launch unexpectedly succeeded")
-    except manager.ManagerError:
-        pass
-    if marker.exists():
-        errors.append(f"{label}: child executable ran despite blocked software state")
-
-
-def prepare_managed_target(manager: Any, target: Path) -> None:
-    manager.mutate_setup(
-        target,
-        manager.CONTENT_SETUP_ID,
-        manager.DEFAULT_PERMISSION_PROFILE_ID,
-        "install",
-    )
-
-
-def wait_for_path(path: Path, timeout: float) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if path.exists():
-            return True
-        time.sleep(0.05)
-    return path.exists()
-
-
-def status_returncode(status: int) -> int:
-    if os.WIFEXITED(status):
-        return os.WEXITSTATUS(status)
-    if os.WIFSIGNALED(status):
-        return -os.WTERMSIG(status)
-    return 125
-
-
-def wait_for_child(pid: int, timeout: float, errors: list[str], label: str) -> int | None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        finished, status = os.waitpid(pid, os.WNOHANG)
-        if finished == pid:
-            return status_returncode(status)
-        time.sleep(0.05)
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGTERM)
-    time.sleep(0.2)
-    finished, status = os.waitpid(pid, os.WNOHANG)
-    if finished == pid:
-        errors.append(f"{label}: child timed out and exited after SIGTERM")
-        return status_returncode(status)
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
-    _, status = os.waitpid(pid, 0)
-    errors.append(f"{label}: child timed out and required SIGKILL")
-    return status_returncode(status)
-
-
-def fork_launch(manager: Any, target: Path, error_file: Path) -> int:
-    pid = os.fork()
-    if pid == 0:
-        try:
-            code = manager.launch(target, [])
-            if not isinstance(code, int) or code < 0 or code > 120:
-                code = 1
-        except BaseException as exc:
-            with contextlib.suppress(Exception):
-                error_file.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
-            code = 125
-        os._exit(code)
-    return pid
-
-
-def assert_locked_mutations_denied(
-    manager: Any,
-    target: Path,
-    errors: list[str],
-    label: str,
-) -> None:
-    actions = [
-        (
-            "switch",
-            lambda: manager.mutate_setup(target, manager.CONTENT_SETUP_ID, "safe", "switch"),
-        ),
-        ("remove", lambda: manager.remove_setup(target)),
-        (
-            "install",
-            lambda: manager.mutate_setup(
-                target,
-                manager.CONTENT_SETUP_ID,
-                manager.DEFAULT_PERMISSION_PROFILE_ID,
-                "install",
-            ),
-        ),
-    ]
-    for action, callback in actions:
-        try:
-            callback()
-            errors.append(f"{label}: {action} succeeded while child held lifecycle lock")
-        except manager.ManagerError as exc:
-            if "target is already locked" not in str(exc):
-                errors.append(f"{label}: {action} failed for wrong reason: {exc}")
-
-
-def write_external_lock_seed(manager: Any, lock: Path, content: bytes) -> None:
-    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(lock, flags, manager.OWNER_FILE_MODE)
-    try:
-        os.fchmod(descriptor, manager.OWNER_FILE_MODE)
-        manager.write_complete(descriptor, content, "public validator external lock seed")
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def external_publication_aliases(manager: Any, lock: Path) -> list[Path]:
-    prefix = manager.external_lock_publication_alias_prefix(lock)
-    return sorted(path for path in lock.parent.iterdir() if path.name.startswith(prefix))
-
-
-def fork_crash_after_external_lock_link(
-    manager: Any,
-    kind: str,
-    target: Path,
-    error_file: Path,
-) -> int:
-    pid = os.fork()
-    if pid == 0:
-        original_link = manager.os.link
-
-        def crashing_link(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
-            original_link(source, destination, *args, **kwargs)
-            os._exit(77)
-
-        try:
-            manager.os.link = crashing_link
-            if kind == "product":
-                with manager.external_bootstrap_lock():
-                    pass
-            elif kind == "target":
-                with manager.external_target_lock(target):
-                    pass
-            else:
-                raise RuntimeError(f"unknown external lock crash kind: {kind}")
-        except BaseException as exc:
-            with contextlib.suppress(Exception):
-                error_file.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
-            os._exit(125)
-        os._exit(0)
-    return pid
-
-
-def assert_external_lock_alias_recovered(
-    manager: Any,
-    lock: Path,
-    expected: dict[str, Any],
-    label: str,
-    errors: list[str],
-) -> None:
-    aliases = external_publication_aliases(manager, lock)
-    if len(aliases) != 1:
-        errors.append(f"{label}: expected one crashed publication alias, got {len(aliases)}")
-        return
-    before = lock.lstat()
-    alias_before = aliases[0].lstat()
-    if before.st_nlink != 2 or identity_of_stat(before) != identity_of_stat(alias_before):
-        errors.append(f"{label}: crashed alias does not share final lock inode")
-        return
-    try:
-        handle = manager.open_existing_external_lock_descriptor(
-            lock,
-            expected,
-            label=label,
-            recover_publication_alias=True,
-        )
-    except manager.ManagerError as exc:
-        errors.append(f"{label}: recovery opener failed: {exc}")
-        return
-    if handle is None:
-        errors.append(f"{label}: recovery opener returned no handle")
-        return
-    manager.close_external_lock_file(handle)
-    after = lock.lstat()
-    if aliases[0].exists():
-        errors.append(f"{label}: crashed publication alias was not removed")
-    if after.st_nlink != 1:
-        errors.append(f"{label}: final lock link count after recovery is {after.st_nlink}")
-    if identity_of_stat(after) != identity_of_stat(before):
-        errors.append(f"{label}: final lock inode changed during alias recovery")
-    try:
-        handle = manager.open_existing_external_lock_descriptor(lock, expected, label=label)
-    except manager.ManagerError as exc:
-        errors.append(f"{label}: post-recovery opener failed: {exc}")
-        return
-    if handle is not None:
-        manager.close_external_lock_file(handle)
-
-
-def identity_of_stat(info: os.stat_result) -> tuple[int, int]:
-    return info.st_dev, info.st_ino
-
-
-def run_external_lock_crash_recovery_regressions(
-    manager: Any,
-    tmp: Path,
-    errors: list[str],
-) -> None:
-    original_bootstrap_root = manager.bootstrap_system_temp_root
-    crash_system_root = tmp / "crash-recovery-system-temp"
-    crash_system_root.mkdir(mode=0o777)
-    crash_system_root.chmod(0o1777)
-    manager.bootstrap_system_temp_root = lambda: crash_system_root
-    try:
-        product_error = tmp / "product-crash-error"
-        product_pid = fork_crash_after_external_lock_link(
-            manager,
-            "product",
-            (tmp / "unused-product-target").resolve(strict=False),
-            product_error,
-        )
-        product_code = wait_for_child(product_pid, 5, errors, "product lock crash recovery")
-        if product_code != 77:
-            errors.append(
-                "product lock crash recovery: child did not exit after final-path publication "
-                f"(rc={product_code}, error={product_error.read_text(encoding='utf-8') if product_error.exists() else ''!r})"
-            )
-            return
-        product_lock = manager.external_product_root_path() / manager.EXTERNAL_BOOTSTRAP_LOCK_NAME
-        assert_external_lock_alias_recovered(
-            manager,
-            product_lock,
-            manager.external_product_lock_binding(),
-            "external product lock crash recovery",
-            errors,
-        )
-
-        target = (tmp / "target-lock-crash-recovery").resolve(strict=False)
-        with manager.external_bootstrap_lock():
-            pass
-        target_error = tmp / "target-crash-error"
-        target_pid = fork_crash_after_external_lock_link(manager, "target", target, target_error)
-        target_code = wait_for_child(target_pid, 5, errors, "target lock crash recovery")
-        if target_code != 77:
-            errors.append(
-                "target lock crash recovery: child did not exit after final-path publication "
-                f"(rc={target_code}, error={target_error.read_text(encoding='utf-8') if target_error.exists() else ''!r})"
-            )
-            return
-        canonical = manager.canonical_target_identity(target)
-        target_lock = manager.external_lock_path_for_canonical_target(canonical)
-        assert_external_lock_alias_recovered(
-            manager,
-            target_lock,
-            manager.external_lock_binding_for_canonical_target(canonical),
-            "external target lock crash recovery",
-            errors,
-        )
-    finally:
-        manager.bootstrap_system_temp_root = original_bootstrap_root
-
-
-def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
-    cases = [
-        ("malformed", b'{"schema_version": '),
-        ("non-object", b"[]\n"),
-    ]
-    for label, content in cases:
-        target = (tmp / f"external-lock-binding-{label}").resolve(strict=False)
-        lock = manager.external_lock_path(target)
-        write_external_lock_seed(manager, lock, content)
-        try:
-            with manager.external_target_lock(target):
-                errors.append(f"external lock binding {label}: invalid binding was accepted")
-        except manager.ManagerError as exc:
-            expected = (
-                "cannot read valid JSON" if label == "malformed" else "must contain a JSON object"
-            )
-            if expected not in str(exc):
-                errors.append(f"external lock binding {label}: wrong rejection: {exc}")
-
-    target = (tmp / "external-lock-binding-mismatch").resolve(strict=False)
-    lock = manager.external_lock_path(target)
-    wrong = manager.external_lock_binding(target)
-    wrong["canonical_target"] = str(tmp / "other-target")
-    write_external_lock_seed(manager, lock, manager.canonical_json(wrong))
-    try:
-        with manager.external_target_lock(target):
-            errors.append("external lock binding mismatch: mismatched binding was accepted")
-    except manager.ManagerError as exc:
-        if "external target lock binding mismatch" not in str(exc):
-            errors.append(f"external lock binding mismatch: wrong rejection: {exc}")
-
-
-def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
-    target = (tmp / "stamp-provenance").resolve(strict=False)
-    prepare_managed_target(manager, target)
-    marker = tmp / "tampered-child-ran"
-    script = f"#!/bin/sh\nprintf run > {shlex.quote(str(marker))}\nexit 0\n"
-    stamp_path = install_fake_software(manager, target, script)
-
-    mutate_stamp(
-        manager,
-        stamp_path,
-        lambda stamp: stamp["package"].__setitem__("download", "tampered/kiro.zip"),
-    )
-    assert_status_blocks_launch(
-        manager,
-        target,
-        marker,
-        "needs-update",
-        "software package download",
-        errors,
-        "tampered software artifact identity",
-    )
-
-    marker.unlink(missing_ok=True)
-    stamp_path = install_fake_software(manager, target, script)
-    mutate_stamp(
-        manager, stamp_path, lambda stamp: stamp["package"].__setitem__("sha256", "0" * 64)
-    )
-    assert_status_blocks_launch(
-        manager,
-        target,
-        marker,
-        "needs-update",
-        "software package sha256",
-        errors,
-        "tampered software artifact sha256",
-    )
-
-    marker.unlink(missing_ok=True)
-    stamp_path = install_fake_software(manager, target, script)
-    mutate_stamp(manager, stamp_path, lambda stamp: stamp.__setitem__("build_version", "0.1.0"))
-    assert_status_blocks_launch(
-        manager,
-        target,
-        marker,
-        "needs-update",
-        "software manager build_version",
-        errors,
-        "older manager software stamp",
-    )
-
-
-def make_private_parent_chain(manager: Any, root: Path, relative_parent: Path) -> None:
-    current = root
-    for part in relative_parent.parts:
-        current = current / part
-        private_dir(manager, current)
-
-
-def run_launch_runtime_symlink_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
-    runtime_links = [
-        "home",
-        "tmp",
-        "xdg",
-        "xdg/config",
-        "xdg/data",
-        "xdg/state",
-        "xdg/cache",
-        "logs",
-    ]
-    for name in runtime_links:
-        target = (tmp / f"runtime-symlink-{name.replace('/', '-')}").resolve(strict=False)
-        prepare_managed_target(manager, target)
-        marker = tmp / f"runtime-symlink-{name.replace('/', '-')}-child-ran"
-        script = f"#!/bin/sh\nprintf run > {shlex.quote(str(marker))}\nexit 0\n"
-        install_fake_software(manager, target, script)
-        outside = tmp / f"outside-{name.replace('/', '-')}"
-        private_dir(manager, outside)
-        runtime_root = target / manager.NDDEV_RUNTIME_DIR
-        link = runtime_root / name
-        make_private_parent_chain(manager, runtime_root, link.relative_to(runtime_root).parent)
-        os.symlink(outside, link)
-        try:
-            manager.launch(target, [])
-            errors.append(f"launch runtime {name}: launch unexpectedly succeeded through symlink")
-        except manager.ManagerError:
-            pass
-        if marker.exists():
-            errors.append(
-                f"launch runtime {name}: child executable ran through symlinked runtime root"
-            )
-
-
-def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
-    target = (tmp / "launch-lock").resolve(strict=False)
-    prepare_managed_target(manager, target)
-    started = tmp / "launch-child-started"
-    stop = tmp / "launch-child-stop"
-    lock_file = target / manager.LOCK_RUNTIME_DIR / manager.LOCK_DIR_NAME
-    lock_root = target / manager.LOCK_RUNTIME_DIR
-    executable = target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME / "bin/kiro-cli"
-    executable_write_marker = tmp / "launch-executable-write-succeeded"
-    executable_remove_marker = tmp / "launch-executable-remove-succeeded"
-    runtime_files = {
-        "home": target / manager.NDDEV_RUNTIME_DIR / "home" / "nddev-runtime-write",
-        "tmp": target / manager.NDDEV_RUNTIME_DIR / "tmp" / "nddev-runtime-write",
-        "xdg_config": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "config" / "nddev-runtime-write",
-        "xdg_data": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "data" / "nddev-runtime-write",
-        "xdg_state": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "state" / "nddev-runtime-write",
-        "xdg_cache": target / manager.NDDEV_RUNTIME_DIR / "xdg" / "cache" / "nddev-runtime-write",
-        "log": target / manager.NDDEV_RUNTIME_DIR / "logs" / "kiro-chat.log",
-        "kiro_settings": target / "settings" / "session" / "nddev-runtime-write",
-    }
-    script = (
-        "#!/bin/sh\n"
-        'mkdir -p "$HOME" "$TMPDIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" '
-        '"$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$(dirname "$KIRO_CHAT_LOG_FILE")" '
-        '"$KIRO_HOME/settings/session"\n'
-        'printf home > "$HOME/nddev-runtime-write"\n'
-        'printf tmp > "$TMPDIR/nddev-runtime-write"\n'
-        'printf config > "$XDG_CONFIG_HOME/nddev-runtime-write"\n'
-        'printf data > "$XDG_DATA_HOME/nddev-runtime-write"\n'
-        'printf state > "$XDG_STATE_HOME/nddev-runtime-write"\n'
-        'printf cache > "$XDG_CACHE_HOME/nddev-runtime-write"\n'
-        'printf log > "$KIRO_CHAT_LOG_FILE"\n'
-        'printf settings > "$KIRO_HOME/settings/session/nddev-runtime-write"\n'
-        f"rm -f {shlex.quote(str(lock_file))} 2>/dev/null || true\n"
-        f"rmdir {shlex.quote(str(lock_root))} 2>/dev/null || true\n"
-        f"if (printf replace > {shlex.quote(str(executable))}) 2>/dev/null; then "
-        f"printf ok > {shlex.quote(str(executable_write_marker))}; fi\n"
-        f"if (rm -f {shlex.quote(str(executable))}) 2>/dev/null; then "
-        f"printf ok > {shlex.quote(str(executable_remove_marker))}; fi\n"
-        f"printf started > {shlex.quote(str(started))}\n"
-        f"while [ ! -f {shlex.quote(str(stop))} ]; do sleep 0.05; done\n"
-        "exit 0\n"
-    )
-    install_fake_software(manager, target, script)
-    child_error = tmp / "launch-lock-child-error"
-    child = fork_launch(manager, target, child_error)
-    try:
-        if not wait_for_path(started, 5):
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(child, signal.SIGTERM)
-            errors.append(
-                "launch lock regression: child did not start "
-                f"(error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
-            )
-            return
-        if not started.exists():
-            return
-        if not lock_file.is_file() or not lock_root.is_dir():
-            errors.append("launch lock regression: child removed the persistent lock path")
-        else:
-            if stat.S_IMODE(lock_file.lstat().st_mode) != manager.OWNER_FILE_MODE:
-                errors.append("launch lock regression: lock file mode changed while child ran")
-            if stat.S_IMODE(lock_root.lstat().st_mode) != manager.LOCK_HELD_DIR_MODE:
-                errors.append("launch lock regression: lock root was writable while child ran")
-        for label, runtime_file in runtime_files.items():
-            if not runtime_file.is_file():
-                errors.append(f"launch runtime write regression: {label} was not writable")
-        if executable_write_marker.exists():
-            errors.append("launch executable regression: child overwrote the launcher artifact")
-        if executable_remove_marker.exists() or not executable.is_file():
-            errors.append("launch executable regression: child removed the launcher artifact")
-        assert_locked_mutations_denied(manager, target, errors, "launch lock regression")
-    finally:
-        stop.write_text("stop\n", encoding="utf-8")
-        code = wait_for_child(child, 5, errors, "launch lock regression")
-        if code not in (0, None):
-            errors.append(
-                "launch lock regression: launch process failed "
-                f"(rc={code}, error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
-            )
-    if not lock_file.is_file() or not lock_root.is_dir():
-        errors.append("launch lock regression: persistent lock path missing after child exit")
-    else:
-        if stat.S_IMODE(lock_file.lstat().st_mode) != manager.OWNER_FILE_MODE:
-            errors.append("launch lock regression: lock file mode changed after child exit")
-        if stat.S_IMODE(lock_root.lstat().st_mode) != manager.OWNER_DIR_MODE:
-            errors.append("launch lock regression: lock root did not return to owner-private mode")
-    runtime_writable_roots = [
-        target / manager.NDDEV_RUNTIME_DIR,
-        target / manager.NDDEV_RUNTIME_DIR / "home",
-        target / manager.NDDEV_RUNTIME_DIR / "tmp",
-        target / manager.NDDEV_RUNTIME_DIR / "xdg",
-        target / manager.NDDEV_RUNTIME_DIR / "xdg" / "config",
-        target / manager.NDDEV_RUNTIME_DIR / "xdg" / "data",
-        target / manager.NDDEV_RUNTIME_DIR / "xdg" / "state",
-        target / manager.NDDEV_RUNTIME_DIR / "xdg" / "cache",
-        target / manager.NDDEV_RUNTIME_DIR / "logs",
-        target / "settings",
-    ]
-    for runtime_root in runtime_writable_roots:
-        if not runtime_root.is_dir():
-            errors.append(f"launch runtime write regression: missing {runtime_root}")
-        elif stat.S_IMODE(runtime_root.lstat().st_mode) != manager.OWNER_DIR_MODE:
-            errors.append(f"launch runtime write regression: read-only runtime root {runtime_root}")
-    immutable_paths = [
-        target / manager.SOFTWARE_RUNTIME_DIR,
-        target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME,
-        target / manager.SOFTWARE_RUNTIME_DIR / manager.SOFTWARE_DIR_NAME / "bin",
-    ]
-    for immutable_path in immutable_paths:
-        if not immutable_path.is_dir():
-            errors.append(f"launch executable regression: missing immutable path {immutable_path}")
-        elif stat.S_IMODE(immutable_path.lstat().st_mode) != manager.SOFTWARE_IMMUTABLE_DIR_MODE:
-            errors.append(f"launch executable regression: writable immutable path {immutable_path}")
-    if executable.is_file():
-        executable_mode = stat.S_IMODE(executable.lstat().st_mode)
-        if executable_mode != manager.SOFTWARE_IMMUTABLE_EXECUTABLE_MODE:
-            errors.append("launch executable regression: launcher mode is not immutable executable")
-    try:
-        manager.mutate_setup(target, manager.CONTENT_SETUP_ID, "safe", "switch")
-    except manager.ManagerError as exc:
-        errors.append(f"launch lock regression: lifecycle mutation failed after child exit: {exc}")
-
-
-def run_external_lock_internal_rename_regression(
-    manager: Any, tmp: Path, errors: list[str]
-) -> None:
-    target = (tmp / "external-lock-internal-rename").resolve(strict=False)
-    prepare_managed_target(manager, target)
-    started = tmp / "internal-rename-child-started"
-    stop = tmp / "internal-rename-child-stop"
-    rename_marker = tmp / "internal-rename-done"
-    child_error = tmp / "internal-rename-child-error"
-    lock_root = target / manager.LOCK_RUNTIME_DIR
-    renamed = target / manager.NDDEV_RUNTIME_DIR / "locks-renamed-by-child"
-    script = (
-        "#!/bin/sh\n"
-        f"rm -rf {shlex.quote(str(renamed))} 2>/dev/null || true\n"
-        f"if mv {shlex.quote(str(lock_root))} {shlex.quote(str(renamed))} 2>/dev/null; then "
-        f"printf renamed > {shlex.quote(str(rename_marker))}; "
-        f"else printf failed > {shlex.quote(str(rename_marker))}; fi\n"
-        f"printf started > {shlex.quote(str(started))}\n"
-        f"while [ ! -f {shlex.quote(str(stop))} ]; do sleep 0.05; done\n"
-        f"if [ -d {shlex.quote(str(renamed))} ] && "
-        f"[ ! -e {shlex.quote(str(lock_root))} ]; then "
-        f"mv {shlex.quote(str(renamed))} {shlex.quote(str(lock_root))}; fi\n"
-        "exit 0\n"
-    )
-    install_fake_software(manager, target, script)
-    child = fork_launch(manager, target, child_error)
-    try:
-        if not wait_for_path(started, 5):
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(child, signal.SIGTERM)
-            errors.append(
-                "internal lock rename regression: child did not start "
-                f"(error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
-            )
-            return
-        if rename_marker.read_text(encoding="utf-8") != "renamed":
-            errors.append("internal lock rename regression: child could not rename lock root")
-        if lock_root.exists():
-            errors.append(
-                "internal lock rename regression: lock root was not renamed during launch"
-            )
-        assert_locked_mutations_denied(manager, target, errors, "internal lock rename regression")
-    finally:
-        stop.write_text("stop\n", encoding="utf-8")
-        code = wait_for_child(child, 5, errors, "internal lock rename regression")
-        if code not in (0, None):
-            errors.append(
-                "internal lock rename regression: launch process failed "
-                f"(rc={code}, error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
-            )
-    if not lock_root.is_dir():
-        errors.append("internal lock rename regression: lock root was not restored after launch")
-    try:
-        manager.mutate_setup(target, manager.CONTENT_SETUP_ID, "safe", "switch")
-    except manager.ManagerError as exc:
-        errors.append(f"internal lock rename regression: mutation failed after child exit: {exc}")
-
-
-def fork_external_lock_holder(
-    manager: Any,
-    target: Path,
-    ready: Path,
-    release: Path,
-    error_file: Path,
-    *,
-    waiting: Path | None = None,
-) -> int:
-    pid = os.fork()
-    if pid == 0:
-        try:
-            if waiting is not None:
-                waiting.write_text("waiting\n", encoding="utf-8")
-            with manager.external_target_lock(target, blocking=True) as lock:
-                info = lock.lstat()
-                ready.write_text(f"{info.st_dev}:{info.st_ino}\n", encoding="utf-8")
-                while not release.exists():
-                    time.sleep(0.05)
-        except BaseException as exc:
-            with contextlib.suppress(Exception):
-                error_file.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
-            os._exit(125)
-        os._exit(0)
-    return pid
-
-
-def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
-    target = (tmp / "external-lock-handover").resolve(strict=False)
-    lock = manager.external_lock_path(target)
-    a_ready = tmp / "handover-a-ready"
-    b_waiting = tmp / "handover-b-waiting"
-    b_ready = tmp / "handover-b-ready"
-    release_a = tmp / "handover-release-a"
-    release_b = tmp / "handover-release-b"
-    a_error = tmp / "handover-a-error"
-    b_error = tmp / "handover-b-error"
-    child_a = fork_external_lock_holder(manager, target, a_ready, release_a, a_error)
-    child_b: int | None = None
-    child_a_reaped = False
-    try:
-        if not wait_for_path(a_ready, 5):
-            errors.append(
-                "external lock handover regression: first holder did not acquire lock "
-                f"(error={a_error.read_text(encoding='utf-8') if a_error.exists() else ''!r})"
-            )
-            return
-        first_inode = a_ready.read_text(encoding="utf-8").strip()
-        if not lock.is_file():
-            errors.append("external lock handover regression: lock file missing under first holder")
-        child_b = fork_external_lock_holder(
-            manager,
-            target,
-            b_ready,
-            release_b,
-            b_error,
-            waiting=b_waiting,
-        )
-        if not wait_for_path(b_waiting, 5):
-            errors.append("external lock handover regression: second holder did not attempt lock")
-            return
-        release_a.write_text("release\n", encoding="utf-8")
-        code_a = wait_for_child(
-            child_a, 5, errors, "external lock handover regression first holder"
-        )
-        child_a_reaped = True
-        if code_a not in (0, None):
-            errors.append(
-                "external lock handover regression: first holder failed "
-                f"(rc={code_a}, error={a_error.read_text(encoding='utf-8') if a_error.exists() else ''!r})"
-            )
-        if not wait_for_path(b_ready, 5):
-            errors.append(
-                "external lock handover regression: second holder did not acquire after release "
-                f"(error={b_error.read_text(encoding='utf-8') if b_error.exists() else ''!r})"
-            )
-            return
-        second_inode = b_ready.read_text(encoding="utf-8").strip()
-        if second_inode != first_inode:
-            errors.append(
-                "external lock handover regression: lock inode changed across handoff "
-                f"({first_inode} -> {second_inode})"
-            )
-        try:
-            with manager.external_target_lock(target):
-                errors.append(
-                    "external lock handover regression: third process acquired while second held lock"
-                )
-        except manager.ManagerError as exc:
-            if "target is already locked" not in str(exc):
-                errors.append(
-                    f"external lock handover regression: third process wrong rejection: {exc}"
-                )
-        if not lock.is_file():
-            errors.append("external lock handover regression: lock file was unlinked while held")
-    finally:
-        release_a.write_text("release\n", encoding="utf-8")
-        release_b.write_text("release\n", encoding="utf-8")
-        if child_b is not None:
-            code_b = wait_for_child(
-                child_b, 5, errors, "external lock handover regression second holder"
-            )
-            if code_b not in (0, None):
-                errors.append(
-                    "external lock handover regression: second holder failed "
-                    f"(rc={code_b}, error={b_error.read_text(encoding='utf-8') if b_error.exists() else ''!r})"
-                )
-        if not child_a_reaped:
-            wait_for_child(child_a, 5, errors, "external lock handover regression first holder")
-    if not lock.is_file():
-        errors.append(
-            "external lock handover regression: persistent lock file missing after release"
-        )
-    else:
-        final_inode = f"{lock.lstat().st_dev}:{lock.lstat().st_ino}"
-        if a_ready.exists() and final_inode != a_ready.read_text(encoding="utf-8").strip():
-            errors.append(
-                "external lock handover regression: persistent lock inode changed after release"
-            )
-    try:
-        with manager.external_target_lock(target):
-            pass
-    except manager.ManagerError as exc:
-        errors.append(f"external lock handover regression: final lock acquire failed: {exc}")
-
-
-def fd_open_flags(*, directory: bool = False) -> int:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if directory and hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    return flags
-
-
-def stat_type(info: os.stat_result) -> str:
-    mode = info.st_mode
-    if stat.S_ISDIR(mode):
-        return "directory"
-    if stat.S_ISREG(mode):
-        return "regular"
-    if stat.S_ISLNK(mode):
-        return "symlink"
-    if stat.S_ISFIFO(mode):
-        return "fifo"
-    if stat.S_ISSOCK(mode):
-        return "socket"
-    if stat.S_ISCHR(mode):
-        return "character"
-    if stat.S_ISBLK(mode):
-        return "block"
-    return "unknown"
-
-
-def bootstrap_snapshot_entry(
-    relative: str,
-    info: os.stat_result,
-    content_sha256: str | None,
-) -> tuple[Any, ...]:
-    return (
-        relative,
-        info.st_dev,
-        info.st_ino,
-        stat_type(info),
-        info.st_uid if hasattr(info, "st_uid") else None,
-        stat.S_IMODE(info.st_mode),
-        info.st_nlink,
-        info.st_size,
-        content_sha256,
-    )
-
-
-def digest_bounded_fd(
-    descriptor: int,
-    label: str,
-    expected: os.stat_result | None = None,
-) -> str:
-    before = os.fstat(descriptor)
-    if expected is not None and (before.st_dev, before.st_ino) != (
-        expected.st_dev,
-        expected.st_ino,
-    ):
-        return f"identity-mismatch:{label}"
-    if not stat.S_ISREG(before.st_mode):
-        return "not-regular-after-open"
-    if before.st_size > BOOTSTRAP_SNAPSHOT_MAX_BYTES:
-        return f"unbounded:{before.st_size}"
-    digest = hashlib.sha256()
-    total = 0
-    while True:
-        block = os.read(descriptor, 65536)
-        if not block:
-            break
-        total += len(block)
-        if total > BOOTSTRAP_SNAPSHOT_MAX_BYTES:
-            return f"unbounded:{total}"
-        digest.update(block)
-    after = os.fstat(descriptor)
-    if (before.st_dev, before.st_ino, before.st_size) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-    ):
-        return f"changed-while-reading:{label}"
-    return digest.hexdigest()
-
-
-def digest_bounded_regular_path(
-    path: Path,
-    expected: os.stat_result | None = None,
-) -> str | None:
-    try:
-        descriptor = os.open(path, fd_open_flags())
-    except OSError as exc:
-        return f"open-error:{exc.errno}"
-    try:
-        return digest_bounded_fd(descriptor, path.as_posix(), expected)
-    finally:
-        os.close(descriptor)
-
-
-def digest_bounded_regular_at(
-    parent_descriptor: int,
-    name: str,
-    label: str,
-    expected: os.stat_result,
-) -> str | None:
-    try:
-        descriptor = os.open(name, fd_open_flags(), dir_fd=parent_descriptor)
-    except OSError as exc:
-        return f"open-error:{exc.errno}"
-    try:
-        return digest_bounded_fd(descriptor, label, expected)
-    finally:
-        os.close(descriptor)
-
-
-def snapshot_bootstrap_tree(root: Path) -> tuple[Any, ...]:
-    try:
-        root_info = root.lstat()
-    except FileNotFoundError:
-        return ("missing", str(root))
-    except OSError as exc:
-        return ("root-lstat-error", str(root), str(exc))
-    entries: list[tuple[Any, ...]] = [
-        bootstrap_snapshot_entry(
-            ".",
-            root_info,
-            digest_bounded_regular_path(root, root_info)
-            if stat.S_ISREG(root_info.st_mode)
-            else None,
-        )
-    ]
-    if not stat.S_ISDIR(root_info.st_mode):
-        return (str(root), tuple(entries))
-    try:
-        root_descriptor = os.open(root, fd_open_flags(directory=True))
-    except OSError as exc:
-        return (str(root), tuple(entries), ("root-open-error", exc.errno))
-    count = 1
-
-    def walk(parent_descriptor: int, relative_parent: str) -> None:
-        nonlocal count
-        try:
-            names = sorted(os.listdir(parent_descriptor))
-        except OSError as exc:
-            entries.append((relative_parent, "list-error", exc.errno))
-            return
-        for name in names:
-            if name in {".", ".."}:
-                continue
-            count += 1
-            if count > BOOTSTRAP_SNAPSHOT_MAX_FILES:
-                entries.append(("snapshot-truncated", count))
-                return
-            child_relative = name if relative_parent == "." else f"{relative_parent}/{name}"
-            try:
-                info = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-            except OSError as exc:
-                entries.append((child_relative, "lstat-error", exc.errno))
-                continue
-            content_sha256 = (
-                digest_bounded_regular_at(parent_descriptor, name, child_relative, info)
-                if stat.S_ISREG(info.st_mode)
-                else None
-            )
-            entries.append(bootstrap_snapshot_entry(child_relative, info, content_sha256))
-            if stat.S_ISDIR(info.st_mode):
-                try:
-                    child_descriptor = os.open(
-                        name,
-                        fd_open_flags(directory=True),
-                        dir_fd=parent_descriptor,
-                    )
-                except OSError as exc:
-                    entries.append((child_relative, "open-dir-error", exc.errno))
-                    continue
-                try:
-                    walk(child_descriptor, child_relative)
-                finally:
-                    os.close(child_descriptor)
-
-    try:
-        walk(root_descriptor, ".")
-    finally:
-        os.close(root_descriptor)
-    return (str(root), tuple(entries))
-
-
 def check_python_portability(errors: list[str]) -> None:
     for relative in PORTABLE_PYTHON_SOURCES:
         path = ROOT / relative
@@ -2776,173 +1797,6 @@ def check_python_portability(errors: list[str]) -> None:
             errors.append(
                 f"{relative}: must parse under Python 3.9 syntax: line {exc.lineno}: {exc.msg}"
             )
-
-
-def run_side_effect_free_read_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
-    target = (tmp / "read-side-effect-free-target").resolve(strict=False)
-    before = snapshot_bootstrap_tree(manager.external_product_root_path())
-    status = manager.current_status(target)
-    software_status = manager.software_status(target)
-    plan = manager.plan_setup(
-        target, manager.CONTENT_SETUP_ID, manager.DEFAULT_PERMISSION_PROFILE_ID
-    )
-    if status.get("state") != "missing":
-        errors.append("status side-effect regression: missing target state mismatch")
-    if software_status.get("state") != "missing":
-        errors.append("software-status side-effect regression: missing target state mismatch")
-    if plan.get("mutates") is not False or plan.get("operation") != "install":
-        errors.append("plan side-effect regression: missing target plan mismatch")
-    if target.exists():
-        errors.append("read side-effect regression: status/plan created the target")
-    after = snapshot_bootstrap_tree(manager.external_product_root_path())
-    if after != before:
-        errors.append("read side-effect regression: cold status/plan created external lock state")
-
-
-def run_lifecycle_order_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
-    target = (tmp / "lifecycle-order-target").resolve(strict=False)
-    events: list[Any] = []
-    original_bootstrap = manager.external_bootstrap_lock
-    original_canonical = manager.canonical_target_identity
-    original_status_body = manager.current_status_body
-    original_snapshot = manager.setup_transaction_snapshot
-    original_internal = manager.internal_target_lock
-    original_flock = manager.flock_external_lock
-    original_unlock = manager.unlock_external_lock
-    product_depth = 0
-    record_lock_depth = False
-
-    @contextlib.contextmanager
-    def traced_bootstrap(*args: Any, **kwargs: Any) -> Any:
-        events.append("bootstrap-call")
-        with original_bootstrap(*args, **kwargs) as lock:
-            events.append("bootstrap-held")
-            yield lock
-
-    def traced_canonical(path: Path) -> Path:
-        events.append(
-            ("canonical-target", product_depth) if record_lock_depth else "canonical-target"
-        )
-        return original_canonical(path)
-
-    def traced_status_body(path: Path) -> dict[str, Any]:
-        events.append(("status-body", product_depth) if record_lock_depth else "status-body")
-        return original_status_body(path)
-
-    def traced_snapshot(path: Path) -> dict[str, Any]:
-        events.append("setup-snapshot")
-        return original_snapshot(path)
-
-    @contextlib.contextmanager
-    def traced_internal(*args: Any, **kwargs: Any) -> Any:
-        events.append("internal-call")
-        with original_internal(*args, **kwargs) as locked:
-            events.append("internal-held")
-            yield locked
-
-    def traced_flock(*args: Any, **kwargs: Any) -> None:
-        nonlocal product_depth
-        original_flock(*args, **kwargs)
-        label = kwargs.get("label")
-        if label == "external product lock":
-            product_depth += 1
-            events.append(("product-held", kwargs.get("shared")))
-
-    def traced_unlock(handle: Any) -> None:
-        nonlocal product_depth
-        if handle.lock.name == manager.EXTERNAL_BOOTSTRAP_LOCK_NAME and product_depth > 0:
-            product_depth -= 1
-            events.append(("product-release", product_depth))
-        original_unlock(handle)
-
-    try:
-        manager.external_bootstrap_lock = traced_bootstrap
-        manager.canonical_target_identity = traced_canonical
-        manager.current_status_body = traced_status_body
-        record_lock_depth = True
-        manager.current_status(target)
-        if events != [("canonical-target", 0), ("status-body", 0)]:
-            errors.append(f"cold status lifecycle order mismatch: {events}")
-
-        with original_bootstrap():
-            pass
-        events.clear()
-        manager.flock_external_lock = traced_flock
-        manager.unlock_external_lock = traced_unlock
-        manager.current_status(target)
-        if events[:3] != [
-            ("product-held", True),
-            ("canonical-target", 1),
-            ("status-body", 1),
-        ] or events[-1:] != [("product-release", 0)]:
-            errors.append(f"seeded status lifecycle order mismatch: {events}")
-
-        events.clear()
-        record_lock_depth = False
-        manager.current_status_body = original_status_body
-        manager.setup_transaction_snapshot = traced_snapshot
-        manager.internal_target_lock = traced_internal
-        try:
-            manager.update_setup(target)
-        except manager.ManagerError:
-            pass
-        else:
-            errors.append("update lifecycle order regression unexpectedly succeeded")
-        required = ["bootstrap-held", "canonical-target", "setup-snapshot", "internal-call"]
-        positions = {event: events.index(event) for event in required if event in events}
-        if set(positions) != set(required) or not (
-            positions["bootstrap-held"]
-            < positions["canonical-target"]
-            < positions["setup-snapshot"]
-            < positions["internal-call"]
-        ):
-            errors.append(f"update lifecycle order mismatch: {events}")
-    finally:
-        manager.external_bootstrap_lock = original_bootstrap
-        manager.canonical_target_identity = original_canonical
-        manager.current_status_body = original_status_body
-        manager.setup_transaction_snapshot = original_snapshot
-        manager.internal_target_lock = original_internal
-        manager.flock_external_lock = original_flock
-        manager.unlock_external_lock = original_unlock
-
-
-def run_public_manager_regressions(errors: list[str]) -> None:
-    manager = load_manager_for_regressions(errors)
-    if manager is None:
-        return
-    for command in ("software-probe", "software-install", "software-update"):
-        try:
-            with contextlib.redirect_stderr(io.StringIO()):
-                manager.parse_args([command, "--platform", "ubuntu"])
-        except SystemExit as exc:
-            if exc.code == 0:
-                errors.append(f"{command}: public platform override unexpectedly accepted")
-        else:
-            errors.append(f"{command}: public platform override unexpectedly parsed")
-    original_bootstrap_root = manager.bootstrap_system_temp_root
-    try:
-        with tempfile.TemporaryDirectory(prefix="nddev-kiro-public-validator-") as tmp_name:
-            tmp = Path(tmp_name).resolve(strict=False)
-            injected_system_root = tmp / "system-temp"
-            injected_system_root.mkdir()
-            os.chmod(injected_system_root, 0o1777)
-            if stat.S_IMODE(injected_system_root.lstat().st_mode) != 0o1777:
-                errors.append("public manager regressions: injected bootstrap root must be 01777")
-            manager.bootstrap_system_temp_root = lambda: injected_system_root
-            run_lifecycle_order_regressions(manager, tmp, errors)
-            run_side_effect_free_read_regressions(manager, tmp, errors)
-            run_external_lock_crash_recovery_regressions(manager, tmp, errors)
-            run_external_lock_binding_regressions(manager, tmp, errors)
-            run_stamp_provenance_regressions(manager, tmp, errors)
-            run_launch_runtime_symlink_regressions(manager, tmp, errors)
-            run_launch_lock_regression(manager, tmp, errors)
-            run_external_lock_internal_rename_regression(manager, tmp, errors)
-            run_external_lock_handover_regression(manager, tmp, errors)
-    except Exception as exc:
-        errors.append(f"public manager regressions failed: {exc}")
-    finally:
-        manager.bootstrap_system_temp_root = original_bootstrap_root
 
 
 def main() -> int:
@@ -2989,7 +1843,6 @@ def main() -> int:
     check_manager_source(manager_source, errors)
     check_python_portability(errors)
     check_claude_bridge(errors)
-    run_public_manager_regressions(errors)
     for workflow in WORKFLOWS:
         check_text(f".github/workflows/{workflow}", errors)
 
