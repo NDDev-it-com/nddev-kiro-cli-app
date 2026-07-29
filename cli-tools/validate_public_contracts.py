@@ -7,7 +7,6 @@ import ast
 import json
 import re
 import stat
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -1100,16 +1099,7 @@ def check_release_path_entry(relative: str, label: str, errors: list[str]) -> No
 
 
 def tracked_paths() -> set[str] | None:
-    result = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files"],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    if result.returncode != 0:
-        return None
-    return set(result.stdout.splitlines())
+    return set(extracted_artifact_files())
 
 
 def check_release_path_tracked(
