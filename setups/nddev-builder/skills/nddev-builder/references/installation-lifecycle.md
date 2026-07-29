@@ -21,9 +21,13 @@ and selected official artifact, verifies pinned SHA-256 and size values, stages
 extraction, validates the bounded software tree, writes a target-bound software
 stamp, and atomically promotes the staged tree.
 
-Linux uses official zip artifacts. macOS uses the official DMG artifact and
-extracts the app-contained CLI into the target-owned tree. Windows is
-unsupported.
+Ubuntu glibc hosts use the official GNU zip artifacts. macOS uses the official
+DMG artifact and extracts the app-contained CLI into the target-owned tree. The
+official Ubuntu `.deb`, generic Linux, musl, rpm, AppImage, tar, and Windows
+assets are preserved as vendor observations only. Non-Ubuntu Linux, musl,
+Windows, and unsupported architectures are rejected before network or staging.
+The public contract records no official Ubuntu release floor and the
+architecture-specific glibc ABI floors that gate Ubuntu hosts.
 
 ## Lifecycle Commands
 

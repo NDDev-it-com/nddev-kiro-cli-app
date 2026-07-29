@@ -10,6 +10,9 @@
   remove boundaries; legacy managed state cannot launch.
 - Update official stable Kiro CLI artifact provenance and target-owned install
   contract.
+- Pin Kiro CLI 2.15.1 and scope product software installs to macOS arm64/x64
+  and Ubuntu glibc arm64/x64 while preserving all upstream assets as observed
+  vendor evidence.
 - Expand the managed `nddev-builder` Agent Skills toolkit with routed focused
   references for native Kiro setup, permissions, agents, skills, hooks, MCP,
   installation lifecycle, marketplace limits, and validation workflows.

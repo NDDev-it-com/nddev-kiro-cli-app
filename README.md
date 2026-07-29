@@ -14,6 +14,11 @@ platform support, native discovery surfaces, managed projection, and runtime
 requirements. Use `cli-tools/nddev_kiro_cli.py list --json` for the active
 setup and permission-profile catalog.
 
+Product-supported hosts are macOS arm64/x64 and Ubuntu glibc arm64/x64. The
+baseline preserves the full official upstream asset catalog as vendor
+observation, including non-Ubuntu Linux, musl, and Windows assets, but those are
+not manager-supported product install targets.
+
 ## Usage
 
 List the content setup and permission profiles:
@@ -69,24 +74,26 @@ manager build reports `needs-update` instead of becoming hard-invalid, and
 stamp after strict target trust checks. `software-status --json` reports whether
 the target-owned software matches the current baseline owner; non-current
 software makes launch unavailable until repaired.
+Ubuntu support requires structured `os-release` identity `ID=ubuntu` and glibc.
+The public contract records no official Ubuntu release floor, enforces the
+official architecture-specific glibc ABI floors, and rejects the observed musl
+fallback because it is outside the NDDev product host scope.
 
 Launch Kiro with the isolated target:
 
 ```bash
-python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --workspace /absolute/project --
+python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --
 ```
 
 `launch` requires clean current managed setup state and clean target-owned
 software; `status --json` reports the same `launch_allowed` outcome. Launch uses
 an isolated target runtime, strips provider credential state, uses a
 deterministic child environment, revalidates the target-owned executable before
-handoff, runs the child in the explicit workspace directory, and holds lifecycle
-exclusion until the child exits. If `--workspace` is omitted, the manager uses
-the caller working directory captured at startup. Managed-scope overrides are
-rejected before launch. Exact runtime paths, lifecycle exclusion mechanics,
-environment keys, executable checks, workspace binding, and blocked override
-arguments are owned by `cli-tools/nddev_kiro_cli.py`,
-`config/nddev-contract.json`, and `build/manifest.json`.
+handoff, and holds lifecycle exclusion until the child exits. Managed-scope
+overrides are rejected before launch. Exact runtime paths, lifecycle exclusion
+mechanics, environment keys, executable checks, and blocked override arguments
+are owned by `cli-tools/nddev_kiro_cli.py`, `config/nddev-contract.json`, and
+`build/manifest.json`.
 
 ## Builder Content
 
