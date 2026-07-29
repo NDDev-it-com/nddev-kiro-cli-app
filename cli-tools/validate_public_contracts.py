@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import importlib.util
+import json
 import os
 import re
 import shlex
@@ -182,33 +182,123 @@ EXPECTED_AGENT_FRONTMATTER = (
     "  - file://~/.kiro/steering/nddev-builder.md\n"
     'welcomeMessage: "NDDev builder context loaded."\n'
 )
-MANAGED_LAUNCH_BLOCKED_COMMANDS = [
-    "agent",
-    "diagnostic",
-    "integrations",
-    "launch",
-    "login",
-    "logout",
-    "mcp",
-    "settings",
-    "update",
-    "whoami",
-]
-MANAGED_LAUNCH_BLOCKED_OPTIONS = [
-    "--agent",
-    "--classic",
-    "--no-interactive",
-    "--require-mcp-startup",
-    "--trust-all-tools",
-    "--trust-tools",
-    "--v3",
-]
+MANAGED_LAUNCH_POLICY = {
+    "official_grammar": "kiro-cli-2.15.1",
+    "allowed_read_forms": [
+        "agent list",
+        "agent show",
+        "agent validate",
+        "chat",
+        "chat --no-interactive",
+        "chat --resume",
+        "chat --effort VALUE",
+        "diagnostic",
+        "doctor",
+        "integrations status",
+        "inline status",
+        "inline show-customizations",
+        "mcp list",
+        "mcp status --name VALUE",
+        "settings list",
+        "settings list --all",
+        "settings KEY",
+        "theme --folder",
+        "theme --list",
+        "theme list",
+        "theme show",
+        "whoami",
+    ],
+    "blocked_mutation_forms": [
+        "inline enable",
+        "inline disable",
+        "inline set-customization",
+        "integrations install",
+        "integrations reinstall",
+        "integrations uninstall",
+        "issue",
+        "launch",
+        "login",
+        "logout",
+        "mcp add",
+        "mcp import",
+        "mcp remove",
+        "settings --delete",
+        "settings KEY VALUE",
+        "settings KEY=VALUE",
+        "theme THEME",
+        "update",
+        "version",
+    ],
+    "manager_owned_options": [
+        "--agent",
+        "--classic",
+        "--cwd",
+        "--directory",
+        "--project",
+        "--require-mcp-startup",
+        "--trust-all-tools",
+        "--trust-tools",
+        "--tui",
+        "--v3",
+        "--version",
+        "--workspace",
+        "-C",
+    ],
+}
 SUPPORTED_PLATFORMS = [
     "macos-universal-dmg",
     "linux-x86_64-glibc-zip",
     "linux-aarch64-glibc-zip",
     "linux-x86_64-musl-zip",
     "linux-aarch64-musl-zip",
+]
+EXPECTED_INSTALL_PACKAGES = [
+    {
+        "os": "macos",
+        "architecture": "universal",
+        "variant": "full",
+        "fileType": "dmg",
+        "download": "2.15.1/Kiro CLI.dmg",
+        "sha256": "e01f2a54389a75b47636671b58fe2cd4b204749e7a3391778ab9eb76ba59a13b",
+        "size": 682140633,
+        "cliPath": "Contents/MacOS/kiro-cli",
+    },
+    {
+        "os": "linux",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.15.1/kirocli-x86_64-linux.zip",
+        "sha256": "f17d352eea8f67ed92f6585193ad6a49ef045d6400822ed9f0888021d14754ac",
+        "size": 554394320,
+    },
+    {
+        "os": "linux",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.15.1/kirocli-aarch64-linux.zip",
+        "sha256": "83346f95bc8a986d4ba9270720082c36535d652350afd3799bedb9b0f15617cb",
+        "size": 509410555,
+    },
+    {
+        "os": "linux",
+        "architecture": "x86_64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.15.1/kirocli-x86_64-linux-musl.zip",
+        "sha256": "472462588f7205d116f505f1bf1ac0ec8d58b6e5562e8047abbc7623987af245",
+        "size": 511375428,
+    },
+    {
+        "os": "linux",
+        "architecture": "aarch64",
+        "variant": "headless",
+        "fileType": "zip",
+        "download": "2.15.1/kirocli-aarch64-linux-musl.zip",
+        "sha256": "a71bd0540739bb5211188dbe11b432d5b2589f7acc14d550a4731f98a717b61c",
+        "size": 508272955,
+    },
 ]
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 LOCK_ROOT_REF = "target/.nddev-runtime/locks/setup-manager.lock"
@@ -233,7 +323,7 @@ TARGET_ENVIRONMENT_SCOPE = {
     "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log",
     "PATH": TRUSTED_SYSTEM_PATH,
 }
-MANIFEST_SHA256 = "2df08fa37b6bbb66c3fc626b458f3b2a0689da7957238bd94b6c1667dc74f5fe"
+MANIFEST_SHA256 = "94d5c7c5eeaf2538f03a2296c51d908273411a853f5003126b57d1139ab000c7"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
 CLAUDE_BRIDGE_BYTES = b"@../AGENTS.md\n"
 RELEASE_WORKFLOW_USES = (
@@ -482,14 +572,26 @@ def check_setup(errors: list[str]) -> None:
 
 
 def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> None:
+    if runtime.get("current_version") not in (None, "2.15.1"):
+        errors.append(f"{label}: current_version mismatch")
     if runtime.get("engine_argument") != "--v3":
         errors.append(f"{label}: launch must force --v3")
     if runtime.get("engine_status") != "early-access-required":
         errors.append(f"{label}: engine_status mismatch")
-    if runtime.get("managed_launch_blocked_commands") != MANAGED_LAUNCH_BLOCKED_COMMANDS:
-        errors.append(f"{label}: managed launch command guard mismatch")
-    if runtime.get("managed_launch_blocked_options") != MANAGED_LAUNCH_BLOCKED_OPTIONS:
-        errors.append(f"{label}: managed launch option guard mismatch")
+    if runtime.get("managed_launch_policy") != MANAGED_LAUNCH_POLICY:
+        errors.append(f"{label}: managed launch policy mismatch")
+    if runtime.get("workspace_argument") != "--workspace":
+        errors.append(f"{label}: launch workspace argument mismatch")
+    if runtime.get("workspace_default") != "captured-caller-cwd":
+        errors.append(f"{label}: launch workspace default mismatch")
+    if runtime.get("workspace_must_be_existing_absolute_accessible_directory") is not True:
+        errors.append(f"{label}: launch workspace validation mismatch")
+    if runtime.get("workspace_passed_as_child_cwd") is not True:
+        errors.append(f"{label}: launch child cwd binding mismatch")
+    if runtime.get("native_workspace_argument") is not None:
+        errors.append(f"{label}: native workspace argument must be null")
+    if runtime.get("native_workspace_argument_status") != "unsupported-by-official-cli-reference":
+        errors.append(f"{label}: native workspace argument status mismatch")
     if runtime.get("trusted_system_path") not in (None, TRUSTED_SYSTEM_PATH):
         errors.append(f"{label}: trusted system PATH mismatch")
     if runtime.get("launch_lock_held_until_child_exit") is not True:
@@ -1081,7 +1183,7 @@ def check_baseline(
     version: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    if baseline.get("verified_on") != "2026-07-27":
+    if baseline.get("verified_on") != "2026-07-28":
         errors.append("references/kiro-cli-baseline.json: verified_on mismatch")
     if version is not None and baseline.get("release", {}).get("version") != version.get(
         "kiro_cli_current"
@@ -1145,6 +1247,20 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: executable revalidation missing")
     if authentication.get("launch_runtime_directories_target_relative_owner_private") is not True:
         errors.append("references/kiro-cli-baseline.json: launch runtime directory trust missing")
+    if authentication.get("workspace_argument") != "--workspace":
+        errors.append("references/kiro-cli-baseline.json: workspace argument mismatch")
+    if authentication.get("workspace_default") != "captured-caller-cwd":
+        errors.append("references/kiro-cli-baseline.json: workspace default mismatch")
+    if authentication.get("workspace_must_be_existing_absolute_accessible_directory") is not True:
+        errors.append("references/kiro-cli-baseline.json: workspace validation missing")
+    if authentication.get("workspace_passed_as_child_cwd") is not True:
+        errors.append("references/kiro-cli-baseline.json: child cwd workspace binding missing")
+    if authentication.get("native_workspace_argument") is not None:
+        errors.append("references/kiro-cli-baseline.json: native workspace argument must be null")
+    if authentication.get("native_workspace_argument_status") != "unsupported-by-official-cli-reference":
+        errors.append("references/kiro-cli-baseline.json: native workspace status mismatch")
+    if authentication.get("managed_launch_policy") != MANAGED_LAUNCH_POLICY:
+        errors.append("references/kiro-cli-baseline.json: managed launch policy mismatch")
     release = baseline.get("release", {})
     if release.get("install_script_sha256") != INSTALLER_SHA256:
         errors.append("references/kiro-cli-baseline.json: install script sha256 mismatch")
@@ -1235,8 +1351,8 @@ def check_baseline(
     packages = baseline.get("install_manifest", {}).get("packages")
     if not isinstance(packages, list) or not packages:
         errors.append("references/kiro-cli-baseline.json: install packages missing")
-    elif not all(isinstance(item, dict) and item.get("sha256") for item in packages):
-        errors.append("references/kiro-cli-baseline.json: package sha256 missing")
+    elif packages != EXPECTED_INSTALL_PACKAGES:
+        errors.append("references/kiro-cli-baseline.json: exact install packages mismatch")
 
 
 def check_manager_source(text: str, errors: list[str]) -> None:
@@ -1486,8 +1602,198 @@ def write_external_lock_seed(manager: Any, lock: Path, content: bytes) -> None:
         os.close(descriptor)
 
 
+def cleanup_test_owned_paths(*paths: Path) -> None:
+    for path in paths:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            path.rmdir()
+        else:
+            path.unlink()
+
+
+def ensure_product_lock_seed(manager: Any) -> Path:
+    root = manager.bootstrap_product_root()
+    assert root is not None
+    lock = manager.external_product_lock_path(root)
+    if not lock.exists():
+        write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_product_lock_binding(root)))
+    return lock
+
+
+def directory_metadata_signature(path: Path) -> tuple[int, int, int, int, int, int]:
+    info = path.lstat()
+    return (
+        info.st_dev,
+        info.st_ino,
+        stat.S_IMODE(info.st_mode),
+        info.st_nlink,
+        info.st_atime_ns,
+        info.st_mtime_ns,
+    )
+
+
+def directory_stable_metadata_signature(path: Path) -> tuple[int, int, int, int]:
+    info = path.lstat()
+    return (
+        info.st_dev,
+        info.st_ino,
+        stat.S_IMODE(info.st_mode),
+        info.st_mtime_ns,
+    )
+
+
+def run_directory_metadata_fd_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    directory = tmp / "directory-metadata-restore"
+    directory.mkdir()
+    os.chmod(directory, manager.OWNER_DIR_MODE)
+    before = directory.lstat()
+    os.chmod(directory, 0o755)
+    replacement_mtime = before.st_mtime_ns + 1_000_000_000
+    original_fchmod = manager.os.fchmod
+    replaced = False
+
+    def replace_path_then_fchmod(descriptor: int, mode: int) -> None:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            directory.rmdir()
+            directory.mkdir()
+            os.chmod(directory, 0o755)
+            os.utime(directory, ns=(replacement_mtime, replacement_mtime))
+        original_fchmod(descriptor, mode)
+
+    manager.os.fchmod = replace_path_then_fchmod
+    try:
+        try:
+            manager.restore_directory_metadata(directory, before, "directory metadata regression")
+            errors.append("directory metadata restore: same-path replacement was accepted")
+        except manager.ManagerError as exc:
+            if "identity changed" not in str(exc):
+                errors.append(f"directory metadata restore: wrong failure for replacement: {exc}")
+    finally:
+        manager.os.fchmod = original_fchmod
+    if not replaced:
+        errors.append("directory metadata restore: replacement hook did not run")
+        return
+    replacement = directory.lstat()
+    if (replacement.st_dev, replacement.st_ino) == (before.st_dev, before.st_ino):
+        errors.append("directory metadata restore: original directory identity still occupies path")
+    if stat.S_IMODE(replacement.st_mode) != 0o755:
+        errors.append("directory metadata restore: replacement directory mode was mutated")
+    if replacement.st_mtime_ns != replacement_mtime:
+        errors.append("directory metadata restore: replacement directory mtime was mutated")
+
+
+def run_external_product_root_rollback_regression(
+    manager: Any,
+    tmp: Path,
+    errors: list[str],
+) -> None:
+    target = (tmp / "external-product-root-rollback").resolve(strict=False)
+    system_root = manager.require_bootstrap_system_root(manager.bootstrap_system_temp_root())
+    before_tree = snapshot_bootstrap_tree(system_root)
+    before_metadata = directory_metadata_signature(system_root)
+    original_rename = manager.rename_no_replace
+
+    def fail_product_publication(source: Path, destination: Path, label: str) -> bool:
+        if label == "external product lock":
+            raise manager.ManagerError("forced product pre-final publication failure")
+        return original_rename(source, destination, label)
+
+    manager.rename_no_replace = fail_product_publication
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external product root rollback: publication unexpectedly succeeded")
+        except manager.ManagerError as exc:
+            if "forced product pre-final publication failure" not in str(exc):
+                errors.append(f"external product root rollback: wrong failure: {exc}")
+    finally:
+        manager.rename_no_replace = original_rename
+    after_tree = snapshot_bootstrap_tree(system_root)
+    after_metadata = directory_metadata_signature(system_root)
+    if after_tree != before_tree or after_metadata != before_metadata:
+        errors.append("external product root rollback: namespace or system root metadata changed")
+
+
+def run_external_lock_cold_read_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "external-lock-cold-read").resolve(strict=False)
+    original_stage_artifact = manager.stage_artifact
+    original_prepare_software_root = manager.prepare_software_root
+    original_finalize_prepared_software = manager.finalize_prepared_software
+    original_select_software_package = manager.select_software_package
+
+    def fake_stage_artifact(stage: Path, package: Any) -> Path:
+        artifact = stage / "artifact.zip"
+        artifact.write_bytes(b"offline-public-validator\n")
+        return artifact
+
+    def fake_prepare_software_root(stage: Path, artifact: Path, package: Any) -> tuple[Path, str]:
+        prepared = stage / "prepared" / manager.SOFTWARE_DIR_NAME
+        private_dir(manager, prepared / "bin")
+        executable = prepared / "bin" / "kiro-cli"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        os.chmod(executable, 0o700)
+        return prepared, "bin/kiro-cli"
+
+    def fake_finalize_prepared_software(
+        prepared: Path,
+        target: Path,
+        package: Any,
+        executable_relative: str,
+    ) -> None:
+        tree = manager.scan_software_tree(prepared, executable_relative)
+        stamp = manager.software_stamp_payload(target, package, executable_relative, tree)
+        manager.atomic_write(prepared / manager.SOFTWARE_STAMP_NAME, manager.canonical_json(stamp))
+
+    manager.stage_artifact = fake_stage_artifact
+    manager.prepare_software_root = fake_prepare_software_root
+    manager.finalize_prepared_software = fake_finalize_prepared_software
+    manager.select_software_package = lambda platform_arg, architecture_arg, libc_arg: fake_package(manager)
+    before = system_bootstrap_snapshot(manager, manager.bootstrap_system_temp_root)
+    try:
+        for label, callback in (
+            ("status", lambda: manager.current_status(target)),
+            ("software-status", lambda: manager.software_status(target)),
+            (
+                "plan",
+                lambda: manager.plan_setup(
+                    target,
+                    manager.CONTENT_SETUP_ID,
+                    manager.DEFAULT_PERMISSION_PROFILE_ID,
+                ),
+            ),
+            (
+                "software-probe",
+                lambda: manager.software_probe(
+                    target,
+                    platform_arg="linux",
+                    architecture_arg="x86_64",
+                    libc_arg="glibc",
+                ),
+            ),
+        ):
+            try:
+                callback()
+            except manager.ManagerError as exc:
+                errors.append(f"external lock cold read {label}: unexpected failure: {exc}")
+    finally:
+        manager.stage_artifact = original_stage_artifact
+        manager.prepare_software_root = original_prepare_software_root
+        manager.finalize_prepared_software = original_finalize_prepared_software
+        manager.select_software_package = original_select_software_package
+    after = system_bootstrap_snapshot(manager, manager.bootstrap_system_temp_root)
+    if after != before:
+        errors.append("external lock cold read: read-only command created external lock namespace")
+
+
 def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    ensure_product_lock_seed(manager)
     cases = [
+        ("empty", b""),
         ("malformed", b'{"schema_version": '),
         ("non-object", b'[]\n'),
     ]
@@ -1495,29 +1801,538 @@ def run_external_lock_binding_regressions(manager: Any, tmp: Path, errors: list[
         target = (tmp / f"external-lock-binding-{label}").resolve(strict=False)
         lock = manager.external_lock_path(target)
         write_external_lock_seed(manager, lock, content)
+        before = snapshot_bootstrap_tree(lock.parent)
         try:
             with manager.external_target_lock(target):
                 errors.append(f"external lock binding {label}: invalid binding was accepted")
         except manager.ManagerError as exc:
             expected = (
+                "external target lock binding is empty"
+                if label == "empty"
+                else
                 "cannot read valid JSON"
                 if label == "malformed"
                 else "must contain a JSON object"
             )
-            if expected not in str(exc):
+            if expected not in str(exc) and not (
+                label == "empty" and "cannot read valid JSON" in str(exc)
+            ):
                 errors.append(f"external lock binding {label}: wrong rejection: {exc}")
+        after = snapshot_bootstrap_tree(lock.parent)
+        if after != before:
+            errors.append(f"external lock binding {label}: invalid binding rejection mutated namespace")
+        cleanup_test_owned_paths(lock)
 
     target = (tmp / "external-lock-binding-mismatch").resolve(strict=False)
     lock = manager.external_lock_path(target)
     wrong = manager.external_lock_binding(target)
     wrong["canonical_target"] = str(tmp / "other-target")
     write_external_lock_seed(manager, lock, manager.canonical_json(wrong))
+    before = snapshot_bootstrap_tree(lock.parent)
     try:
         with manager.external_target_lock(target):
             errors.append("external lock binding mismatch: mismatched binding was accepted")
     except manager.ManagerError as exc:
-        if "external target lock binding mismatch" not in str(exc):
+        if "external target lock binding mismatch" not in str(exc) and "binding digest mismatch" not in str(exc):
             errors.append(f"external lock binding mismatch: wrong rejection: {exc}")
+    after = snapshot_bootstrap_tree(lock.parent)
+    if after != before:
+        errors.append("external lock binding mismatch: rejection mutated namespace")
+    cleanup_test_owned_paths(lock)
+
+    target = (tmp / "external-lock-wrong-mode").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
+    lock.chmod(0o644)
+    before = snapshot_bootstrap_tree(lock.parent)
+    try:
+        with manager.external_target_lock(target):
+            errors.append("external lock wrong mode: unsafe mode was accepted")
+    except manager.ManagerError as exc:
+        if "mode 0600" not in str(exc):
+            errors.append(f"external lock wrong mode: wrong rejection: {exc}")
+    after = snapshot_bootstrap_tree(lock.parent)
+    if after != before:
+        errors.append("external lock wrong mode: rejection mutated namespace")
+    cleanup_test_owned_paths(lock)
+
+    target = (tmp / "external-lock-hardlink").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
+    alias = lock.with_name(f"{lock.name}.alias")
+    os.link(lock, alias)
+    before = snapshot_bootstrap_tree(lock.parent)
+    try:
+        try:
+            with manager.external_target_lock(target):
+                errors.append("external lock hardlink: hard-linked lock was accepted")
+        except manager.ManagerError as exc:
+            if "link" not in str(exc) and "unknown external lock namespace entry" not in str(exc):
+                errors.append(f"external lock hardlink: wrong rejection: {exc}")
+    finally:
+        after = snapshot_bootstrap_tree(lock.parent)
+        if after != before:
+            errors.append("external lock hardlink: rejection mutated namespace")
+        cleanup_test_owned_paths(alias, lock)
+
+
+def run_external_lock_publication_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    ensure_product_lock_seed(manager)
+    target = (tmp / "external-lock-publication").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    with manager.external_target_lock(target, recover_publication=True):
+        pass
+    if not lock.is_file():
+        errors.append("external lock publication: lock file was not published")
+        return
+    try:
+        content = lock.read_bytes()
+        if manager.parse_json_object(content, "external lock publication") != manager.external_lock_binding(target):
+            errors.append("external lock publication: published binding does not match target")
+    except manager.ManagerError as exc:
+        errors.append(f"external lock publication: cannot read published binding: {exc}")
+    if sorted(lock.parent.glob(f".{lock.name}.nddev.tmp.*")):
+        errors.append("external lock publication: staged publication temp residue remains")
+
+    target = (tmp / "external-lock-parent-fsync").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    original_fsync_directory = manager.fsync_directory
+
+    def fail_parent_fsync(path: Path) -> None:
+        if Path(path) == lock.parent:
+            raise manager.ManagerError("forced external lock parent fsync failure")
+        original_fsync_directory(path)
+
+    manager.fsync_directory = fail_parent_fsync
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external lock parent fsync fault: acquisition unexpectedly succeeded")
+        except manager.ManagerError as exc:
+            if "forced external lock parent fsync failure" not in str(exc):
+                errors.append(f"external lock parent fsync fault: wrong failure: {exc}")
+    finally:
+        manager.fsync_directory = original_fsync_directory
+    if not lock.is_file():
+        errors.append("external lock parent fsync fault: final lock was removed after publication")
+        return
+    if sorted(lock.parent.glob(f".{lock.name}.nddev.tmp.*")):
+        errors.append("external lock parent fsync fault: staged publication temp residue remains")
+    try:
+        with manager.external_target_lock(target, recover_publication=True):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock parent fsync fault: final lock did not reopen cleanly: {exc}")
+
+    target = (tmp / "external-lock-eexist-valid-winner").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    expected = manager.canonical_json(manager.external_lock_binding(target))
+    original_rename = manager.rename_no_replace
+    original_drain = manager.drain_external_lock_publication_stages
+    observed_stage_before_drain = False
+
+    def publish_valid_winner(source: Path, destination: Path, label: str) -> bool:
+        if label == "external target lock" and destination == lock:
+            write_external_lock_seed(manager, destination, expected)
+            return False
+        return original_rename(source, destination, label)
+
+    def observe_valid_winner_drain(lock_arg: Path, expected_arg: bytes, label: str) -> None:
+        nonlocal observed_stage_before_drain
+        if label == "external target lock" and lock_arg == lock:
+            stages = sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*"))
+            observed_stage_before_drain = len(stages) == 1
+        original_drain(lock_arg, expected_arg, label)
+
+    manager.rename_no_replace = publish_valid_winner
+    manager.drain_external_lock_publication_stages = observe_valid_winner_drain
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                pass
+        except manager.ManagerError as exc:
+            errors.append(f"external lock EEXIST valid winner: mutator failed: {exc}")
+    finally:
+        manager.rename_no_replace = original_rename
+        manager.drain_external_lock_publication_stages = original_drain
+    if not observed_stage_before_drain:
+        errors.append("external lock EEXIST valid winner: fresh stage was not retained until drain")
+    if sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*")):
+        errors.append("external lock EEXIST valid winner: post-lock drain left fresh stage")
+
+    target = (tmp / "external-lock-eexist-malformed-winner").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    parent_before = directory_stable_metadata_signature(lock.parent)
+
+    def publish_malformed_winner(source: Path, destination: Path, label: str) -> bool:
+        if label == "external target lock" and destination == lock:
+            write_external_lock_seed(manager, destination, b'{"schema_version": ')
+            return False
+        return original_rename(source, destination, label)
+
+    manager.rename_no_replace = publish_malformed_winner
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external lock EEXIST malformed winner: invalid winner was accepted")
+        except manager.ManagerError:
+            pass
+    finally:
+        manager.rename_no_replace = original_rename
+    if directory_stable_metadata_signature(lock.parent) != parent_before:
+        errors.append("external lock EEXIST malformed winner: parent metadata was not restored")
+    if sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*")):
+        errors.append("external lock EEXIST malformed winner: fresh stage leaked")
+    cleanup_test_owned_paths(lock)
+
+    target = (tmp / "external-lock-eexist-mismatched-winner").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    other = (tmp / "external-lock-eexist-mismatched-other").resolve(strict=False)
+    parent_before = directory_stable_metadata_signature(lock.parent)
+
+    def publish_mismatched_winner(source: Path, destination: Path, label: str) -> bool:
+        if label == "external target lock" and destination == lock:
+            write_external_lock_seed(
+                manager,
+                destination,
+                manager.canonical_json(manager.external_lock_binding(other)),
+            )
+            return False
+        return original_rename(source, destination, label)
+
+    manager.rename_no_replace = publish_mismatched_winner
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external lock EEXIST mismatched winner: invalid winner was accepted")
+        except manager.ManagerError:
+            pass
+    finally:
+        manager.rename_no_replace = original_rename
+    if directory_stable_metadata_signature(lock.parent) != parent_before:
+        errors.append("external lock EEXIST mismatched winner: parent metadata was not restored")
+    if sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*")):
+        errors.append("external lock EEXIST mismatched winner: fresh stage leaked")
+    cleanup_test_owned_paths(lock)
+
+
+def run_external_lock_namespace_validation_regressions(
+    manager: Any,
+    tmp: Path,
+    errors: list[str],
+) -> None:
+    ensure_product_lock_seed(manager)
+    request_target = (tmp / "external-lock-namespace-request").resolve(strict=False)
+    valid_target = (tmp / "external-lock-namespace-valid-other").resolve(strict=False)
+    valid_lock = manager.external_lock_path(valid_target)
+    valid_stage = write_external_lock_stage(manager, valid_lock, valid_target, 1)
+    write_external_lock_seed(
+        manager,
+        valid_lock,
+        manager.canonical_json(manager.external_lock_binding(valid_target)),
+    )
+    try:
+        with manager.external_target_lock(request_target):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock namespace valid entries: exact namespace was rejected: {exc}")
+    cleanup_test_owned_paths(valid_stage, valid_lock)
+
+    root = manager.bootstrap_product_root()
+    assert root is not None
+    cases: list[tuple[str, Path, bytes]] = [
+        ("unknown entry", root / "unknown-entry", b"unknown\n"),
+        ("malformed target anchor", root / f"{'0' * 64}.lock", b'{"schema_version": '),
+        (
+            "mismatched target anchor",
+            root / f"{'1' * 64}.lock",
+            manager.canonical_json(manager.external_lock_binding(tmp / "namespace-wrong-target")),
+        ),
+        (
+            "malformed target stage",
+            root / f".{'2' * 64}.lock.nddev.tmp.1.1",
+            b'{"schema_version": ',
+        ),
+    ]
+    for label, entry, content in cases:
+        write_external_lock_seed(manager, entry, content)
+        before = snapshot_bootstrap_tree(root)
+        try:
+            with manager.external_target_lock(request_target):
+                errors.append(f"external lock namespace {label}: invalid entry was accepted")
+        except manager.ManagerError:
+            pass
+        after = snapshot_bootstrap_tree(root)
+        if after != before:
+            errors.append(f"external lock namespace {label}: rejection mutated namespace")
+        cleanup_test_owned_paths(entry)
+
+
+def external_lock_stage_path(manager: Any, lock: Path, index: int) -> Path:
+    return lock.with_name(f"{manager.external_lock_stage_prefix(lock)}1.{index}")
+
+
+def write_external_lock_stage(
+    manager: Any,
+    lock: Path,
+    target: Path,
+    index: int,
+    *,
+    content: bytes | None = None,
+) -> Path:
+    stage = external_lock_stage_path(manager, lock, index)
+    payload = manager.canonical_json(manager.external_lock_binding(target)) if content is None else content
+    write_external_lock_seed(manager, stage, payload)
+    return stage
+
+
+def assert_external_lock_stage_unchanged(
+    manager: Any,
+    lock: Path,
+    action: Any,
+    errors: list[str],
+    label: str,
+) -> None:
+    before = snapshot_bootstrap_tree(lock.parent)
+    try:
+        action()
+        errors.append(f"{label}: invalid staged publication was accepted")
+    except manager.ManagerError:
+        pass
+    after = snapshot_bootstrap_tree(lock.parent)
+    if after != before:
+        errors.append(f"{label}: staged publication failure mutated the namespace")
+
+
+def fork_external_lock_stage_crash(
+    manager: Any,
+    target: Path,
+    ready: Path,
+    error_file: Path,
+) -> int:
+    pid = os.fork()
+    if pid == 0:
+        original_rename = manager.rename_no_replace
+
+        def stop_before_rename(source: Path, destination: Path, label: str) -> bool:
+            if label == "external product lock":
+                return original_rename(source, destination, label)
+            ready.write_text(f"{source}\n{destination}\n{label}\n", encoding="utf-8")
+            while True:
+                time.sleep(1)
+
+        try:
+            manager.rename_no_replace = stop_before_rename
+            with manager.external_target_lock(target, recover_publication=True):
+                pass
+        except BaseException as exc:
+            with contextlib.suppress(Exception):
+                error_file.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            manager.rename_no_replace = original_rename
+            os._exit(125)
+        os._exit(0)
+    return pid
+
+
+def run_external_lock_stage_recovery_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
+    ensure_product_lock_seed(manager)
+    target = (tmp / "external-lock-stage-crash").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    ready = tmp / "external-lock-stage-crash-ready"
+    child_error = tmp / "external-lock-stage-crash-error"
+    child = fork_external_lock_stage_crash(manager, target, ready, child_error)
+    try:
+        if not wait_for_path(ready, 5):
+            errors.append(
+                "external lock stage crash: child did not reach pre-rename barrier "
+                f"(error={child_error.read_text(encoding='utf-8') if child_error.exists() else ''!r})"
+            )
+            return
+        os.kill(child, signal.SIGKILL)
+        pid, status = os.waitpid(child, 0)
+        if pid != child or not os.WIFSIGNALED(status) or os.WTERMSIG(status) != signal.SIGKILL:
+            errors.append(f"external lock stage crash: child was not SIGKILLed cleanly: status={status}")
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(child, signal.SIGKILL)
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(child, 0)
+    stages = sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*"))
+    if len(stages) != 1:
+        errors.append(f"external lock stage crash: expected one staged alias, got {len(stages)}")
+        return
+    stage = stages[0]
+    if not stage.is_file() or stage.read_bytes() != manager.canonical_json(manager.external_lock_binding(target)):
+        errors.append("external lock stage crash: staged alias is not the exact canonical binding")
+    before_read = snapshot_bootstrap_tree(lock.parent)
+    try:
+        with manager.external_target_lock(target):
+            errors.append("external lock stage crash: read-only lock repaired staged alias")
+    except manager.ManagerError as exc:
+        if "publication is incomplete" not in str(exc):
+            errors.append(f"external lock stage crash: read-only failed for wrong reason: {exc}")
+    after_read = snapshot_bootstrap_tree(lock.parent)
+    if after_read != before_read:
+        errors.append("external lock stage crash: read-only path mutated staged alias state")
+    try:
+        with manager.external_target_lock(target, recover_publication=True):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock stage crash: mutator recovery failed: {exc}")
+        return
+    if stage.exists():
+        errors.append("external lock stage crash: recovered mutator left staged alias")
+    if not lock.is_file():
+        errors.append("external lock stage crash: recovered mutator did not publish final anchor")
+
+    target = (tmp / "external-lock-stage-multiple").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    stage_one = write_external_lock_stage(manager, lock, target, 1)
+    stage_two = write_external_lock_stage(manager, lock, target, 2)
+    try:
+        with manager.external_target_lock(target, recover_publication=True):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock multiple stage recovery: mutator failed: {exc}")
+    if stage_one.exists() or stage_two.exists():
+        errors.append("external lock multiple stage recovery: proven stages remain after recovery")
+    if not lock.is_file():
+        errors.append("external lock multiple stage recovery: final anchor was not published")
+
+    target = (tmp / "external-lock-stage-missing-source-valid-final").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    expected = manager.canonical_json(manager.external_lock_binding(target))
+    stage = write_external_lock_stage(manager, lock, target, 1)
+    original_rename = manager.rename_no_replace
+
+    def missing_source_valid_final(source: Path, destination: Path, label: str) -> bool:
+        if label == "external lock stage recovery" and destination == lock:
+            cleanup_test_owned_paths(source)
+            write_external_lock_seed(manager, destination, expected)
+            raise manager.ManagerError("forced missing source with valid final winner")
+        return original_rename(source, destination, label)
+
+    manager.rename_no_replace = missing_source_valid_final
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                pass
+        except manager.ManagerError as exc:
+            errors.append(f"external lock missing-source valid-final winner: mutator failed: {exc}")
+    finally:
+        manager.rename_no_replace = original_rename
+    if stage.exists():
+        errors.append("external lock missing-source valid-final winner: source stage remains")
+    if not lock.is_file():
+        errors.append("external lock missing-source valid-final winner: final anchor is missing")
+
+    target = (tmp / "external-lock-stage-drain").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
+    final_identity = lock.lstat().st_dev, lock.lstat().st_ino
+    stage = write_external_lock_stage(manager, lock, target, 1)
+    second_stage = write_external_lock_stage(manager, lock, target, 2)
+    try:
+        with manager.external_target_lock(target, recover_publication=True):
+            pass
+    except manager.ManagerError as exc:
+        errors.append(f"external lock stage drain: mutator failed to drain proven stage: {exc}")
+    if stage.exists() or second_stage.exists():
+        errors.append("external lock stage drain: proven stage remains after mutator drain")
+    if lock.is_file() and final_identity != (lock.lstat().st_dev, lock.lstat().st_ino):
+        errors.append("external lock stage drain: final anchor identity changed during drain")
+
+    target = (tmp / "external-lock-stage-replaced-before-drain").resolve(strict=False)
+    lock = manager.external_lock_path(target)
+    write_external_lock_seed(manager, lock, manager.canonical_json(manager.external_lock_binding(target)))
+    stage = write_external_lock_stage(manager, lock, target, 1)
+    expected = manager.canonical_json(manager.external_lock_binding(target))
+    original_stages = manager.require_external_lock_stages(lock, expected)
+    stage.unlink()
+    write_external_lock_stage(manager, lock, target, 1)
+    before_replace = snapshot_bootstrap_tree(lock.parent)
+    original_require_stages = manager.require_external_lock_stages
+    manager.require_external_lock_stages = lambda lock_arg, expected_arg: original_stages
+    try:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                errors.append("external lock stage replacement: replaced stage was accepted for drain")
+        except manager.ManagerError:
+            pass
+    finally:
+        manager.require_external_lock_stages = original_require_stages
+    after_replace = snapshot_bootstrap_tree(lock.parent)
+    if after_replace != before_replace:
+        errors.append("external lock stage replacement: replaced stage was mutated")
+
+    adversarial_cases: list[tuple[str, Any]] = []
+
+    def make_unknown(lock: Path, target: Path) -> None:
+        write_external_lock_seed(
+            manager,
+            lock.with_name(f"{manager.external_lock_stage_prefix(lock)}not-bounded"),
+            manager.canonical_json(manager.external_lock_binding(target)),
+        )
+
+    def make_partial(lock: Path, target: Path) -> None:
+        write_external_lock_stage(manager, lock, target, 1, content=b'{"schema_version": ')
+
+    def make_symlink(lock: Path, target: Path) -> None:
+        os.symlink("missing", external_lock_stage_path(manager, lock, 1))
+
+    def make_hardlink(lock: Path, target: Path) -> None:
+        stage = write_external_lock_stage(manager, lock, target, 1)
+        os.link(stage, lock.with_name(f"{stage.name}.alias"))
+
+    def make_wrong_target(lock: Path, target: Path) -> None:
+        other = (tmp / "external-lock-stage-wrong-target-other").resolve(strict=False)
+        write_external_lock_stage(
+            manager,
+            lock,
+            target,
+            1,
+            content=manager.canonical_json(manager.external_lock_binding(other)),
+        )
+
+    def make_excessive(lock: Path, target: Path) -> None:
+        for index in range(1, manager.EXTERNAL_LOCK_STAGE_ACCEPT_MAX + 2):
+            write_external_lock_stage(manager, lock, target, index)
+
+    def make_overlong_name(lock: Path, target: Path) -> None:
+        write_external_lock_seed(
+            manager,
+            lock.with_name(f"{manager.external_lock_stage_prefix(lock)}1.12345678901234567890"),
+            manager.canonical_json(manager.external_lock_binding(target)),
+        )
+
+    adversarial_cases.extend(
+        [
+            ("unknown stage name", make_unknown),
+            ("overlong stage name", make_overlong_name),
+            ("partial stage", make_partial),
+            ("symlink stage", make_symlink),
+            ("hardlink stage", make_hardlink),
+            ("wrong-target stage", make_wrong_target),
+            ("excessive stages", make_excessive),
+        ]
+    )
+    for label, maker in adversarial_cases:
+        target = (tmp / f"external-lock-stage-{label.replace(' ', '-')}").resolve(strict=False)
+        lock = manager.external_lock_path(target)
+        maker(lock, target)
+
+        def recover_target(target: Path = target) -> None:
+            with manager.external_target_lock(target, recover_publication=True):
+                pass
+
+        assert_external_lock_stage_unchanged(
+            manager,
+            lock,
+            recover_target,
+            errors,
+            f"external lock {label}",
+        )
+        cleanup_test_owned_paths(*sorted(lock.parent.glob(f"{manager.external_lock_stage_prefix(lock)}*")))
 
 
 def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -1527,7 +2342,7 @@ def run_stamp_provenance_regressions(manager: Any, tmp: Path, errors: list[str])
     script = f"#!/bin/sh\nprintf run > {shlex.quote(str(marker))}\nexit 0\n"
     stamp_path = install_fake_software(manager, target, script)
 
-    mutate_stamp(manager, stamp_path, lambda stamp: stamp["package"].__setitem__("download", "2.14.2/tampered.zip"))
+    mutate_stamp(manager, stamp_path, lambda stamp: stamp["package"].__setitem__("download", "2.15.1/tampered.zip"))
     assert_status_blocks_launch(
         manager,
         target,
@@ -1602,6 +2417,185 @@ def run_launch_runtime_symlink_regressions(manager: Any, tmp: Path, errors: list
             pass
         if marker.exists():
             errors.append(f"launch runtime {name}: child executable ran through symlinked runtime root")
+
+
+def run_launch_workspace_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target = (tmp / "launch-workspace").resolve(strict=False)
+    prepare_managed_target(manager, target)
+    install_fake_software(manager, target, "#!/bin/sh\nexit 0\n")
+    workspace = tmp / "workspace"
+    private_dir(manager, workspace)
+    args = manager.parse_args(
+        [
+            "launch",
+            "--target",
+            str(target),
+            "--workspace",
+            str(workspace),
+            "--",
+            "chat",
+        ]
+    )
+    if args.workspace != str(workspace) or args.child_args != ["--", "chat"]:
+        errors.append("launch workspace parser: --workspace was not parsed as a manager option")
+
+    for label, raw_workspace in (
+        ("relative", "relative-workspace"),
+        ("missing", str(tmp / "missing-workspace")),
+    ):
+        try:
+            manager.resolve_launch_workspace(raw_workspace, tmp)
+            errors.append(f"launch workspace {label}: invalid workspace was accepted")
+        except manager.ManagerError:
+            pass
+
+    workspace_link = tmp / "workspace-link"
+    os.symlink(workspace, workspace_link)
+    try:
+        manager.resolve_launch_workspace(str(workspace_link), tmp)
+        errors.append("launch workspace symlink: symlink final directory was accepted")
+    except manager.ManagerError:
+        pass
+
+    captured: dict[str, Any] = {}
+    original_call = manager.subprocess.call
+
+    def fake_call(argv: list[str], *, env: dict[str, str], cwd: str) -> int:
+        captured["argv"] = argv
+        captured["env"] = env
+        captured["cwd"] = cwd
+        return 7
+
+    manager.subprocess.call = fake_call
+    try:
+        code = manager.launch(target, ["chat"], manager.resolve_launch_workspace(str(workspace), tmp))
+    finally:
+        manager.subprocess.call = original_call
+    if code != 7:
+        errors.append(f"launch workspace cwd: child exit code was not forwarded: {code}")
+    if captured.get("cwd") != str(workspace.resolve(strict=True)):
+        errors.append(f"launch workspace cwd: child cwd mismatch: {captured.get('cwd')!r}")
+    if captured.get("argv", [None])[1:] != [manager.MANAGED_LAUNCH_ENGINE_ARGUMENT, "chat"]:
+        errors.append(f"launch workspace argv: launch arguments mismatch: {captured.get('argv')!r}")
+
+    blocked = [
+        "--workspace",
+        "--workspace=/tmp",
+        "--project",
+        "--project=/tmp",
+        "--cwd",
+        "--cwd=/tmp",
+        "--directory",
+        "--directory=/tmp",
+        "--folder",
+        "--folder=/tmp",
+        "-C",
+        "-C/tmp",
+    ]
+    for option in blocked:
+        try:
+            manager.launch(target, [option], workspace)
+            errors.append(f"launch workspace override {option}: override was accepted")
+        except manager.ManagerError:
+            pass
+
+
+def run_launch_grammar_regression(manager: Any, errors: list[str]) -> None:
+    allowed = [
+        [],
+        ["chat"],
+        ["chat", "--no-interactive", "x=y is prompt text"],
+        ["chat", "--resume"],
+        ["chat", "--resume-id=session-1"],
+        ["chat", "--effort", "high"],
+        ["chat", "--format=json"],
+        ["whoami"],
+        ["whoami", "--format=json"],
+        ["whoami", "-f", "json", "--verbose"],
+        ["diagnostic"],
+        ["diagnostic", "--format=json", "-v"],
+        ["diagnostic", "--force"],
+        ["doctor"],
+        ["doctor", "--all", "--strict", "--format=json"],
+        ["doctor", "-a", "-s", "-f", "json"],
+        ["theme", "--list"],
+        ["theme", "--folder"],
+        ["theme", "list"],
+        ["theme", "show"],
+        ["integrations", "status", "--format=json"],
+        ["integrations", "status", "-f", "json"],
+        ["inline", "status"],
+        ["inline", "show-customizations"],
+        ["mcp", "list"],
+        ["mcp", "status", "--name", "default"],
+        ["mcp", "status", "--name=default"],
+        ["settings", "list"],
+        ["settings", "list", "--all"],
+        ["settings", "list", "--all", "--format=json"],
+        ["settings", "telemetry.enabled"],
+        ["agent", "list"],
+        ["agent", "show", "nddev-builder"],
+        ["agent", "validate", "nddev-builder"],
+        ["explain", "x=y", "in", "code"],
+    ]
+    for args in allowed:
+        try:
+            manager.reject_managed_launch_overrides(list(args))
+        except manager.ManagerError as exc:
+            errors.append(f"launch grammar allowed {args!r}: rejected: {exc}")
+
+    blocked = [
+        ["--no-interactive"],
+        ["chat", "--agent", "nddev-builder"],
+        ["chat", "--trust-all-tools"],
+        ["chat", "--workspace=/tmp"],
+        ["chat", "--project", "/tmp"],
+        ["chat", "--cwd=/tmp"],
+        ["chat", "--directory", "/tmp"],
+        ["chat", "--classic"],
+        ["chat", "--tui"],
+        ["chat", "--v3"],
+        ["chat", "--version"],
+        ["chat", "-C", "/tmp"],
+        ["chat", "-C/tmp"],
+        ["update", "-y"],
+        ["login"],
+        ["logout"],
+        ["issue"],
+        ["launch"],
+        ["version"],
+        ["theme", "dark"],
+        ["theme", "--folder=/tmp"],
+        ["inline", "enable"],
+        ["inline", "disable"],
+        ["inline", "set-customization"],
+        ["integrations", "install"],
+        ["integrations", "reinstall"],
+        ["integrations", "uninstall"],
+        ["integrations", "status", "--silent"],
+        ["integrations", "status", "-s"],
+        ["mcp", "add"],
+        ["mcp", "remove"],
+        ["mcp", "import"],
+        ["mcp", "status"],
+        ["mcp", "status", "--name"],
+        ["settings", "telemetry.enabled", "true"],
+        ["settings", "telemetry.enabled=true"],
+        ["settings", "--delete", "telemetry.enabled"],
+        ["settings", "-d", "telemetry.enabled"],
+        ["settings", "open"],
+        ["settings", "list", "--delete=telemetry.enabled"],
+        ["diagnostic", "-y"],
+        ["theme", "-d"],
+        ["agent", "create"],
+        ["agent", "set-default"],
+    ]
+    for args in blocked:
+        try:
+            manager.reject_managed_launch_overrides(list(args))
+            errors.append(f"launch grammar blocked {args!r}: accepted")
+        except manager.ManagerError:
+            pass
 
 
 def run_launch_lock_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -1800,7 +2794,7 @@ def fork_external_lock_holder(
         try:
             if waiting is not None:
                 waiting.write_text("waiting\n", encoding="utf-8")
-            with manager.external_target_lock(target, blocking=True) as lock:
+            with manager.external_target_lock(target, blocking=True, recover_publication=True) as lock:
                 info = lock.lstat()
                 ready.write_text(f"{info.st_dev}:{info.st_ino}\n", encoding="utf-8")
                 while not release.exists():
@@ -1811,6 +2805,60 @@ def fork_external_lock_holder(
             os._exit(125)
         os._exit(0)
     return pid
+
+
+def fork_external_lock_rejector(
+    manager: Any,
+    target: Path,
+    ready: Path,
+    error_file: Path,
+) -> int:
+    pid = os.fork()
+    if pid == 0:
+        try:
+            with manager.external_target_lock(target, recover_publication=True):
+                error_file.write_text("unexpectedly acquired target lock\n", encoding="utf-8")
+                os._exit(125)
+        except manager.ManagerError as exc:
+            if "target is already locked" not in str(exc):
+                error_file.write_text(f"wrong rejection: {exc}\n", encoding="utf-8")
+                os._exit(125)
+            ready.write_text("rejected\n", encoding="utf-8")
+        os._exit(0)
+    return pid
+
+
+def run_external_lock_different_target_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
+    target_a = (tmp / "external-lock-different-a").resolve(strict=False)
+    target_b = (tmp / "external-lock-different-b").resolve(strict=False)
+    ready_a = tmp / "different-a-ready"
+    ready_b = tmp / "different-b-ready"
+    release_a = tmp / "different-release-a"
+    release_b = tmp / "different-release-b"
+    error_a = tmp / "different-a-error"
+    error_b = tmp / "different-b-error"
+    child_a = fork_external_lock_holder(manager, target_a, ready_a, release_a, error_a)
+    child_b: int | None = None
+    try:
+        if not wait_for_path(ready_a, 5):
+            errors.append(
+                "external lock different target regression: first holder did not acquire "
+                f"(error={error_a.read_text(encoding='utf-8') if error_a.exists() else ''!r})"
+            )
+            return
+        child_b = fork_external_lock_holder(manager, target_b, ready_b, release_b, error_b)
+        if not wait_for_path(ready_b, 2):
+            errors.append(
+                "external lock different target regression: second target did not acquire concurrently "
+                f"(error={error_b.read_text(encoding='utf-8') if error_b.exists() else ''!r})"
+            )
+            return
+    finally:
+        release_a.write_text("release\n", encoding="utf-8")
+        release_b.write_text("release\n", encoding="utf-8")
+        wait_for_child(child_a, 5, errors, "external lock different target first holder")
+        if child_b is not None:
+            wait_for_child(child_b, 5, errors, "external lock different target second holder")
 
 
 def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[str]) -> None:
@@ -1866,6 +2914,15 @@ def run_external_lock_handover_regression(manager: Any, tmp: Path, errors: list[
             errors.append(
                 "external lock handover regression: lock inode changed across handoff "
                 f"({first_inode} -> {second_inode})"
+            )
+        c_ready = tmp / "handover-c-ready"
+        c_error = tmp / "handover-c-error"
+        child_c = fork_external_lock_rejector(manager, target, c_ready, c_error)
+        code_c = wait_for_child(child_c, 5, errors, "external lock handover regression third contender")
+        if code_c not in (0, None) or not c_ready.exists():
+            errors.append(
+                "external lock handover regression: third process did not fail on held target "
+                f"(rc={code_c}, error={c_error.read_text(encoding='utf-8') if c_error.exists() else ''!r})"
             )
         try:
             with manager.external_target_lock(target):
@@ -2099,6 +3156,8 @@ def run_public_manager_regressions(errors: list[str]) -> None:
     manager = load_manager_for_regressions(errors)
     if manager is None:
         return
+    if getattr(manager, "MANAGED_LAUNCH_GRAMMAR_VERSION", None) != "kiro-cli-2.15.1":
+        errors.append("public manager regressions: launch grammar version mismatch")
     original_bootstrap_root = manager.bootstrap_system_temp_root
     real_before = system_bootstrap_snapshot(manager, original_bootstrap_root)
     try:
@@ -2110,12 +3169,21 @@ def run_public_manager_regressions(errors: list[str]) -> None:
             if stat.S_IMODE(injected_system_root.lstat().st_mode) != 0o1777:
                 errors.append("public manager regressions: injected bootstrap root must be 01777")
             manager.bootstrap_system_temp_root = lambda: injected_system_root
+            run_directory_metadata_fd_regression(manager, tmp, errors)
+            run_external_lock_cold_read_regressions(manager, tmp, errors)
+            run_external_product_root_rollback_regression(manager, tmp, errors)
             run_external_lock_binding_regressions(manager, tmp, errors)
+            run_external_lock_publication_regressions(manager, tmp, errors)
+            run_external_lock_namespace_validation_regressions(manager, tmp, errors)
+            run_external_lock_stage_recovery_regressions(manager, tmp, errors)
             run_stamp_provenance_regressions(manager, tmp, errors)
             run_launch_runtime_symlink_regressions(manager, tmp, errors)
+            run_launch_workspace_regression(manager, tmp, errors)
+            run_launch_grammar_regression(manager, errors)
             run_launch_lock_regression(manager, tmp, errors)
             run_external_lock_internal_rename_regression(manager, tmp, errors)
             run_external_lock_handover_regression(manager, tmp, errors)
+            run_external_lock_different_target_regression(manager, tmp, errors)
     except Exception as exc:
         errors.append(f"public manager regressions failed: {exc}")
     finally:
@@ -2141,8 +3209,8 @@ def main() -> int:
     if version is not None:
         if version.get("build_version") != version_text:
             errors.append("VERSION disagrees with build/version.json:build_version")
-        if version.get("kiro_cli_current") != "2.14.2":
-            errors.append("build/version.json: kiro_cli_current must be 2.14.2")
+        if version.get("kiro_cli_current") != "2.15.1":
+            errors.append("build/version.json: kiro_cli_current must be 2.15.1")
     if manifest is not None:
         check_manifest(manifest, version_text, errors)
     if contract is not None:

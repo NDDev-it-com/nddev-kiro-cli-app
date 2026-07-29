@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -24,6 +25,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -114,6 +116,23 @@ LOCK_RUNTIME_DIR = ".nddev-runtime/locks"
 LOCK_DIR_NAME = "setup-manager.lock"
 EXTERNAL_LOCK_SCHEMA = 1
 EXTERNAL_LOCK_NAME_SUFFIX = ".lock"
+EXTERNAL_PRODUCT_LOCK_NAME = "product.lock"
+EXTERNAL_LOCK_STAGE_NAME_EXTRA_PATTERN = re.compile(r"[1-9][0-9]{0,18}\.[1-9][0-9]{0,18}\Z")
+EXTERNAL_TARGET_LOCK_NAME_PATTERN = re.compile(r"[0-9a-f]{64}\.lock\Z")
+EXTERNAL_TARGET_LOCK_STAGE_NAME_PATTERN = re.compile(
+    r"\.([0-9a-f]{64}\.lock)\.nddev\.tmp\.([1-9][0-9]{0,18}\.[1-9][0-9]{0,18})\Z"
+)
+EXTERNAL_LOCK_DIRECTORY_SCAN_MAX_ENTRIES = 4096
+EXTERNAL_LOCK_STAGE_ACCEPT_MAX = 16
+AT_FDCWD_BY_SYSTEM = {"darwin": -2, "linux": -100}
+RENAME_EXCL_DARWIN = 0x00000004
+RENAME_NOREPLACE_LINUX = 1
+RENAMEAT2_SYSCALL_BY_MACHINE = {
+    "amd64": 316,
+    "x86_64": 316,
+    "aarch64": 276,
+    "arm64": 276,
+}
 BACKUP_RUNTIME_DIR = ".nddev-runtime/backups/setup"
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 TRUSTED_BASH = "/bin/bash"
@@ -125,25 +144,40 @@ DOWNLOAD_METADATA_MAX_BYTES = 4 * 1024 * 1024
 BACKUP_TREE_MAX_FILES = 256
 MANAGED_LAUNCH_ENGINE_ARGUMENT = "--v3"
 MANAGED_LAUNCH_ENGINE_STATUS = "early-access-required"
-MANAGED_LAUNCH_BLOCKED_OPTIONS = (
+MANAGED_LAUNCH_GRAMMAR_VERSION = "kiro-cli-2.15.1"
+MANAGED_LAUNCH_MANAGER_OWNED_OPTIONS = (
     "--agent",
     "--classic",
-    "--no-interactive",
+    "--cwd",
+    "--directory",
+    "--project",
     "--require-mcp-startup",
+    "--tui",
     "--trust-all-tools",
     "--trust-tools",
     "--v3",
+    "--version",
+    "--workspace",
 )
-MANAGED_LAUNCH_BLOCKED_COMMANDS = (
-    "agent",
-    "diagnostic",
-    "integrations",
+MANAGED_LAUNCH_MANAGER_OWNED_SHORT_PREFIXES = ("-C",)
+MANAGED_LAUNCH_BLOCKED_TOP_LEVEL_COMMANDS = (
+    "issue",
     "launch",
     "login",
     "logout",
+    "update",
+    "version",
+)
+MANAGED_LAUNCH_READ_ONLY_COMMANDS = (
+    "agent",
+    "chat",
+    "diagnostic",
+    "doctor",
+    "integrations",
+    "inline",
     "mcp",
     "settings",
-    "update",
+    "theme",
     "whoami",
 )
 SETTINGS_MANAGED_KEYS = (
@@ -286,6 +320,19 @@ class SoftwareTree:
     executable_sha256: str
 
 
+@dataclass(frozen=True)
+class LockStage:
+    path: Path
+    dev: int
+    ino: int
+    mode: int
+    uid: int | None
+    nlink: int
+    size: int
+    mtime_ns: int
+    payload: bytes
+
+
 def fail(message: str) -> NoReturn:
     raise ManagerError(message)
 
@@ -301,6 +348,24 @@ def write_complete(descriptor: int, content: bytes, label: str) -> None:
         if written <= 0:
             fail(f"{label} write made no progress")
         remaining = remaining[written:]
+
+
+def fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open directory for durability sync {path}: {exc}")
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        fail(f"cannot sync directory {path}: {exc}")
+    finally:
+        os.close(descriptor)
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -2555,20 +2620,90 @@ def require_bootstrap_system_root(path: Path) -> Path:
     return resolved
 
 
-def bootstrap_product_root() -> Path:
+def restore_directory_metadata(path: Path, before: os.stat_result, label: str) -> None:
+    flags = os.O_RDONLY
+    if not hasattr(os, "O_DIRECTORY"):
+        fail(f"{label} fd-bound directory restore is unsupported")
+    flags |= os.O_DIRECTORY
+    if not hasattr(os, "O_NOFOLLOW"):
+        fail(f"{label} no-follow directory restore is unsupported")
+    flags |= os.O_NOFOLLOW
+    if not hasattr(os, "O_CLOEXEC"):
+        fail(f"{label} close-on-exec directory restore is unsupported")
+    flags |= os.O_CLOEXEC
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open {label} for metadata restore: {exc}")
+    before_mode = stat.S_IMODE(before.st_mode)
+    try:
+        current = os.fstat(descriptor)
+        if not stat.S_ISDIR(current.st_mode):
+            fail(f"{label} must be a real directory")
+        if identity_of(current) != identity_of(before):
+            raise ConcurrentTargetChange(f"{label} identity changed")
+        if stat.S_IMODE(current.st_mode) != before_mode:
+            if not current_user_owns(current):
+                fail(f"{label} mode changed and cannot be restored")
+            try:
+                os.fchmod(descriptor, before_mode)
+            except OSError as exc:
+                fail(f"cannot restore {label} mode: {exc}")
+        if os.utime not in os.supports_fd:
+            fail(f"{label} fd-bound timestamp restore is unsupported")
+        try:
+            os.utime(descriptor, ns=(before.st_atime_ns, before.st_mtime_ns))
+        except OSError as exc:
+            fail(f"cannot restore {label} timestamps: {exc}")
+        restored_fd = os.fstat(descriptor)
+        if not stat.S_ISDIR(restored_fd.st_mode):
+            fail(f"{label} must remain a real directory")
+        if identity_of(restored_fd) != identity_of(before):
+            raise ConcurrentTargetChange(f"{label} identity changed")
+    finally:
+        os.close(descriptor)
+    restored = require_directory(path, label)
+    if identity_of(restored) != identity_of(before):
+        raise ConcurrentTargetChange(f"{label} identity changed")
+    if stat.S_IMODE(restored.st_mode) != before_mode:
+        fail(f"{label} mode was not restored")
+    if restored.st_atime_ns != before.st_atime_ns or restored.st_mtime_ns != before.st_mtime_ns:
+        fail(f"{label} timestamps were not restored")
+
+
+def bootstrap_product_root_path() -> Path:
     system_root = require_bootstrap_system_root(bootstrap_system_temp_root())
+    uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+    return system_root / f"{PRODUCT_NAME}-{uid}"
+
+
+def bootstrap_product_root(*, create: bool = True) -> Path | None:
+    system_root = require_bootstrap_system_root(bootstrap_system_temp_root())
+    system_before = system_root.lstat()
     uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
     root = system_root / f"{PRODUCT_NAME}-{uid}"
     info = lstat_optional(root)
     created = False
     if info is None:
+        if not create:
+            return None
         try:
             root.mkdir(mode=OWNER_DIR_MODE)
             created = True
         except FileExistsError:
             pass
     if created:
-        os.chmod(root, OWNER_DIR_MODE)
+        try:
+            os.chmod(root, OWNER_DIR_MODE)
+            restore_directory_metadata(system_root, system_before, "bootstrap system temp root")
+            fsync_directory(system_root)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                root.rmdir()
+            with contextlib.suppress(ManagerError):
+                restore_directory_metadata(system_root, system_before, "bootstrap system temp root")
+                fsync_directory(system_root)
+            raise
     require_owner_private_directory(root, "bootstrap product lock root")
     return root
 
@@ -2579,7 +2714,9 @@ def external_lock_digest(target: Path) -> str:
 
 
 def external_lock_path(target: Path) -> Path:
-    return bootstrap_product_root() / f"{external_lock_digest(target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
+    root = bootstrap_product_root()
+    assert root is not None
+    return root / f"{external_lock_digest(target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
 
 
 def external_lock_binding(target: Path) -> dict[str, Any]:
@@ -2592,36 +2729,545 @@ def external_lock_binding(target: Path) -> dict[str, Any]:
     }
 
 
-def open_external_lock_file(lock: Path) -> int:
+def external_product_lock_path(root: Path) -> Path:
+    return root / EXTERNAL_PRODUCT_LOCK_NAME
+
+
+def external_product_lock_binding(root: Path) -> dict[str, Any]:
+    return {
+        "schema_version": EXTERNAL_LOCK_SCHEMA,
+        "product_name": PRODUCT_NAME,
+        "anchor_kind": "product",
+        "lock_root": str(root),
+    }
+
+
+def external_anchor_binding(path: Path, target: Path | None) -> dict[str, Any]:
+    if target is None:
+        return external_product_lock_binding(path.parent)
+    payload = external_lock_binding(target)
+    payload["anchor_kind"] = "target"
+    return payload
+
+
+def lexical_canonical_target_valid(value: str) -> bool:
+    target = Path(value)
+    if not target.is_absolute():
+        return False
+    if target.name in {"", ".", ".."}:
+        return False
+    return not any(part in {"", ".", ".."} for part in target.parts)
+
+
+def external_lock_digest_for_canonical_text(canonical_target: str) -> str:
+    return sha256_bytes(f"{PRODUCT_NAME}\0{canonical_target}".encode("utf-8"))
+
+
+def validate_external_target_lock_content(lock: Path, content: bytes, label: str) -> bytes:
+    if EXTERNAL_TARGET_LOCK_NAME_PATTERN.fullmatch(lock.name) is None:
+        fail(f"{label} filename is not a canonical target lock")
+    binding = parse_json_object(content, label)
+    expected_keys = {"schema_version", "product_name", "canonical_target", "lock_digest"}
+    if set(binding) != expected_keys:
+        fail(f"{label} binding keys are invalid")
+    if binding["schema_version"] != EXTERNAL_LOCK_SCHEMA or binding["product_name"] != PRODUCT_NAME:
+        fail(f"{label} binding identity or schema is invalid")
+    canonical_target = binding["canonical_target"]
+    if not isinstance(canonical_target, str) or not lexical_canonical_target_valid(canonical_target):
+        fail(f"{label} canonical target is invalid")
+    digest = external_lock_digest_for_canonical_text(canonical_target)
+    if not isinstance(binding["lock_digest"], str):
+        fail(f"{label} binding digest is invalid")
+    if binding["lock_digest"] != digest:
+        fail(f"{label} binding digest mismatch")
+    if lock.name != f"{digest}{EXTERNAL_LOCK_NAME_SUFFIX}":
+        fail(f"{label} filename digest mismatch")
+    expected = {
+        "schema_version": EXTERNAL_LOCK_SCHEMA,
+        "product_name": PRODUCT_NAME,
+        "canonical_target": canonical_target,
+        "lock_digest": digest,
+    }
+    encoded = canonical_json(expected)
+    if content != encoded:
+        fail(f"{label} binding is not canonical")
+    return encoded
+
+
+def external_lock_open_flags() -> int:
     flags = os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    return flags
+
+
+def external_lock_stage_prefix(lock: Path) -> str:
+    return f".{lock.name}.nddev.tmp."
+
+
+def external_lock_stage_name_valid(lock: Path, name: str) -> bool:
+    prefix = external_lock_stage_prefix(lock)
+    if not name.startswith(prefix):
+        return False
+    return EXTERNAL_LOCK_STAGE_NAME_EXTRA_PATTERN.fullmatch(name[len(prefix) :]) is not None
+
+
+def external_lock_namespace_snapshot(root: Path) -> tuple[Any, ...]:
+    info = lstat_optional(root)
+    if info is None:
+        return ("missing",)
+    require_owner_private_directory(root, "bootstrap product lock root")
+    entries: list[tuple[Any, ...]] = [
+        (
+            ".",
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_uid if hasattr(info, "st_uid") else None,
+            info.st_nlink,
+            info.st_size,
+            info.st_mtime_ns,
+        )
+    ]
+    count = 0
+    try:
+        iterator = root.iterdir()
+        for entry in iterator:
+            count += 1
+            if count > EXTERNAL_LOCK_DIRECTORY_SCAN_MAX_ENTRIES:
+                fail("bootstrap product lock root has too many entries")
+            child = entry.lstat()
+            entries.append(
+                (
+                    entry.name,
+                    child.st_dev,
+                    child.st_ino,
+                    child.st_mode,
+                    child.st_uid if hasattr(child, "st_uid") else None,
+                    child.st_nlink,
+                    child.st_size,
+                    child.st_mtime_ns,
+                    child.st_ctime_ns,
+                )
+            )
+    except OSError as exc:
+        fail(f"cannot inspect bootstrap product lock root: {exc}")
+    return tuple(sorted(entries))
+
+
+def validate_external_lock_stage(lock: Path, expected: bytes, entry: Path) -> LockStage:
+    content, info = read_regular_file(
+        entry,
+        "external lock publication stage",
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+    )
+    if content != expected:
+        fail("external lock publication stage binding mismatch")
+    return LockStage(
+        path=entry,
+        dev=info.st_dev,
+        ino=info.st_ino,
+        mode=info.st_mode,
+        uid=info.st_uid if hasattr(info, "st_uid") else None,
+        nlink=info.st_nlink,
+        size=info.st_size,
+        mtime_ns=info.st_mtime_ns,
+        payload=content,
+    )
+
+
+def revalidate_external_lock_stage(stage: LockStage, expected: bytes) -> None:
+    content, _ = read_regular_file(
+        stage.path,
+        "external lock publication stage",
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+    )
+    if content != expected:
+        fail("external lock publication stage binding mismatch")
+    validate_external_lock_stage_identity(stage)
+
+
+def validate_external_lock_stage_identity(stage: LockStage) -> None:
+    try:
+        info = stage.path.lstat()
+    except FileNotFoundError:
+        raise ConcurrentTargetChange("external lock publication stage disappeared")
+    if (
+        info.st_dev != stage.dev
+        or info.st_ino != stage.ino
+        or info.st_mode != stage.mode
+        or (info.st_uid if hasattr(info, "st_uid") else None) != stage.uid
+        or info.st_nlink != stage.nlink
+        or info.st_size != stage.size
+        or info.st_mtime_ns != stage.mtime_ns
+    ):
+        raise ConcurrentTargetChange("external lock publication stage changed after validation")
+
+
+def validate_external_target_lock_file(lock: Path) -> None:
+    content, _ = read_regular_file(
+        lock,
+        "external target lock",
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+    )
+    validate_external_target_lock_content(lock, content, "external target lock")
+
+
+def validate_external_target_lock_stage(root: Path, name: str, entry: Path) -> str:
+    match = EXTERNAL_TARGET_LOCK_STAGE_NAME_PATTERN.fullmatch(name)
+    if match is None:
+        fail("external lock publication stage name is not attributable")
+    lock = root / match.group(1)
+    content, _ = read_regular_file(
+        entry,
+        "external target lock publication stage",
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+    )
+    validate_external_target_lock_content(lock, content, "external target lock publication stage")
+    return lock.name
+
+
+def validate_external_lock_namespace(root: Path, product_expected: bytes) -> None:
+    require_owner_private_directory(root, "bootstrap product lock root")
+    product_lock = external_product_lock_path(root)
+    stage_counts: dict[str, int] = {}
+    product_seen = False
+    count = 0
+    try:
+        entries = root.iterdir()
+        for entry in entries:
+            count += 1
+            if count > EXTERNAL_LOCK_DIRECTORY_SCAN_MAX_ENTRIES:
+                fail("bootstrap product lock root has too many entries")
+            name = entry.name
+            if name == EXTERNAL_PRODUCT_LOCK_NAME:
+                content, _ = read_regular_file(
+                    entry,
+                    "external product lock",
+                    owner_only=True,
+                    max_bytes=METADATA_MAX_BYTES,
+                )
+                if content != product_expected:
+                    fail("external product lock binding mismatch")
+                product_seen = True
+                continue
+            if name.startswith(external_lock_stage_prefix(product_lock)):
+                if not external_lock_stage_name_valid(product_lock, name):
+                    fail("external product lock publication stage name is not bounded")
+                validate_external_lock_stage(product_lock, product_expected, entry)
+                stage_counts[product_lock.name] = stage_counts.get(product_lock.name, 0) + 1
+                continue
+            if EXTERNAL_TARGET_LOCK_NAME_PATTERN.fullmatch(name) is not None:
+                validate_external_target_lock_file(entry)
+                continue
+            if name.startswith("."):
+                lock_name = validate_external_target_lock_stage(root, name, entry)
+                stage_counts[lock_name] = stage_counts.get(lock_name, 0) + 1
+                continue
+            fail("unknown external lock namespace entry")
+    except OSError as exc:
+        fail(f"cannot inspect bootstrap product lock root: {exc}")
+    if not product_seen:
+        fail("external product lock is missing")
+    if any(total > EXTERNAL_LOCK_STAGE_ACCEPT_MAX for total in stage_counts.values()):
+        fail("external lock has too many publication stages")
+
+
+def require_external_lock_stages(lock: Path, expected: bytes) -> list[LockStage]:
+    prefix = external_lock_stage_prefix(lock)
+    stages: list[LockStage] = []
+    try:
+        entries = lock.parent.iterdir()
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        fail(f"cannot inspect external target lock publication stages: {exc}")
+    count = 0
+    try:
+        for entry in entries:
+            count += 1
+            if count > EXTERNAL_LOCK_DIRECTORY_SCAN_MAX_ENTRIES:
+                fail("bootstrap product lock root has too many entries")
+            if not entry.name.startswith(prefix):
+                continue
+            if not external_lock_stage_name_valid(lock, entry.name):
+                fail("external lock publication stage name is not bounded")
+            stages.append(validate_external_lock_stage(lock, expected, entry))
+    except OSError as exc:
+        fail(f"cannot inspect external target lock publication stages: {exc}")
+    if len(stages) > EXTERNAL_LOCK_STAGE_ACCEPT_MAX:
+        fail("external lock has too many publication stages")
+    return sorted(stages, key=lambda item: item.path.name)
+
+
+def restore_external_lock_parent_metadata(parent: Path, before: os.stat_result) -> None:
+    restore_directory_metadata(parent, before, "external target lock parent")
+
+
+def rollback_empty_product_root(
+    root: Path,
+    system_root: Path,
+    system_before: os.stat_result,
+) -> None:
+    info = lstat_optional(root)
+    if info is not None:
+        require_owner_private_directory(root, "bootstrap product lock root")
+        try:
+            next(root.iterdir())
+        except StopIteration:
+            root.rmdir()
+        except OSError as exc:
+            fail(f"cannot inspect bootstrap product lock root for rollback: {exc}")
+        else:
+            fail("bootstrap product lock root is not empty after failed product anchor publication")
+    restore_directory_metadata(system_root, system_before, "bootstrap system temp root")
+    fsync_directory(system_root)
+
+
+def rename_no_replace(source: Path, destination: Path, label: str) -> bool:
+    system = platform.system().lower()
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if system == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameatx_np = libc.renameatx_np
+        renameatx_np.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameatx_np.restype = ctypes.c_int
+        result = renameatx_np(
+            AT_FDCWD_BY_SYSTEM["darwin"],
+            source_bytes,
+            AT_FDCWD_BY_SYSTEM["darwin"],
+            destination_bytes,
+            RENAME_EXCL_DARWIN,
+        )
+    elif system == "linux":
+        machine = platform.machine().lower()
+        syscall_number = RENAMEAT2_SYSCALL_BY_MACHINE.get(machine)
+        if syscall_number is None:
+            fail(f"{label} no-replace publication is unsupported on this architecture")
+        libc = ctypes.CDLL(None, use_errno=True)
+        syscall = libc.syscall
+        syscall.restype = ctypes.c_long
+        result = syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(AT_FDCWD_BY_SYSTEM["linux"]),
+            ctypes.c_char_p(source_bytes),
+            ctypes.c_int(AT_FDCWD_BY_SYSTEM["linux"]),
+            ctypes.c_char_p(destination_bytes),
+            ctypes.c_uint(RENAME_NOREPLACE_LINUX),
+        )
+    else:
+        fail(f"{label} no-replace publication is unsupported on this platform")
+    if result == 0:
+        return True
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        return False
+    if error in {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+        fail(f"{label} no-replace publication primitive is unavailable")
+    fail(f"{label} no-replace publication failed: {os.strerror(error)}")
+
+
+def recover_external_lock_publication_stage(lock: Path, expected: bytes, stage: LockStage) -> None:
+    revalidate_external_lock_stage(stage, expected)
+    try:
+        promoted = rename_no_replace(stage.path, lock, "external lock stage recovery")
+    except ManagerError:
+        if lstat_optional(stage.path) is None and external_lock_final_matches(lock, expected):
+            return
+        raise
+    if not promoted:
+        return
+    fsync_directory(lock.parent)
+
+
+def external_lock_final_matches(lock: Path, expected: bytes) -> bool:
+    flags = external_lock_open_flags()
     try:
         descriptor = os.open(lock, flags)
-        created = False
     except FileNotFoundError:
-        try:
-            descriptor = os.open(lock, flags | os.O_CREAT | os.O_EXCL, OWNER_FILE_MODE)
-            created = True
-        except FileExistsError:
-            try:
-                descriptor = os.open(lock, flags)
-                created = False
-            except OSError as exc:
-                fail(f"cannot open external target lock file: {exc}")
-        except OSError as exc:
-            fail(f"cannot create external target lock file: {exc}")
+        return False
     except OSError as exc:
         fail(f"cannot open external target lock file: {exc}")
     try:
-        if created:
-            os.fchmod(descriptor, OWNER_FILE_MODE)
-    except BaseException:
+        require_external_lock_descriptor(lock, descriptor)
+        ensure_external_lock_binding(descriptor, expected)
+    finally:
         os.close(descriptor)
+    return True
+
+
+def drain_external_lock_publication_stages(lock: Path, expected: bytes, label: str) -> None:
+    stages = require_external_lock_stages(lock, expected)
+    if not stages:
+        return
+    parent_before = require_owner_private_directory(lock.parent, f"{label} parent")
+    for stage in stages:
+        revalidate_external_lock_stage(stage, expected)
+        stage.path.unlink()
+        fsync_directory(lock.parent)
+    restore_external_lock_parent_metadata(lock.parent, parent_before)
+    fsync_directory(lock.parent)
+
+
+def publish_missing_external_lock_file(lock: Path, expected: bytes, label: str) -> None:
+    stage_name = f".{lock.name}.nddev.tmp.{os.getpid()}.{time.time_ns()}"
+    stage = lock.with_name(stage_name)
+    descriptor: int | None = None
+    published = False
+    staged: LockStage | None = None
+    parent_before = require_owner_private_directory(lock.parent, f"{label} parent")
+    try:
+        descriptor = os.open(
+            stage,
+            external_lock_open_flags() | os.O_CREAT | os.O_EXCL,
+            OWNER_FILE_MODE,
+        )
+        os.fchmod(descriptor, OWNER_FILE_MODE)
+        write_complete(descriptor, expected, f"{label} staged binding")
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        staged = validate_external_lock_stage(lock, expected, stage)
+        try:
+            published = rename_no_replace(stage, lock, label)
+        except ManagerError:
+            if lstat_optional(stage) is None and external_lock_final_matches(lock, expected):
+                return
+            raise
+        if not published:
+            if not external_lock_final_matches(lock, expected):
+                fail(f"{label} publication lost final winner")
+            return
+        fsync_directory(lock.parent)
+    except BaseException:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        if lstat_optional(stage) is not None:
+            if staged is not None:
+                revalidate_external_lock_stage(staged, expected)
+            with contextlib.suppress(OSError):
+                stage.unlink()
+            if not published:
+                with contextlib.suppress(ManagerError):
+                    restore_external_lock_parent_metadata(lock.parent, parent_before)
+                    fsync_directory(lock.parent)
         raise
+
+
+def open_external_lock_file(
+    lock: Path,
+    expected: bytes,
+    *,
+    recover_publication: bool,
+    label: str,
+) -> int:
+    flags = external_lock_open_flags()
+    stages = require_external_lock_stages(lock, expected)
+    if stages and not recover_publication:
+        fail(f"{label} publication is incomplete")
+    try:
+        descriptor = os.open(lock, flags)
+    except FileNotFoundError:
+        if stages:
+            recover_external_lock_publication_stage(lock, expected, stages[0])
+        else:
+            publish_missing_external_lock_file(lock, expected, label)
+        try:
+            descriptor = os.open(lock, flags)
+        except OSError as exc:
+            fail(f"cannot open {label} after publication: {exc}")
+    except OSError as exc:
+        fail(f"cannot open {label}: {exc}")
     return descriptor
+
+
+def lock_external_descriptor(
+    descriptor: int,
+    lock: Path,
+    *,
+    exclusive: bool,
+    blocking: bool,
+    busy_label: str,
+) -> None:
+    lock_kind = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    operation = lock_kind if blocking else lock_kind | fcntl.LOCK_NB
+    try:
+        fcntl.flock(descriptor, operation)
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+            fail(f"{busy_label} is already locked: {lock}")
+        fail(f"cannot lock {busy_label}: {exc}")
+
+
+def unlock_close_external_descriptor(descriptor: int | None, *, locked: bool) -> None:
+    if descriptor is None:
+        return
+    if locked:
+        with contextlib.suppress(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    with contextlib.suppress(OSError):
+        os.close(descriptor)
+
+
+@contextlib.contextmanager
+def cold_external_target_inspection(lock: Path) -> Iterator[Path]:
+    before = external_lock_namespace_snapshot(lock.parent)
+    try:
+        yield lock
+    finally:
+        after = external_lock_namespace_snapshot(lock.parent)
+        if after != before:
+            raise ConcurrentTargetChange("external target lock namespace changed during cold inspection")
+
+
+@contextlib.contextmanager
+def external_product_lock(root: Path, *, exclusive: bool, recover_publication: bool) -> Iterator[Path]:
+    lock = external_product_lock_path(root)
+    expected = canonical_json(external_product_lock_binding(root))
+    descriptor = open_external_lock_file(
+        lock,
+        expected,
+        recover_publication=recover_publication,
+        label="external product lock",
+    )
+    locked = False
+    try:
+        lock_kind = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        try:
+            fcntl.flock(descriptor, lock_kind | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                fail(f"product is already locked: {lock}")
+            fail(f"cannot lock product externally: {exc}")
+        locked = True
+        require_external_lock_descriptor(lock, descriptor)
+        ensure_external_lock_binding(descriptor, expected)
+        if recover_publication:
+            drain_external_lock_publication_stages(lock, expected, "external product lock")
+        elif require_external_lock_stages(lock, expected):
+            fail("external product lock publication is incomplete")
+        require_external_lock_descriptor(lock, descriptor)
+        yield lock
+    finally:
+        if locked:
+            with contextlib.suppress(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
 
 
 def require_external_lock_descriptor(lock: Path, descriptor: int) -> None:
@@ -2657,45 +3303,169 @@ def read_external_lock_binding(descriptor: int) -> dict[str, Any] | None:
     return parse_json_object(content, "external target lock binding")
 
 
-def ensure_external_lock_binding(descriptor: int, target: Path) -> None:
-    expected = external_lock_binding(target)
+def ensure_external_lock_binding(descriptor: int, expected: bytes) -> None:
     existing = read_external_lock_binding(descriptor)
     if existing is None:
-        content = canonical_json(expected)
-        os.ftruncate(descriptor, 0)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        write_complete(descriptor, content, "external target lock binding")
-        os.fsync(descriptor)
-        return
-    if existing != expected:
+        fail("external target lock binding is empty")
+    if canonical_json(existing) != expected:
         fail("external target lock binding mismatch")
 
 
 @contextlib.contextmanager
-def external_target_lock(target: Path, *, blocking: bool = False) -> Iterator[Path]:
+def external_target_lock(
+    target: Path,
+    *,
+    blocking: bool = False,
+    recover_publication: bool = False,
+) -> Iterator[Path]:
     canonical_target = canonical_target_identity(target)
-    lock = external_lock_path(canonical_target)
-    descriptor = open_external_lock_file(lock)
-    locked = False
-    try:
-        operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+    target_expected = canonical_json(external_lock_binding(canonical_target))
+    if recover_publication:
+        system_root = require_bootstrap_system_root(bootstrap_system_temp_root())
+        system_before = system_root.lstat()
+        root_path = bootstrap_product_root_path()
+        root_existed_before = lstat_optional(root_path) is not None
+        root = bootstrap_product_root(create=True)
+        assert root is not None
+        product_lock = external_product_lock_path(root)
+        product_expected = canonical_json(external_product_lock_binding(root))
         try:
-            fcntl.flock(descriptor, operation)
-        except OSError as exc:
-            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
-                fail(f"target is already locked: {lock}")
-            fail(f"cannot lock target externally: {exc}")
-        locked = True
-        require_external_lock_descriptor(lock, descriptor)
-        ensure_external_lock_binding(descriptor, canonical_target)
-        require_external_lock_descriptor(lock, descriptor)
+            product_descriptor: int | None = open_external_lock_file(
+                product_lock,
+                product_expected,
+                recover_publication=True,
+                label="external product lock",
+            )
+        except BaseException:
+            if not root_existed_before and lstat_optional(product_lock) is None:
+                rollback_empty_product_root(root, system_root, system_before)
+            raise
+        product_locked = False
+        target_descriptor: int | None = None
+        target_locked = False
+        lock = root / f"{external_lock_digest(canonical_target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
+        try:
+            lock_external_descriptor(
+                product_descriptor,
+                product_lock,
+                exclusive=True,
+                blocking=True,
+                busy_label="product",
+            )
+            product_locked = True
+            require_external_lock_descriptor(product_lock, product_descriptor)
+            ensure_external_lock_binding(product_descriptor, product_expected)
+            validate_external_lock_namespace(root, product_expected)
+            drain_external_lock_publication_stages(
+                product_lock,
+                product_expected,
+                "external product lock",
+            )
+            require_external_lock_descriptor(product_lock, product_descriptor)
+            validate_external_lock_namespace(root, product_expected)
+
+            target_descriptor = open_external_lock_file(
+                lock,
+                target_expected,
+                recover_publication=True,
+                label="external target lock",
+            )
+            lock_external_descriptor(
+                target_descriptor,
+                lock,
+                exclusive=True,
+                blocking=blocking,
+                busy_label="target",
+            )
+            target_locked = True
+            require_external_lock_descriptor(lock, target_descriptor)
+            ensure_external_lock_binding(target_descriptor, target_expected)
+            drain_external_lock_publication_stages(lock, target_expected, "external target lock")
+            require_external_lock_descriptor(lock, target_descriptor)
+            validate_external_lock_namespace(root, product_expected)
+            unlock_close_external_descriptor(product_descriptor, locked=True)
+            product_descriptor = None
+            product_locked = False
+            yield lock
+        finally:
+            unlock_close_external_descriptor(target_descriptor, locked=target_locked)
+            unlock_close_external_descriptor(product_descriptor, locked=product_locked)
+        return
+
+    root = bootstrap_product_root(create=False)
+    if root is None:
+        lock = bootstrap_product_root_path() / f"{external_lock_digest(canonical_target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
+        with cold_external_target_inspection(lock) as cold_lock:
+            yield cold_lock
+        return
+    product_lock = external_product_lock_path(root)
+    if lstat_optional(product_lock) is None:
+        before = external_lock_namespace_snapshot(root)
+        if len(before) > 1:
+            fail("external product lock is missing but namespace is not empty")
+        lock = root / f"{external_lock_digest(canonical_target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
+        with cold_external_target_inspection(lock) as cold_lock:
+            yield cold_lock
+        after = external_lock_namespace_snapshot(root)
+        if after != before:
+            raise ConcurrentTargetChange("external target lock namespace changed during cold inspection")
+        return
+
+    product_expected = canonical_json(external_product_lock_binding(root))
+    product_descriptor: int | None = open_external_lock_file(
+        product_lock,
+        product_expected,
+        recover_publication=False,
+        label="external product lock",
+    )
+    product_locked = False
+    target_descriptor: int | None = None
+    target_locked = False
+    lock = root / f"{external_lock_digest(canonical_target)}{EXTERNAL_LOCK_NAME_SUFFIX}"
+    try:
+        lock_external_descriptor(
+            product_descriptor,
+            product_lock,
+            exclusive=False,
+            blocking=blocking,
+            busy_label="product",
+        )
+        product_locked = True
+        require_external_lock_descriptor(product_lock, product_descriptor)
+        ensure_external_lock_binding(product_descriptor, product_expected)
+        validate_external_lock_namespace(root, product_expected)
+        if require_external_lock_stages(product_lock, product_expected):
+            fail("external product lock publication is incomplete")
+        if require_external_lock_stages(lock, target_expected):
+            fail("external target lock publication is incomplete")
+        if lstat_optional(lock) is None:
+            yield lock
+            return
+        target_descriptor = open_external_lock_file(
+            lock,
+            target_expected,
+            recover_publication=False,
+            label="external target lock",
+        )
+        lock_external_descriptor(
+            target_descriptor,
+            lock,
+            exclusive=False,
+            blocking=blocking,
+            busy_label="target",
+        )
+        target_locked = True
+        require_external_lock_descriptor(lock, target_descriptor)
+        ensure_external_lock_binding(target_descriptor, target_expected)
+        if require_external_lock_stages(lock, target_expected):
+            fail("external target lock publication is incomplete")
+        unlock_close_external_descriptor(product_descriptor, locked=True)
+        product_descriptor = None
+        product_locked = False
         yield lock
     finally:
-        if locked:
-            with contextlib.suppress(OSError):
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-        with contextlib.suppress(OSError):
-            os.close(descriptor)
+        unlock_close_external_descriptor(target_descriptor, locked=target_locked)
+        unlock_close_external_descriptor(product_descriptor, locked=product_locked)
 
 
 def require_lock_root_directory(path: Path, label: str) -> os.stat_result:
@@ -2882,7 +3652,7 @@ def internal_target_lock(target: Path, *, create_target: bool) -> Iterator[None]
 
 @contextlib.contextmanager
 def target_lock(target: Path, *, create_target: bool) -> Iterator[None]:
-    with external_target_lock(target):
+    with external_target_lock(target, recover_publication=True):
         with internal_target_lock(target, create_target=create_target):
             yield
 
@@ -2991,7 +3761,7 @@ def load_backup(
         fail("--backup must be between 0 and 9")
     ensure_target_directory(target, create=False)
     pool = ensure_backup_pool(target)
-    slot_dir = backup_pool(target) / str(slot)
+    slot_dir = pool / str(slot)
     validate_owner_private_tree(slot_dir, f"backup slot {slot}")
     envelope_path = slot_dir / BACKUP_NAME
     if envelope_path.is_symlink() or not envelope_path.is_file():
@@ -3477,22 +4247,278 @@ def require_clean_software(target: Path) -> Path:
     return revalidate_software_executable(target)
 
 
-def reject_managed_launch_overrides(child_args: list[str]) -> None:
-    if child_args:
-        first = child_args[0]
-        if first in MANAGED_LAUNCH_BLOCKED_COMMANDS:
-            fail(f"launch refuses managed-scope Kiro CLI command: {first}")
-    blocked_options = set(MANAGED_LAUNCH_BLOCKED_OPTIONS)
-    for argument in child_args:
+def launch_option_name(argument: str) -> str:
+    if argument.startswith("--"):
+        return argument.split("=", 1)[0]
+    if argument.startswith("-") and argument != "-":
+        return argument[:2]
+    return argument
+
+
+def split_launch_command_args(
+    command: str,
+    args: list[str],
+    *,
+    allowed_flags: set[str],
+    value_options: set[str],
+    optional_value_options: set[str] | None = None,
+) -> tuple[list[str], set[str]]:
+    optional_value_options = (
+        set() if optional_value_options is None else optional_value_options
+    )
+    positionals: list[str] = []
+    options: set[str] = set()
+    index = 0
+    while index < len(args):
+        argument = args[index]
         if argument == "--":
-            continue
+            positionals.extend(args[index + 1 :])
+            break
         if argument.startswith("--"):
-            option = argument.split("=", 1)[0]
-            if option in blocked_options:
-                fail(f"launch refuses managed-scope Kiro CLI option: {option}")
+            option, separator, _ = argument.partition("=")
+            if (
+                option not in allowed_flags
+                and option not in value_options
+                and option not in optional_value_options
+            ):
+                fail(f"launch refuses unsupported {command} option: {option}")
+            if option in allowed_flags and separator:
+                fail(f"launch refuses {command} flag with value: {option}")
+            options.add(option)
+            if option in value_options and not separator:
+                index += 1
+                if index >= len(args) or args[index].startswith("-"):
+                    fail(f"launch refuses {command} option without value: {option}")
+            elif option in optional_value_options and not separator and index + 1 < len(args):
+                next_argument = args[index + 1]
+                if next_argument != "--" and not next_argument.startswith("-"):
+                    index += 1
+            index += 1
+            continue
+        if argument.startswith("-") and argument != "-":
+            option = launch_option_name(argument)
+            if argument != option:
+                fail(f"launch refuses combined or attached short option: {argument}")
+            if (
+                option not in allowed_flags
+                and option not in value_options
+                and option not in optional_value_options
+            ):
+                fail(f"launch refuses unsupported {command} option: {option}")
+            options.add(option)
+            if option in value_options:
+                index += 1
+                if index >= len(args) or args[index].startswith("-"):
+                    fail(f"launch refuses {command} option without value: {option}")
+            elif option in optional_value_options and index + 1 < len(args):
+                next_argument = args[index + 1]
+                if next_argument != "--" and not next_argument.startswith("-"):
+                    index += 1
+            index += 1
+            continue
+        positionals.append(argument)
+        index += 1
+    return positionals, options
 
 
-def launch(target: Path, child_args: list[str]) -> int:
+def reject_launch_assignment(argument: str, command: str) -> None:
+    if "=" in argument and not argument.startswith("--"):
+        fail(f"launch refuses {command} assignment form: {argument}")
+
+
+def require_no_launch_positionals(command: str, positionals: list[str]) -> None:
+    if positionals:
+        fail(f"launch refuses positional arguments for {command}: {positionals[0]}")
+
+
+def validate_chat_launch_args(args: list[str]) -> None:
+    split_launch_command_args(
+        "chat",
+        args,
+        allowed_flags={
+            "--list-models",
+            "--list-sessions",
+            "--no-interactive",
+            "--resume",
+            "--resume-picker",
+            "--wrap",
+            "-r",
+        },
+        value_options={
+            "--effort",
+            "--format",
+            "--resume-id",
+        },
+    )
+
+
+def validate_read_only_launch_command(command: str, args: list[str]) -> None:
+    if command == "whoami":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--verbose", "-v"},
+            value_options={"--format", "-f"},
+        )
+        require_no_launch_positionals(command, positionals)
+        return
+    if command == "diagnostic":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--force", "--verbose", "-v"},
+            value_options={"--format", "-f"},
+        )
+        require_no_launch_positionals(command, positionals)
+        return
+    if command == "doctor":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--all", "--strict", "-a", "-s"},
+            value_options={"--format", "-f"},
+        )
+        require_no_launch_positionals(command, positionals)
+        return
+    if command == "theme":
+        positionals, options = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--folder", "--list"},
+            value_options=set(),
+        )
+        if positionals and positionals not in (["list"], ["show"]):
+            fail(f"launch refuses theme setter: {positionals[0]}")
+        if len(positionals) > 1:
+            fail(f"launch refuses extra theme argument: {positionals[1]}")
+        if not positionals and not options:
+            fail("launch refuses ambiguous theme command")
+        return
+    if command == "integrations":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags=set(),
+            value_options={"--format", "-f"},
+        )
+        if positionals != ["status"]:
+            fail("launch refuses integrations mutation or ambiguous command")
+        return
+    if command == "inline":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags=set(),
+            value_options={"--format", "-f"},
+        )
+        if not positionals or positionals[0] not in {"show-customizations", "status"}:
+            fail("launch refuses inline mutation or ambiguous command")
+        if len(positionals) > 1:
+            fail(f"launch refuses extra inline argument: {positionals[1]}")
+        return
+    if command == "agent":
+        positionals, _ = split_launch_command_args(
+            command,
+            args,
+            allowed_flags=set(),
+            value_options={"--format", "-f"},
+        )
+        if not positionals or positionals[0] not in {"list", "show", "validate"}:
+            fail("launch refuses agent mutation or ambiguous command")
+        if len(positionals) > 2:
+            fail(f"launch refuses extra agent argument: {positionals[2]}")
+        return
+    if command == "mcp":
+        positionals, options = split_launch_command_args(
+            command,
+            args,
+            allowed_flags=set(),
+            value_options={"--format", "--name", "-f"},
+        )
+        if positionals == ["list"]:
+            return
+        if positionals == ["status"] and "--name" in options:
+            return
+        fail("launch refuses mcp mutation or ambiguous command")
+    if command == "settings":
+        positionals, options = split_launch_command_args(
+            command,
+            args,
+            allowed_flags={"--all"},
+            value_options={"--format", "-f"},
+        )
+        if "--all" in options and (not positionals or positionals[0] != "list"):
+            fail("launch refuses settings --all outside list")
+        for argument in positionals:
+            reject_launch_assignment(argument, command)
+        if positionals == ["list"]:
+            return
+        if len(positionals) == 1 and positionals[0] != "open":
+            return
+        fail("launch refuses settings mutation or ambiguous command")
+
+
+def reject_managed_launch_overrides(child_args: list[str]) -> None:
+    if not child_args:
+        return
+    command = child_args[0]
+    args = child_args[1:]
+    scan_args = args if command in MANAGED_LAUNCH_READ_ONLY_COMMANDS else child_args
+    for argument in scan_args:
+        if argument == "--":
+            break
+        if argument.startswith("--"):
+            option = launch_option_name(argument)
+            if option in MANAGED_LAUNCH_MANAGER_OWNED_OPTIONS:
+                fail(f"launch refuses manager-owned Kiro CLI option: {option}")
+        for prefix in MANAGED_LAUNCH_MANAGER_OWNED_SHORT_PREFIXES:
+            if argument.startswith(prefix):
+                fail(f"launch refuses manager-owned Kiro CLI option: {prefix}")
+    if command in MANAGED_LAUNCH_BLOCKED_TOP_LEVEL_COMMANDS:
+        fail(f"launch refuses managed-scope Kiro CLI command: {command}")
+    if command == "chat":
+        validate_chat_launch_args(args)
+        return
+    if command in MANAGED_LAUNCH_READ_ONLY_COMMANDS:
+        validate_read_only_launch_command(command, args)
+        return
+    if command.startswith("-"):
+        fail(
+            "launch refuses top-level Kiro CLI option without explicit chat: "
+            f"{launch_option_name(command)}"
+        )
+    reject_launch_assignment(command, "top-level")
+
+
+def capture_caller_workspace() -> Path:
+    try:
+        return Path.cwd()
+    except OSError as exc:
+        fail(f"cannot capture caller workspace: {exc}")
+
+
+def resolve_launch_workspace(raw_workspace: str | None, caller_workspace: Path) -> Path:
+    workspace = caller_workspace if raw_workspace is None else Path(raw_workspace).expanduser()
+    if not workspace.is_absolute():
+        fail("--workspace must be an absolute path")
+    info = require_directory(workspace, "launch workspace")
+    if not os.access(workspace, os.R_OK | os.X_OK):
+        fail("launch workspace must be accessible")
+    try:
+        resolved = workspace.resolve(strict=True)
+    except OSError as exc:
+        fail(f"cannot resolve launch workspace: {exc}")
+    resolved_info = require_directory(resolved, "launch workspace")
+    if identity_of(info) != identity_of(resolved_info):
+        raise ConcurrentTargetChange("launch workspace changed while it was resolved")
+    if not os.access(resolved, os.R_OK | os.X_OK):
+        fail("launch workspace must be accessible")
+    return resolved
+
+
+def launch(target: Path, child_args: list[str], workspace: Path | None = None) -> int:
+    if workspace is None:
+        workspace = resolve_launch_workspace(None, capture_caller_workspace())
     reject_managed_launch_overrides(child_args)
     with target_lock(target, create_target=False):
         require_clean_managed(target)
@@ -3500,7 +4526,7 @@ def launch(target: Path, child_args: list[str]) -> int:
         env = build_launch_env(target)
         executable = revalidate_software_executable(target)
         launch_args = [MANAGED_LAUNCH_ENGINE_ARGUMENT, *child_args]
-        return subprocess.call([str(executable), *launch_args], env=env)
+        return subprocess.call([str(executable), *launch_args], env=env, cwd=str(workspace))
 
 
 def emit(payload: dict[str, Any] | list[Any], *, as_json: bool) -> None:
@@ -3549,6 +4575,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     launch_parser = subparsers.add_parser("launch")
     launch_parser.add_argument("--target")
+    launch_parser.add_argument("--workspace")
     launch_parser.add_argument("child_args", nargs=argparse.REMAINDER)
     return parser.parse_args(argv)
 
@@ -3560,6 +4587,7 @@ def wants_json(argv: list[str]) -> bool:
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     try:
+        caller_workspace = capture_caller_workspace()
         args = parse_args(raw_argv)
         if args.command == "list":
             emit(
@@ -3646,7 +4674,8 @@ def main(argv: list[str] | None = None) -> int:
             child_args = list(args.child_args)
             if child_args and child_args[0] == "--":
                 child_args = child_args[1:]
-            return launch(resolve_target(args.target), child_args)
+            workspace = resolve_launch_workspace(args.workspace, caller_workspace)
+            return launch(resolve_target(args.target), child_args, workspace)
         fail(f"unsupported command: {args.command}")
     except ManagerError as exc:
         if wants_json(raw_argv):
