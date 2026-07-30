@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "product_name": "nddev-kiro-cli-app",
-  "build_version": "0.2.1",
+  "build_version": "0.2.2",
   "runtime": {
     "product": "Kiro CLI",
     "executable": "kiro-cli",
-    "current_version": "2.15.1",
+    "current_version": "2.15.2",
     "engine_argument": "--v3",
     "engine_status": "early-access-required",
     "target_role": "managed-configuration-runtime-home",
@@ -217,7 +217,7 @@
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.15.1/Kiro CLI.dmg"
+        "download": "2.15.2/Kiro CLI.dmg"
       },
       "macos-x64": {
         "vendor_target_triple": "universal-apple-darwin",
@@ -225,7 +225,7 @@
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.15.1/Kiro CLI.dmg"
+        "download": "2.15.2/Kiro CLI.dmg"
       },
       "ubuntu-glibc-arm64": {
         "vendor_target_triple": "aarch64-unknown-linux-gnu",
@@ -233,7 +233,7 @@
         "vendor_architecture": "aarch64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.15.1/kirocli-aarch64-linux.zip"
+        "download": "2.15.2/kirocli-aarch64-linux.zip"
       },
       "ubuntu-glibc-x64": {
         "vendor_target_triple": "x86_64-unknown-linux-gnu",
@@ -241,7 +241,7 @@
         "vendor_architecture": "x86_64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.15.1/kirocli-x86_64-linux.zip"
+        "download": "2.15.2/kirocli-x86_64-linux.zip"
       }
     },
     "current_artifacts_ref": "references/kiro-cli-baseline.json:install_manifest.packages"
