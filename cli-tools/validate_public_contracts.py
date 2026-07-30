@@ -1534,6 +1534,13 @@ def check_baseline(
         "kiro_cli_current"
     ):
         errors.append("references/kiro-cli-baseline.json: version mismatch")
+    observation_only_headers = {
+        "install_manifest_last_modified",
+        "install_manifest_etag",
+        "install_script_last_modified",
+    }
+    if observation_only_headers.intersection(baseline.get("release", {})):
+        errors.append("references/kiro-cli-baseline.json: observation-only HTTP metadata is public")
     runtime = baseline.get("runtime", {})
     if runtime.get("engine_argument") != "--v3":
         errors.append("references/kiro-cli-baseline.json: engine argument mismatch")

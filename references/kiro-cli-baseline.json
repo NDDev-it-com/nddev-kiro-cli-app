@@ -15,12 +15,9 @@
     "version": "2.15.1",
     "changelog": "https://kiro.dev/changelog/cli/",
     "install_manifest_url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
-    "install_manifest_last_modified": "Tue, 28 Jul 2026 19:19:09 GMT",
-    "install_manifest_etag": "eee978b080d6ed2ac6419bcaab09cf1a",
     "install_manifest_sha256": "94d5c7c5eeaf2538f03a2296c51d908273411a853f5003126b57d1139ab000c7",
     "install_manifest_size": 9313,
     "install_script_url": "https://cli.kiro.dev/install",
-    "install_script_last_modified": "Fri, 03 Jul 2026 01:34:06 GMT",
     "install_script_sha256": "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
   },
   "configuration": {
