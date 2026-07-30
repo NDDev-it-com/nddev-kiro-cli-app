@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- Capture and strictly resolve the caller workspace once at launch entry and
+  pass it explicitly as the Kiro child working directory.
+- Declare target/workspace roles in public status and contracts without adding
+  an unsupported native workspace option.
+
 ## 0.2.0
 
 - Breaking pre-1.0: replace setup variants with one `nddev-builder` content

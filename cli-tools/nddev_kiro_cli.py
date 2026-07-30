@@ -31,7 +31,7 @@ import zipfile
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_ROOT = ROOT / "setups"
@@ -8016,7 +8016,36 @@ def reject_managed_launch_overrides(child_args: list[str]) -> None:
                 fail(f"launch refuses managed-scope Kiro CLI option: {option}")
 
 
-def launch(target: Path, child_args: list[str]) -> int:
+def resolve_caller_workspace() -> Path:
+    try:
+        workspace = Path.cwd().resolve(strict=True)
+        info = workspace.stat()
+    except (FileNotFoundError, OSError) as exc:
+        fail(f"cannot resolve caller workspace: {exc}")
+    if not stat.S_ISDIR(info.st_mode):
+        fail("caller workspace must resolve to a directory")
+    if not os.access(workspace, os.R_OK | os.X_OK):
+        fail("caller workspace must be readable and searchable")
+    return workspace
+
+
+def launch_scope_status() -> dict[str, Any]:
+    return {
+        "target_role": "managed-configuration-runtime-home",
+        "workspace_source": "captured-caller-current-directory",
+        "child_working_directory_policy": "strict-resolved-caller-workspace",
+        "native_workspace_argument": None,
+    }
+
+
+def launch(
+    target: Path,
+    child_args: list[str],
+    *,
+    workspace: Optional[Path] = None,
+) -> int:
+    if workspace is None:
+        workspace = resolve_caller_workspace()
     require_supported_host_preflight()
     with target_lock(target, create_target=False) as locked_target:
         target = locked_target
@@ -8027,7 +8056,11 @@ def launch(target: Path, child_args: list[str]) -> int:
         env = build_launch_env(target)
         executable = revalidate_software_executable(target)
         launch_args = [MANAGED_LAUNCH_ENGINE_ARGUMENT, *child_args]
-        return subprocess.call([str(executable), *launch_args], env=env)
+        return subprocess.call(
+            [str(executable), *launch_args],
+            cwd=str(workspace),
+            env=env,
+        )
 
 
 def emit(payload: dict[str, Any] | list[Any], *, as_json: bool) -> None:
@@ -8105,6 +8138,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     try:
         args = parse_args(raw_argv)
+        caller_workspace = resolve_caller_workspace() if args.command == "launch" else None
         if command_requires_supported_host(args.command):
             require_supported_host_preflight()
         if args.command == "list":
@@ -8119,7 +8153,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "status":
-            emit(current_status(resolve_target(args.target)), as_json=args.json)
+            emit(
+                {
+                    **current_status(resolve_target(args.target)),
+                    "launch_scope": launch_scope_status(),
+                },
+                as_json=args.json,
+            )
             return 0
         if args.command == "software-status":
             emit(software_status(resolve_target(args.target)), as_json=args.json)
@@ -8192,7 +8232,13 @@ def main(argv: list[str] | None = None) -> int:
             child_args = list(args.child_args)
             if child_args and child_args[0] == "--":
                 child_args = child_args[1:]
-            return launch(resolve_target(args.target), child_args)
+            if caller_workspace is None:
+                fail("caller workspace was not resolved")
+            return launch(
+                resolve_target(args.target),
+                child_args,
+                workspace=caller_workspace,
+            )
         fail(f"unsupported command: {args.command}")
     except ManagerError as exc:
         if wants_json(raw_argv):

@@ -275,6 +275,10 @@
     "engine_status": "early-access-required",
     "direct_command": false,
     "manager_command": "python3 cli-tools/nddev_kiro_cli.py launch --target /absolute/kiro-home --",
+    "target_role": "managed-configuration-runtime-home",
+    "workspace_source": "captured-caller-current-directory",
+    "child_working_directory_policy": "strict-resolved-caller-workspace",
+    "native_workspace_argument": null,
     "requires_clean_managed_target": true,
     "denies_legacy_managed_target": true,
     "target_environment_scope": {

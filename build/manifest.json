@@ -1,13 +1,17 @@
 {
   "schema_version": 1,
   "product_name": "nddev-kiro-cli-app",
-  "build_version": "0.2.0",
+  "build_version": "0.2.1",
   "runtime": {
     "product": "Kiro CLI",
     "executable": "kiro-cli",
     "current_version": "2.15.1",
     "engine_argument": "--v3",
     "engine_status": "early-access-required",
+    "target_role": "managed-configuration-runtime-home",
+    "workspace_source": "captured-caller-current-directory",
+    "child_working_directory_policy": "strict-resolved-caller-workspace",
+    "native_workspace_argument": null,
     "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
     "launch_lock_held_until_child_exit": true,
     "lock_mechanism": "fcntl-flock-persistent-file",

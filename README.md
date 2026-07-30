@@ -95,6 +95,12 @@ mechanics, environment keys, executable checks, and blocked override arguments
 are owned by `cli-tools/nddev_kiro_cli.py`, `config/nddev-contract.json`, and
 `build/manifest.json`.
 
+At launch-command entry, the manager captures the caller's current directory
+once, strictly resolves it as an existing accessible project workspace, and
+passes it explicitly as the child working directory. The managed target
+remains the isolated Kiro configuration and runtime home. This contract does
+not invent a native Kiro workspace option.
+
 ## Builder Content
 
 The builder toolkit is deterministic and regular-file-only. The exact managed

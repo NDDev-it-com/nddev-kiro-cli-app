@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "build_version": "0.2.0",
+  "build_version": "0.2.1",
   "kiro_cli_current": "2.15.1",
   "kiro_cli_min": "2.15.1",
   "python_requires": ">=3.9",

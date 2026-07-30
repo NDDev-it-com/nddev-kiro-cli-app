@@ -879,6 +879,15 @@ def check_runtime(runtime: dict[str, Any], label: str, errors: list[str]) -> Non
         errors.append(f"{label}: launch must force --v3")
     if runtime.get("engine_status") != "early-access-required":
         errors.append(f"{label}: engine_status mismatch")
+    expected_launch_scope = {
+        "target_role": "managed-configuration-runtime-home",
+        "workspace_source": "captured-caller-current-directory",
+        "child_working_directory_policy": "strict-resolved-caller-workspace",
+        "native_workspace_argument": None,
+    }
+    for key, value in expected_launch_scope.items():
+        if runtime.get(key) != value:
+            errors.append(f"{label}: {key} mismatch")
     if runtime.get("managed_launch_blocked_commands") != MANAGED_LAUNCH_BLOCKED_COMMANDS:
         errors.append(f"{label}: managed launch command guard mismatch")
     if runtime.get("managed_launch_blocked_options") != MANAGED_LAUNCH_BLOCKED_OPTIONS:
@@ -1742,6 +1751,14 @@ def check_manager_source(text: str, errors: list[str]) -> None:
         errors.append(
             "cli-tools/nddev_kiro_cli.py: complete write loop must reject no-progress writes"
         )
+    required_launch_fragments = (
+        "caller_workspace = resolve_caller_workspace()",
+        "cwd=str(workspace)",
+        '"launch_scope": launch_scope_status()',
+    )
+    for fragment in required_launch_fragments:
+        if fragment not in text:
+            errors.append(f"cli-tools/nddev_kiro_cli.py: launch scope missing {fragment}")
 
 
 def check_claude_bridge(errors: list[str]) -> None:
