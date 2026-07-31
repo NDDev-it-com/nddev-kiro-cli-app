@@ -1,156 +1,10 @@
 {
-  "schema_version": 1,
-  "product_name": "nddev-kiro-cli-app",
   "build_version": "0.2.2",
-  "runtime": {
-    "product": "Kiro CLI",
-    "executable": "kiro-cli",
-    "current_version": "2.15.2",
-    "engine_argument": "--v3",
-    "engine_status": "early-access-required",
-    "target_role": "managed-configuration-runtime-home",
-    "workspace_source": "captured-caller-current-directory",
-    "child_working_directory_policy": "strict-resolved-caller-workspace",
-    "native_workspace_argument": null,
-    "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
-    "launch_lock_held_until_child_exit": true,
-    "lock_mechanism": "fcntl-flock-persistent-file",
-    "external_lock_mechanism": "fixed-system-temp-fcntl-flock-persistent-file",
-    "external_lock_root": "fixed-system-temp/nddev-kiro-cli-app-uid",
-    "external_lock_filename": "sha256(product namespace + canonical absolute target).lock",
-    "external_lock_file_persistent": true,
-    "external_lock_file_mode": "0600",
-    "external_lock_binding_schema": 1,
-    "external_lock_acquired_before_target_inspection": true,
-    "external_lock_never_unlinked": true,
-    "external_product_lock_filename": "global.lock",
-    "external_lock_publication": "atomic-hardlink-no-replace",
-    "external_lock_final_path_publication_commit_point": true,
-    "external_lock_parent_fsync_after_final_path_publication": true,
-    "external_lock_hardlink_alias_recovery": true,
-    "read_only_external_lock_no_create": true,
-    "target_lock_published_by_mutation_only": true,
-    "cleanup_pending_root": "target/.nddev-runtime/cleanup-pending",
-    "cleanup_intent_name": "NDDEV-KIRO-CLI-CLEANUP-INTENT.json",
-    "cleanup_intent_schema": 1,
-    "cleanup_intent_publication": "atomic-hardlink-no-replace",
-    "cleanup_intent_precedes_source_moves": true,
-    "cleanup_intent_alias_recovery_mutation_only": true,
-    "cleanup_journal_name": "NDDEV-KIRO-CLI-CLEANUP.json",
-    "cleanup_journal_schema": 1,
-    "cleanup_journal_publication": "atomic-hardlink-no-replace",
-    "cleanup_journal_final_path_publication_commit_point": true,
-    "cleanup_journal_immutable": true,
-    "cleanup_journal_alias_recovery_mutation_only": true,
-    "cleanup_pending_bound": 1,
-    "cleanup_tombstone_max_roots": 4,
-    "cleanup_pending_status_plan_exposed": true,
-    "cleanup_pending_top_level_result": true,
-    "cleanup_pending_malformed_fail_closed": true,
-    "read_only_cleanup_pending_no_recovery": true,
-    "next_mutation_drains_cleanup_pending": true,
-    "external_lock_not_exposed_to_child": true,
-    "fixed_system_temp_root_for_external_lock": true,
-    "lock_acquisition_order": [
-      "external",
-      "internal"
-    ],
-    "lock_release_order": [
-      "internal",
-      "external"
-    ],
-    "lock_file_persistent": true,
-    "lock_file_mode": "0600",
-    "lock_directory_idle_mode": "0700",
-    "lock_directory_held_mode": "0500",
-    "directory_lock_used": false,
-    "ordinary_child_lock_cleanup_denied": true,
-    "runtime_mutable_directories_remain_writable": true,
-    "mutable_runtime_ancestors_not_chmod_read_only": true,
-    "software_launcher_artifact_immutable": true,
-    "software_immutable_file_mode": "0400",
-    "software_immutable_executable_mode": "0500",
-    "software_immutable_directory_mode": "0500",
-    "launch_executable_revalidated_before_handoff": true,
-    "launch_runtime_directories_target_relative_owner_private": true,
-    "managed_launch_blocked_commands": [
-      "agent",
-      "diagnostic",
-      "integrations",
-      "launch",
-      "login",
-      "logout",
-      "mcp",
-      "settings",
-      "update",
-      "whoami"
-    ],
-    "managed_launch_blocked_options": [
-      "--agent",
-      "--classic",
-      "--no-interactive",
-      "--require-mcp-startup",
-      "--trust-all-tools",
-      "--trust-tools",
-      "--v3"
-    ],
-    "baseline": "references/kiro-cli-baseline.json"
-  },
-  "setup_ids": [
-    "nddev-builder"
-  ],
-  "default_setup_id": "nddev-builder",
-  "permission_profile_ids": [
-    "safe",
-    "full-auto"
-  ],
-  "default_permission_profile_id": "full-auto",
-  "legacy_setup_ids": [
-    "safe",
-    "balanced",
-    "full-auto"
-  ],
-  "catalog_root": "setups",
-  "profile_root": "profiles",
-  "manager": {
-    "path": "cli-tools/nddev_kiro_cli.py",
-    "commands": [
-      "list",
-      "status",
-      "plan",
-      "install",
-      "update",
-      "apply",
-      "switch",
-      "migrate",
-      "restore",
-      "remove",
-      "software-status",
-      "software-probe",
-      "software-install",
-      "software-update",
-      "software-remove",
-      "launch"
-    ],
-    "explicit_target": true,
-    "target_environment_variable": "KIRO_HOME"
-  },
   "builder": {
-    "id": "nddev-builder",
-    "status": "default-on",
-    "projection": "native-agent-skill-steering",
-    "marketplace": null,
     "agent_tools": [
       "*"
     ],
-    "native_surfaces": [
-      "agents",
-      "skills",
-      "steering",
-      "permissions",
-      "workspace_hooks",
-      "mcp_configuration"
-    ],
+    "id": "nddev-builder",
     "managed_files": [
       "agents/nddev-builder.md",
       "skills/nddev-builder/SKILL.md",
@@ -179,15 +33,209 @@
       "skills/nddev-builder/references/plugins-marketplace.md",
       "skills/nddev-builder/references/skills-instructions.md",
       "steering/nddev-builder.md"
-    ]
+    ],
+    "marketplace": null,
+    "native_surfaces": [
+      "agents",
+      "skills",
+      "steering",
+      "permissions",
+      "workspace_hooks",
+      "mcp_configuration"
+    ],
+    "projection": "native-agent-skill-steering",
+    "status": "default-on"
   },
+  "catalog_root": "setups",
+  "default_permission_profile_id": "full-auto",
+  "default_setup_id": "nddev-builder",
+  "legacy_setup_ids": [
+    "safe",
+    "balanced",
+    "full-auto"
+  ],
+  "manager": {
+    "commands": [
+      "list",
+      "status",
+      "plan",
+      "install",
+      "update",
+      "apply",
+      "switch",
+      "migrate",
+      "restore",
+      "remove",
+      "software-status",
+      "software-probe",
+      "software-install",
+      "software-update",
+      "software-remove",
+      "launch"
+    ],
+    "explicit_target": true,
+    "path": "cli-tools/nddev_kiro_cli.py",
+    "target_environment_variable": "KIRO_HOME"
+  },
+  "permission_profile_ids": [
+    "safe",
+    "full-auto"
+  ],
+  "product_name": "nddev-kiro-cli-app",
+  "profile_root": "profiles",
   "public_validator": "cli-tools/validate_public_contracts.py",
+  "runtime": {
+    "baseline": "references/kiro-cli-baseline.json",
+    "child_working_directory_policy": "strict-resolved-caller-workspace",
+    "cleanup_intent_alias_recovery_mutation_only": true,
+    "cleanup_intent_name": "NDDEV-KIRO-CLI-CLEANUP-INTENT.json",
+    "cleanup_intent_precedes_source_moves": true,
+    "cleanup_intent_publication": "atomic-hardlink-no-replace",
+    "cleanup_intent_schema": 1,
+    "cleanup_journal_alias_recovery_mutation_only": true,
+    "cleanup_journal_final_path_publication_commit_point": true,
+    "cleanup_journal_immutable": true,
+    "cleanup_journal_name": "NDDEV-KIRO-CLI-CLEANUP.json",
+    "cleanup_journal_publication": "atomic-hardlink-no-replace",
+    "cleanup_journal_schema": 1,
+    "cleanup_pending_bound": 1,
+    "cleanup_pending_malformed_fail_closed": true,
+    "cleanup_pending_root": "target/.nddev-runtime/cleanup-pending",
+    "cleanup_pending_status_plan_exposed": true,
+    "cleanup_pending_top_level_result": true,
+    "cleanup_tombstone_max_roots": 4,
+    "current_version": "2.16.0",
+    "directory_lock_used": false,
+    "engine_argument": "--v3",
+    "engine_status": "early-access-required",
+    "executable": "kiro-cli",
+    "external_lock_acquired_before_target_inspection": true,
+    "external_lock_binding_schema": 1,
+    "external_lock_file_mode": "0600",
+    "external_lock_file_persistent": true,
+    "external_lock_filename": "sha256(product namespace + canonical absolute target).lock",
+    "external_lock_final_path_publication_commit_point": true,
+    "external_lock_hardlink_alias_recovery": true,
+    "external_lock_mechanism": "fixed-system-temp-fcntl-flock-persistent-file",
+    "external_lock_never_unlinked": true,
+    "external_lock_not_exposed_to_child": true,
+    "external_lock_parent_fsync_after_final_path_publication": true,
+    "external_lock_publication": "atomic-hardlink-no-replace",
+    "external_lock_root": "fixed-system-temp/nddev-kiro-cli-app-uid",
+    "external_product_lock_filename": "global.lock",
+    "fixed_system_temp_root_for_external_lock": true,
+    "launch_executable_revalidated_before_handoff": true,
+    "launch_lock_held_until_child_exit": true,
+    "launch_runtime_directories_target_relative_owner_private": true,
+    "lock_acquisition_order": [
+      "external",
+      "internal"
+    ],
+    "lock_directory_held_mode": "0500",
+    "lock_directory_idle_mode": "0700",
+    "lock_file_mode": "0600",
+    "lock_file_persistent": true,
+    "lock_mechanism": "fcntl-flock-persistent-file",
+    "lock_release_order": [
+      "internal",
+      "external"
+    ],
+    "managed_launch_blocked_commands": [
+      "agent",
+      "diagnostic",
+      "integrations",
+      "launch",
+      "login",
+      "logout",
+      "mcp",
+      "settings",
+      "update",
+      "whoami"
+    ],
+    "managed_launch_blocked_options": [
+      "--agent",
+      "--classic",
+      "--no-interactive",
+      "--require-mcp-startup",
+      "--trust-all-tools",
+      "--trust-tools",
+      "--v3"
+    ],
+    "mutable_runtime_ancestors_not_chmod_read_only": true,
+    "native_workspace_argument": null,
+    "next_mutation_drains_cleanup_pending": true,
+    "ordinary_child_lock_cleanup_denied": true,
+    "product": "Kiro CLI",
+    "read_only_cleanup_pending_no_recovery": true,
+    "read_only_external_lock_no_create": true,
+    "runtime_mutable_directories_remain_writable": true,
+    "software_immutable_directory_mode": "0500",
+    "software_immutable_executable_mode": "0500",
+    "software_immutable_file_mode": "0400",
+    "software_launcher_artifact_immutable": true,
+    "target_lock_published_by_mutation_only": true,
+    "target_role": "managed-configuration-runtime-home",
+    "trusted_system_path": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "workspace_source": "captured-caller-current-directory"
+  },
+  "schema_version": 1,
+  "setup_ids": [
+    "nddev-builder"
+  ],
   "software_distribution": {
+    "current_artifacts_ref": "references/kiro-cli-baseline.json:install_manifest.packages",
+    "official_ubuntu_glibc_floor": {
+      "ubuntu-glibc-arm64": "2.39",
+      "ubuntu-glibc-x64": "2.34"
+    },
+    "official_ubuntu_version_floor": null,
+    "platform_detection": "platform.system + platform.machine + platform.freedesktop_os_release or /etc/os-release + platform.libc_ver",
+    "product_host_package_map": {
+      "macos-arm64": {
+        "download": "2.16.0/Kiro CLI.dmg",
+        "vendor_architecture": "universal",
+        "vendor_file_type": "dmg",
+        "vendor_os": "macos",
+        "vendor_target_triple": "universal-apple-darwin",
+        "vendor_variant": "full"
+      },
+      "macos-x64": {
+        "download": "2.16.0/Kiro CLI.dmg",
+        "vendor_architecture": "universal",
+        "vendor_file_type": "dmg",
+        "vendor_os": "macos",
+        "vendor_target_triple": "universal-apple-darwin",
+        "vendor_variant": "full"
+      },
+      "ubuntu-glibc-arm64": {
+        "download": "2.16.0/kirocli-aarch64-linux.zip",
+        "vendor_architecture": "aarch64",
+        "vendor_file_type": "zip",
+        "vendor_os": "linux",
+        "vendor_target_triple": "aarch64-unknown-linux-gnu",
+        "vendor_variant": "headless"
+      },
+      "ubuntu-glibc-x64": {
+        "download": "2.16.0/kirocli-x86_64-linux.zip",
+        "vendor_architecture": "x86_64",
+        "vendor_file_type": "zip",
+        "vendor_os": "linux",
+        "vendor_target_triple": "x86_64-unknown-linux-gnu",
+        "vendor_variant": "headless"
+      }
+    },
+    "public_platform_override_arguments": [],
     "supported_platforms": [
       "macos-arm64",
       "macos-x64",
       "ubuntu-glibc-arm64",
       "ubuntu-glibc-x64"
+    ],
+    "unsupported_platforms": [
+      "windows",
+      "non-ubuntu-linux",
+      "linux-musl",
+      "unsupported-architecture"
     ],
     "vendor_observed_platforms": [
       "universal-apple-darwin",
@@ -196,54 +244,6 @@
       "x86_64-unknown-linux-musl",
       "aarch64-unknown-linux-musl",
       "x86_64-pc-windows-msvc"
-    ],
-    "unsupported_platforms": [
-      "windows",
-      "non-ubuntu-linux",
-      "linux-musl",
-      "unsupported-architecture"
-    ],
-    "platform_detection": "platform.system + platform.machine + platform.freedesktop_os_release or /etc/os-release + platform.libc_ver",
-    "public_platform_override_arguments": [],
-    "official_ubuntu_version_floor": null,
-    "official_ubuntu_glibc_floor": {
-      "ubuntu-glibc-arm64": "2.39",
-      "ubuntu-glibc-x64": "2.34"
-    },
-    "product_host_package_map": {
-      "macos-arm64": {
-        "vendor_target_triple": "universal-apple-darwin",
-        "vendor_os": "macos",
-        "vendor_architecture": "universal",
-        "vendor_file_type": "dmg",
-        "vendor_variant": "full",
-        "download": "2.15.2/Kiro CLI.dmg"
-      },
-      "macos-x64": {
-        "vendor_target_triple": "universal-apple-darwin",
-        "vendor_os": "macos",
-        "vendor_architecture": "universal",
-        "vendor_file_type": "dmg",
-        "vendor_variant": "full",
-        "download": "2.15.2/Kiro CLI.dmg"
-      },
-      "ubuntu-glibc-arm64": {
-        "vendor_target_triple": "aarch64-unknown-linux-gnu",
-        "vendor_os": "linux",
-        "vendor_architecture": "aarch64",
-        "vendor_file_type": "zip",
-        "vendor_variant": "headless",
-        "download": "2.15.2/kirocli-aarch64-linux.zip"
-      },
-      "ubuntu-glibc-x64": {
-        "vendor_target_triple": "x86_64-unknown-linux-gnu",
-        "vendor_os": "linux",
-        "vendor_architecture": "x86_64",
-        "vendor_file_type": "zip",
-        "vendor_variant": "headless",
-        "download": "2.15.2/kirocli-x86_64-linux.zip"
-      }
-    },
-    "current_artifacts_ref": "references/kiro-cli-baseline.json:install_manifest.packages"
+    ]
   }
 }

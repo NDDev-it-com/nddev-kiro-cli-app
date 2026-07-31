@@ -467,8 +467,8 @@
     "transaction_parent_policy": "owner-private-or-sticky-same-filesystem",
     "official_manifest": {
       "url": "https://prod.download.cli.kiro.dev/stable/latest/manifest.json",
-      "version": "2.15.2",
-      "sha256": "06be6c592349077eaf445d9f926e6c7cbade4cb0e1a7a47b7c09359ea78239da",
+      "version": "2.16.0",
+      "sha256": "e86c9ba9138f4fb14953b998de0dad7734b4a20434ade11410914bc368e24682",
       "size": 9313
     },
     "supported_platforms": [
@@ -537,7 +537,7 @@
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.15.2/Kiro CLI.dmg"
+        "download": "2.16.0/Kiro CLI.dmg"
       },
       "macos-x64": {
         "vendor_target_triple": "universal-apple-darwin",
@@ -545,7 +545,7 @@
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.15.2/Kiro CLI.dmg"
+        "download": "2.16.0/Kiro CLI.dmg"
       },
       "ubuntu-glibc-arm64": {
         "vendor_target_triple": "aarch64-unknown-linux-gnu",
@@ -553,7 +553,7 @@
         "vendor_architecture": "aarch64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.15.2/kirocli-aarch64-linux.zip"
+        "download": "2.16.0/kirocli-aarch64-linux.zip"
       },
       "ubuntu-glibc-x64": {
         "vendor_target_triple": "x86_64-unknown-linux-gnu",
@@ -561,7 +561,7 @@
         "vendor_architecture": "x86_64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.15.2/kirocli-x86_64-linux.zip"
+        "download": "2.16.0/kirocli-x86_64-linux.zip"
       }
     }
   },
