@@ -1824,7 +1824,10 @@ def main() -> int:
 
     if not BUILD_VERSION_PATTERN.fullmatch(version_text):
         errors.append("VERSION must be a MAJOR.MINOR.PATCH build version")
-    if f"## {version_text}\n" not in changelog_text:
+    if (
+        f"## {version_text}\n" not in changelog_text
+        and f"## [{version_text}]\n" not in changelog_text
+    ):
         errors.append("CHANGELOG.md: missing current VERSION heading")
     if version is not None:
         if version.get("build_version") != version_text:

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.2
+## [0.2.2]
 
 - Pin the official stable Kiro CLI 2.16.0 manifest with exact provenance for all 24 vendor artifacts.
 - Refresh canonical build, runtime, platform-package, and public validation contracts.
