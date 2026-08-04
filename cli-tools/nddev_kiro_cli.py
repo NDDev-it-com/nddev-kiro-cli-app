@@ -3823,6 +3823,13 @@ def safe_extract_zip(archive_path: Path, destination: Path) -> None:
         if stat.S_ISREG(info.st_mode):
             if info.st_nlink != 1:
                 fail(f"Kiro CLI zip archive extracted hard-link alias: {relative}")
+            # zipfile.extractall preserves the archive's external_attr mode
+            # bits, which under an ambient umask (e.g. 0002) leave extracted
+            # regular files group-writable. Force an owner-only mode before
+            # the writability check so a hardened extraction is never
+            # rejected by its own non-deterministic ambient mask.
+            os.chmod(path, OWNER_FILE_MODE)
+            info = path.lstat()
             ensure_not_group_world_writable(info, f"Kiro CLI zip archive path {relative}")
             continue
         fail(f"Kiro CLI zip archive extracted unsupported path: {relative}")
