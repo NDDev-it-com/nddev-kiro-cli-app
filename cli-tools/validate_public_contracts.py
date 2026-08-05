@@ -293,9 +293,13 @@ PRODUCT_HOST_PACKAGE_MAP = {
 CLAUDE_BRIDGE_BYTES = b"@../AGENTS.md\n"
 RELEASE_WORKFLOW_USES = (
     "NDDev-it-com/ci-workflows/.github/workflows/release-supply-chain.yml"
-    "@2ccb80e96f5771b6a6b4eae63a4f47e232906dc7"
+    "@f6ea891f09653b8d449098817c8acfdb510731f6"
 )
-RELEASE_WORKFLOW_VERSION = "0.12.0"
+RELEASE_PROMOTION_USES = (
+    "NDDev-it-com/ci-workflows/.github/workflows/release-promotion-gate.yml"
+    "@f6ea891f09653b8d449098817c8acfdb510731f6"
+)
+RELEASE_WORKFLOW_VERSION = "0.14.0-dev"
 RELEASE_PACKAGE_NAME = "nddev-kiro-cli-app"
 RELEASE_VERSION_INPUT = "${{ github.ref_name }}"
 RELEASE_JOB_PERMISSIONS = {
@@ -926,6 +930,9 @@ def check_release_workflow_static(text: str, errors: list[str]) -> None:
     uses_line = f"    uses: {RELEASE_WORKFLOW_USES} # {RELEASE_WORKFLOW_VERSION}"
     if uses_line not in text.splitlines():
         errors.append(".github/workflows/release.yml: reusable workflow pin/version mismatch")
+    promotion_line = f"    uses: {RELEASE_PROMOTION_USES} # {RELEASE_WORKFLOW_VERSION}"
+    if promotion_line not in text.splitlines():
+        errors.append(".github/workflows/release.yml: promotion workflow pin/version mismatch")
     expected_scalars = {
         "      version": RELEASE_VERSION_INPUT,
         "      package_name": RELEASE_PACKAGE_NAME,
@@ -935,8 +942,26 @@ def check_release_workflow_static(text: str, errors: list[str]) -> None:
             errors.append(f".github/workflows/release.yml: {key.strip()} mismatch")
     if "permissions: {}" not in text.splitlines():
         errors.append(".github/workflows/release.yml: top-level permissions must be empty")
+    if "    needs: promotion" not in text.splitlines():
+        errors.append(".github/workflows/release.yml: publication must need promotion")
+    if text.count("      runner: amsterdam") != 2:
+        errors.append(".github/workflows/release.yml: both release jobs must use amsterdam")
+    try:
+        promotion_text, publish_text = text.split("  promotion:", 1)[1].split("  publish:", 1)
+    except ValueError:
+        errors.append(".github/workflows/release.yml: promotion/publish jobs are malformed")
+        return
+    promotion_permissions = parse_mapping_block(
+        promotion_text,
+        "permissions",
+        indent=4,
+        child_indent=6,
+        errors=errors,
+    )
+    if promotion_permissions != {"contents": "read"}:
+        errors.append(".github/workflows/release.yml: promotion job permissions mismatch")
     job_permissions = parse_mapping_block(
-        text,
+        publish_text,
         "permissions",
         indent=4,
         child_indent=6,
