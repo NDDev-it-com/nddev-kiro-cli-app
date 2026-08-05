@@ -3,7 +3,7 @@
   "compiled_policy": {
     "repository_id": "repo_01KYFD7GQWFYMPYQQRST62ZTG1",
     "bundle_version": "0.1.0-dev",
-    "digest": "sha256:bd79e6747138124c5bf43f2307a4fafec9ffd0e8e2140c1653401c8cfa46fdc8"
+    "digest": "sha256:e6a5d3728eb334879ed3cd7d51f9001faf0bdc0ba106f9ef18b3c4524f8a3691"
   },
   "sources": [
     {
@@ -12,7 +12,7 @@
       "priority": 100,
       "distribution": "public",
       "path": "policies/base/repository-default.yaml",
-      "digest": "sha256:e74e6dc4429eda77b02e0f5267dc0db5b25b1a666262660b9dd992d53922f15c"
+      "digest": "sha256:13324a48e45daa7008310bb24d158ee92b606316040e3a70433b5c942a187af5"
     },
     {
       "id": "organization-default",
