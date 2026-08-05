@@ -17,6 +17,7 @@ PROFILE_IDS = ["safe", "full-auto"]
 DEFAULT_PROFILE_ID = "full-auto"
 LEGACY_SETUP_IDS = ["safe", "balanced", "full-auto"]
 BUILD_VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 PYTHON_REQUIRES = ">=3.9"
 PYTHON_SYNTAX_FEATURE_VERSION = (3, 9)
 PORTABLE_PYTHON_SOURCES = (
@@ -250,300 +251,11 @@ TARGET_ENVIRONMENT_SCOPE = {
     "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log",
     "PATH": TRUSTED_SYSTEM_PATH,
 }
-MANIFEST_SHA256 = "e86c9ba9138f4fb14953b998de0dad7734b4a20434ade11410914bc368e24682"
+MANIFEST_SHA256 = "01c89504e34bb15d4e50d6ec479d14fe95cc901a2e59554eba6fb24d77f813d8"
 MANIFEST_SIZE = 9313
+KIRO_CLI_CURRENT = "2.16.1"
+VERIFIED_ON = "2026-08-05"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
-EXPECTED_INSTALL_PACKAGES = [
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "tarXz",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux.tar.xz",
-        "sha256": "9ab42a7157dc183b22cf80280dab503ad1b6d84b8f115475b0d4f784f747c044",
-        "size": 493386424,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "tarGz",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux.tar.gz",
-        "sha256": "d42e4ab3e9b50f2a22b9cb718c36d957a1c9f7937475afc74ed9e8018908493b",
-        "size": 555232645,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "deb",
-        "architecture": "x86_64",
-        "variant": "full",
-        "download": "2.16.0/kiro-cli.deb",
-        "sha256": "f463bca27e9a5d41277e0f08355d44168fabb4e665182fd4374d7c0de135d1cd",
-        "size": 585751368,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "appImage",
-        "architecture": "x86_64",
-        "variant": "full",
-        "download": "2.16.0/kiro-cli.appimage",
-        "sha256": "0b9dee2e9fdaf52d8328dc5c20c15c1ae59cd4ee5cf679262104020d7543d8a1",
-        "size": 731612352,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "tarZst",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux.tar.zst",
-        "sha256": "9a767afd7b8c5644b9c0b2db308a22bb0dafa106b24cc2465b45504fb919c7c3",
-        "size": 503513135,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "zip",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux.zip",
-        "sha256": "a7b9b3b2d159dfcf596c4400fcd9c9b13c457e9bae0c77ef3e48db931d261b60",
-        "size": 555230530,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "universal-apple-darwin",
-        "os": "macos",
-        "fileType": "dmg",
-        "architecture": "universal",
-        "variant": "full",
-        "download": "2.16.0/Kiro CLI.dmg",
-        "sha256": "6131f8061f341c51bb546f7b9eea44c22bfe1d79d336bd904b7e2a31a9a0f3c7",
-        "size": 682733235,
-        "cliPath": "Contents/MacOS/kiro-cli",
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "tarGz",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux.tar.gz",
-        "sha256": "50584afff5d8d3b422d42ea32232ab62127a7936424d8745fc09274b0ad9224b",
-        "size": 509936665,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "tarXz",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux.tar.xz",
-        "sha256": "efbc0fcdee553274733bef9c6964bc3d6bbcbb23f4ca349f3c0770a439f4aa04",
-        "size": 441748400,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "tarZst",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux.tar.zst",
-        "sha256": "08f5f099b34849b458bef934b7d80f192de1efadc7d4070edf0583139f7e74cf",
-        "size": 457538378,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "zip",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux.zip",
-        "sha256": "136c4ff9dad8c364d2990ca96087204faf97ff06aca68eee40d5c9193e4d4e49",
-        "size": 509956206,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "tarGz",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux-musl.tar.gz",
-        "sha256": "26d6e0a7a73055f1eb160bcbc49f17488da624f0d5d73394c88c5cba7341c5c6",
-        "size": 512162025,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "tarZst",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux-musl.tar.zst",
-        "sha256": "7c2c4f2ef84d9d4af6da192eb5cb76fb7668874f02a5caf5fa071103e9d1e022",
-        "size": 459568726,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "tarXz",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux-musl.tar.xz",
-        "sha256": "de1845e7d4639de1bfefb9a68bef5c9db822588aadefd98d4219ed75d5354c7f",
-        "size": 449063916,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "zip",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux-musl.zip",
-        "sha256": "67cb9946f00dca45c313881e431cd962cec17b03b4c094cf1c1cf0e23115a726",
-        "size": 512150244,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "tarGz",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux-musl.tar.gz",
-        "sha256": "58052b1d204fc9665dfd1e2549e98919a6162f1e6b6f2f41afc7904280e1c636",
-        "size": 508955578,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "tarXz",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux-musl.tar.xz",
-        "sha256": "da821f33bf5a7a1e9fa99ebea97411a383d2d351a765e4b564444d789f79142f",
-        "size": 440908404,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "tarZst",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux-musl.tar.zst",
-        "sha256": "f080c71dc7b81d3786760eff673e53f02869dbf614063b1804a8683be52bfb6b",
-        "size": 456497082,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "zip",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux-musl.zip",
-        "sha256": "b6df9059018d34eb726a6a20c3ab1607fff5c103dbb5ce45c2c69562afb63c8c",
-        "size": 508938384,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "rpm",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux.rpm",
-        "sha256": "2d8b7055f8165cdb6079d4adf3a702a03015bfc0bea8a77788ad4efd9a53c0c9",
-        "size": 554098135,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-gnu",
-        "os": "linux",
-        "fileType": "rpm",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux.rpm",
-        "sha256": "925b2636d6efbf13fba982a14bfb3226b3415b8691ac400c435d409b8420140d",
-        "size": 508974825,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "x86_64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "rpm",
-        "architecture": "x86_64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux-musl.rpm",
-        "sha256": "f36e93d532744976659fa05842f3051be8c1bf6b3c95fc9e457d28657b82373d",
-        "size": 510974361,
-        "channel": "stable",
-    },
-    {
-        "kind": "msi",
-        "targetTriple": "x86_64-pc-windows-msvc",
-        "os": "windows",
-        "fileType": "msi",
-        "architecture": "x86_64",
-        "variant": "full",
-        "download": "2.16.0/kiro-cli-x86_64-pc-windows-msvc.msi",
-        "sha256": "923ae05cf3ca93abc26b27d35e10f272c5aad57aa895ab18855865b1fec874d5",
-        "size": 250400768,
-        "channel": "stable",
-    },
-    {
-        "kind": "deb",
-        "targetTriple": "aarch64-unknown-linux-musl",
-        "os": "linux",
-        "fileType": "rpm",
-        "architecture": "aarch64",
-        "variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux-musl.rpm",
-        "sha256": "81ceb570e015d95669ca64912e441d4402691a5b15b19d486a307dca1a98bd1b",
-        "size": 507979606,
-        "channel": "stable",
-    },
-]
 PRODUCT_HOST_PACKAGE_MAP = {
     "macos-arm64": {
         "vendor_target_triple": "universal-apple-darwin",
@@ -551,7 +263,7 @@ PRODUCT_HOST_PACKAGE_MAP = {
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.16.0/Kiro CLI.dmg",
+        "download": "2.16.1/Kiro CLI.dmg",
     },
     "macos-x64": {
         "vendor_target_triple": "universal-apple-darwin",
@@ -559,7 +271,7 @@ PRODUCT_HOST_PACKAGE_MAP = {
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.16.0/Kiro CLI.dmg",
+        "download": "2.16.1/Kiro CLI.dmg",
     },
     "ubuntu-glibc-arm64": {
         "vendor_target_triple": "aarch64-unknown-linux-gnu",
@@ -567,7 +279,7 @@ PRODUCT_HOST_PACKAGE_MAP = {
         "vendor_architecture": "aarch64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.16.0/kirocli-aarch64-linux.zip",
+        "download": "2.16.1/kirocli-aarch64-linux.zip",
     },
     "ubuntu-glibc-x64": {
         "vendor_target_triple": "x86_64-unknown-linux-gnu",
@@ -575,7 +287,7 @@ PRODUCT_HOST_PACKAGE_MAP = {
         "vendor_architecture": "x86_64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.16.0/kirocli-x86_64-linux.zip",
+        "download": "2.16.1/kirocli-x86_64-linux.zip",
     },
 }
 CLAUDE_BRIDGE_BYTES = b"@../AGENTS.md\n"
@@ -1343,7 +1055,7 @@ def check_software(software: Any, label: str, errors: list[str]) -> None:
     if not isinstance(manifest_pin, dict):
         errors.append(f"{label}: official manifest pin required")
     else:
-        if manifest_pin.get("version") != "2.16.0":
+        if manifest_pin.get("version") != KIRO_CLI_CURRENT:
             errors.append(f"{label}: manifest version mismatch")
         if manifest_pin.get("sha256") != MANIFEST_SHA256:
             errors.append(f"{label}: manifest sha256 mismatch")
@@ -1537,7 +1249,7 @@ def check_baseline(
     version: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    if baseline.get("verified_on") != "2026-07-30":
+    if baseline.get("verified_on") != VERIFIED_ON:
         errors.append("references/kiro-cli-baseline.json: verified_on mismatch")
     if version is not None and baseline.get("release", {}).get("version") != version.get(
         "kiro_cli_current"
@@ -1625,7 +1337,7 @@ def check_baseline(
         errors.append("references/kiro-cli-baseline.json: install manifest sha256 mismatch")
     if release.get("install_manifest_size") != MANIFEST_SIZE:
         errors.append("references/kiro-cli-baseline.json: install manifest size mismatch")
-    if baseline.get("install_manifest", {}).get("version") != "2.16.0":
+    if baseline.get("install_manifest", {}).get("version") != KIRO_CLI_CURRENT:
         errors.append("references/kiro-cli-baseline.json: install manifest version mismatch")
     software = baseline.get("software_installation")
     if not isinstance(software, dict):
@@ -1737,10 +1449,47 @@ def check_baseline(
     packages = baseline.get("install_manifest", {}).get("packages")
     if not isinstance(packages, list) or not packages:
         errors.append("references/kiro-cli-baseline.json: install packages missing")
-    elif not all(isinstance(item, dict) and item.get("sha256") for item in packages):
-        errors.append("references/kiro-cli-baseline.json: package sha256 missing")
-    elif packages != EXPECTED_INSTALL_PACKAGES:
-        errors.append("references/kiro-cli-baseline.json: install package catalog mismatch")
+    else:
+        identities: set[tuple[object, ...]] = set()
+        required = {
+            "kind",
+            "targetTriple",
+            "os",
+            "fileType",
+            "architecture",
+            "variant",
+            "download",
+            "sha256",
+            "size",
+            "channel",
+        }
+        for index, package in enumerate(packages):
+            label = f"references/kiro-cli-baseline.json: install packages[{index}]"
+            if not isinstance(package, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            allowed = required | {"cliPath"}
+            if set(package) - allowed or required - set(package):
+                errors.append(f"{label} keys mismatch")
+                continue
+            download = package.get("download")
+            if not isinstance(download, str) or not download.startswith(f"{KIRO_CLI_CURRENT}/"):
+                errors.append(f"{label} download is not version-bound")
+            digest = package.get("sha256")
+            if not isinstance(digest, str) or SHA256_PATTERN.fullmatch(digest) is None:
+                errors.append(f"{label} sha256 mismatch")
+            if not isinstance(package.get("size"), int) or package["size"] <= 0:
+                errors.append(f"{label} size mismatch")
+            if package.get("channel") != "stable":
+                errors.append(f"{label} channel mismatch")
+            identity = (
+                package.get("targetTriple"),
+                package.get("fileType"),
+                package.get("variant"),
+            )
+            if identity in identities:
+                errors.append(f"{label} duplicates package identity")
+            identities.add(identity)
 
 
 def check_manager_source(text: str, errors: list[str]) -> None:
@@ -1832,8 +1581,8 @@ def main() -> int:
     if version is not None:
         if version.get("build_version") != version_text:
             errors.append("VERSION disagrees with build/version.json:build_version")
-        if version.get("kiro_cli_current") != "2.16.0":
-            errors.append("build/version.json: kiro_cli_current must be 2.16.0")
+        if version.get("kiro_cli_current") != KIRO_CLI_CURRENT:
+            errors.append(f"build/version.json: kiro_cli_current must be {KIRO_CLI_CURRENT}")
         if version.get("python_requires") != PYTHON_REQUIRES:
             errors.append(f"build/version.json: python_requires must be {PYTHON_REQUIRES}")
     if manifest is not None:

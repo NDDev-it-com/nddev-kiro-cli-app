@@ -1,5 +1,5 @@
 {
-  "build_version": "0.2.2",
+  "build_version": "0.2.3",
   "builder": {
     "agent_tools": [
       "*"
@@ -104,7 +104,7 @@
     "cleanup_pending_status_plan_exposed": true,
     "cleanup_pending_top_level_result": true,
     "cleanup_tombstone_max_roots": 4,
-    "current_version": "2.16.0",
+    "current_version": "2.16.1",
     "directory_lock_used": false,
     "engine_argument": "--v3",
     "engine_status": "early-access-required",
@@ -192,7 +192,7 @@
     "platform_detection": "platform.system + platform.machine + platform.freedesktop_os_release or /etc/os-release + platform.libc_ver",
     "product_host_package_map": {
       "macos-arm64": {
-        "download": "2.16.0/Kiro CLI.dmg",
+        "download": "2.16.1/Kiro CLI.dmg",
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_os": "macos",
@@ -200,7 +200,7 @@
         "vendor_variant": "full"
       },
       "macos-x64": {
-        "download": "2.16.0/Kiro CLI.dmg",
+        "download": "2.16.1/Kiro CLI.dmg",
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_os": "macos",
@@ -208,7 +208,7 @@
         "vendor_variant": "full"
       },
       "ubuntu-glibc-arm64": {
-        "download": "2.16.0/kirocli-aarch64-linux.zip",
+        "download": "2.16.1/kirocli-aarch64-linux.zip",
         "vendor_architecture": "aarch64",
         "vendor_file_type": "zip",
         "vendor_os": "linux",
@@ -216,7 +216,7 @@
         "vendor_variant": "headless"
       },
       "ubuntu-glibc-x64": {
-        "download": "2.16.0/kirocli-x86_64-linux.zip",
+        "download": "2.16.1/kirocli-x86_64-linux.zip",
         "vendor_architecture": "x86_64",
         "vendor_file_type": "zip",
         "vendor_os": "linux",
