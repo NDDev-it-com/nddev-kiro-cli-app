@@ -844,8 +844,7 @@ def check_release_path_private_markers(relative: str, label: str, errors: list[s
     forbidden = set(Path(relative).parts) & FORBIDDEN_RELEASE_PATH_PARTS
     if forbidden:
         errors.append(
-            "release/package.yml: "
-            f"{label} contains private marker {sorted(forbidden)}: {relative}"
+            f"release/package.yml: {label} contains private marker {sorted(forbidden)}: {relative}"
         )
 
 
@@ -858,8 +857,7 @@ def check_tracked_archive_closure(
         check_release_path_private_markers(relative, "tracked path", errors)
         if not release_path_covers(relative, archive_set):
             errors.append(
-                "release/package.yml: "
-                f"tracked path is not covered by archive_paths: {relative}"
+                f"release/package.yml: tracked path is not covered by archive_paths: {relative}"
             )
 
 
@@ -910,9 +908,7 @@ def parse_mapping_block(
                 break
             match = re.match(rf"^ {{{child_indent}}}([^:]+):\s+(.+?)\s*$", item)
             if match is None:
-                errors.append(
-                    f"release/package.yml: malformed {key} entry: {item.strip()}"
-                )
+                errors.append(f"release/package.yml: malformed {key} entry: {item.strip()}")
                 continue
             result[match.group(1)] = match.group(2)
         if not result:
@@ -964,9 +960,7 @@ def check_release_workflow(
     runtime_set = set(runtime_paths)
     if not runtime_set.issubset(archive_set):
         missing = sorted(runtime_set - archive_set)
-        errors.append(
-            f"release/package.yml: runtime_paths not in archive_paths: {missing}"
-        )
+        errors.append(f"release/package.yml: runtime_paths not in archive_paths: {missing}")
     if tracked is None:
         check_extracted_artifact_closure(archive_set, errors)
     else:
