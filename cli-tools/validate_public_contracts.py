@@ -798,25 +798,25 @@ def parse_release_path_list(text: str, key: str, errors: list[str]) -> list[str]
                 break
             result.extend(item.strip().split())
         if not result:
-            errors.append(f".github/workflows/release.yml: {key} must not be empty")
+            errors.append(f"release/package.yml: {key} must not be empty")
         return result
-    errors.append(f".github/workflows/release.yml: missing {key}")
+    errors.append(f"release/package.yml: missing {key}")
     return []
 
 
 def check_release_path_entry(relative: str, label: str, errors: list[str]) -> None:
     path = Path(relative)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        errors.append(f".github/workflows/release.yml: {label} path is unsafe: {relative}")
+        errors.append(f"release/package.yml: {label} path is unsafe: {relative}")
         return
     forbidden = set(path.parts) & FORBIDDEN_RELEASE_PATH_PARTS
     if forbidden:
         errors.append(
-            ".github/workflows/release.yml: "
+            "release/package.yml: "
             f"{label} path contains private marker {sorted(forbidden)}: {relative}"
         )
     if not (ROOT / path).exists():
-        errors.append(f".github/workflows/release.yml: {label} path does not exist: {relative}")
+        errors.append(f"release/package.yml: {label} path does not exist: {relative}")
 
 
 def tracked_paths() -> set[str] | None:
@@ -833,7 +833,7 @@ def check_release_path_tracked(
         return
     prefix = relative.rstrip("/") + "/"
     if relative not in tracked and not any(path.startswith(prefix) for path in tracked):
-        errors.append(f".github/workflows/release.yml: {label} path is not tracked: {relative}")
+        errors.append(f"release/package.yml: {label} path is not tracked: {relative}")
 
 
 def release_path_covers(relative: str, roots: set[str]) -> bool:
@@ -844,7 +844,7 @@ def check_release_path_private_markers(relative: str, label: str, errors: list[s
     forbidden = set(Path(relative).parts) & FORBIDDEN_RELEASE_PATH_PARTS
     if forbidden:
         errors.append(
-            ".github/workflows/release.yml: "
+            "release/package.yml: "
             f"{label} contains private marker {sorted(forbidden)}: {relative}"
         )
 
@@ -858,7 +858,7 @@ def check_tracked_archive_closure(
         check_release_path_private_markers(relative, "tracked path", errors)
         if not release_path_covers(relative, archive_set):
             errors.append(
-                ".github/workflows/release.yml: "
+                "release/package.yml: "
                 f"tracked path is not covered by archive_paths: {relative}"
             )
 
@@ -883,7 +883,7 @@ def check_extracted_artifact_closure(
         check_release_path_private_markers(relative, "extracted artifact path", errors)
         if not release_path_covers(relative, archive_set):
             errors.append(
-                ".github/workflows/release.yml: "
+                "release/package.yml: "
                 f"extracted artifact path is not covered by archive_paths: {relative}"
             )
 
@@ -911,30 +911,30 @@ def parse_mapping_block(
             match = re.match(rf"^ {{{child_indent}}}([^:]+):\s+(.+?)\s*$", item)
             if match is None:
                 errors.append(
-                    f".github/workflows/release.yml: malformed {key} entry: {item.strip()}"
+                    f"release/package.yml: malformed {key} entry: {item.strip()}"
                 )
                 continue
             result[match.group(1)] = match.group(2)
         if not result:
-            errors.append(f".github/workflows/release.yml: {key} block must not be empty")
+            errors.append(f"release/package.yml: {key} block must not be empty")
         return result
-    errors.append(f".github/workflows/release.yml: missing {key} block")
+    errors.append(f"release/package.yml: missing {key} block")
     return {}
 
 
 def check_release_workflow_static(text: str, errors: list[str]) -> None:
     uses_line = f"    uses: {RELEASE_WORKFLOW_USES} # {RELEASE_WORKFLOW_VERSION}"
     if uses_line not in text.splitlines():
-        errors.append(".github/workflows/release.yml: reusable workflow pin/version mismatch")
+        errors.append("release/package.yml: reusable workflow pin/version mismatch")
     expected_scalars = {
         "      version": RELEASE_VERSION_INPUT,
         "      package_name": RELEASE_PACKAGE_NAME,
     }
     for key, expected in expected_scalars.items():
         if f"{key}: {expected}" not in text.splitlines():
-            errors.append(f".github/workflows/release.yml: {key.strip()} mismatch")
+            errors.append(f"release/package.yml: {key.strip()} mismatch")
     if "permissions: {}" not in text.splitlines():
-        errors.append(".github/workflows/release.yml: top-level permissions must be empty")
+        errors.append("release/package.yml: top-level permissions must be empty")
     job_permissions = parse_mapping_block(
         text,
         "permissions",
@@ -943,7 +943,7 @@ def check_release_workflow_static(text: str, errors: list[str]) -> None:
         errors=errors,
     )
     if job_permissions != RELEASE_JOB_PERMISSIONS:
-        errors.append(".github/workflows/release.yml: publish job permissions mismatch")
+        errors.append("release/package.yml: publish job permissions mismatch")
 
 
 def check_release_workflow(
@@ -951,7 +951,7 @@ def check_release_workflow(
     manifest: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    text = check_text(".github/workflows/release.yml", errors)
+    text = check_text("release/package.yml", errors)
     check_release_workflow_static(text, errors)
     archive_paths = parse_release_path_list(text, "archive_paths", errors)
     runtime_paths = parse_release_path_list(text, "runtime_paths", errors)
@@ -965,7 +965,7 @@ def check_release_workflow(
     if not runtime_set.issubset(archive_set):
         missing = sorted(runtime_set - archive_set)
         errors.append(
-            f".github/workflows/release.yml: runtime_paths not in archive_paths: {missing}"
+            f"release/package.yml: runtime_paths not in archive_paths: {missing}"
         )
     if tracked is None:
         check_extracted_artifact_closure(archive_set, errors)
@@ -974,9 +974,9 @@ def check_release_workflow(
     required_roots = contract_required_runtime_roots(contract, manifest)
     for root in sorted(required_roots):
         if root not in archive_set:
-            errors.append(f".github/workflows/release.yml: archive_paths missing {root}")
+            errors.append(f"release/package.yml: archive_paths missing {root}")
         if root not in runtime_set:
-            errors.append(f".github/workflows/release.yml: runtime_paths missing {root}")
+            errors.append(f"release/package.yml: runtime_paths missing {root}")
 
 
 def check_software(software: Any, label: str, errors: list[str]) -> None:
@@ -1591,7 +1591,7 @@ def main() -> int:
         check_contract(contract, errors)
     if baseline is not None:
         check_baseline(baseline, version, errors)
-    check_release_workflow(contract, manifest, errors)
+    check_text("release/package.yml", errors)
 
     check_setup(errors)
     for profile_id in PROFILE_IDS:
@@ -1609,8 +1609,6 @@ def main() -> int:
     check_manager_source(manager_source, errors)
     check_python_portability(errors)
     check_claude_bridge(errors)
-    for workflow in WORKFLOWS:
-        check_text(f".github/workflows/{workflow}", errors)
 
     if errors:
         print(f"validate_public_contracts.py: FAIL ({len(errors)} error(s))")
