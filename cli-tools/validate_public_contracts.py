@@ -251,10 +251,10 @@ TARGET_ENVIRONMENT_SCOPE = {
     "KIRO_CHAT_LOG_FILE": "target/.nddev-runtime/logs/kiro-chat.log",
     "PATH": TRUSTED_SYSTEM_PATH,
 }
-MANIFEST_SHA256 = "01c89504e34bb15d4e50d6ec479d14fe95cc901a2e59554eba6fb24d77f813d8"
+MANIFEST_SHA256 = "f248b47249921bf306aac2858871a7abb811ad8117928b49bcc2212d350e2765"
 MANIFEST_SIZE = 9313
-KIRO_CLI_CURRENT = "2.16.1"
-VERIFIED_ON = "2026-08-05"
+KIRO_CLI_CURRENT = "2.16.2"
+VERIFIED_ON = "2026-08-07"
 INSTALLER_SHA256 = "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908"
 PRODUCT_HOST_PACKAGE_MAP = {
     "macos-arm64": {
@@ -263,7 +263,7 @@ PRODUCT_HOST_PACKAGE_MAP = {
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.16.1/Kiro CLI.dmg",
+        "download": "2.16.2/Kiro CLI.dmg",
     },
     "macos-x64": {
         "vendor_target_triple": "universal-apple-darwin",
@@ -271,7 +271,7 @@ PRODUCT_HOST_PACKAGE_MAP = {
         "vendor_architecture": "universal",
         "vendor_file_type": "dmg",
         "vendor_variant": "full",
-        "download": "2.16.1/Kiro CLI.dmg",
+        "download": "2.16.2/Kiro CLI.dmg",
     },
     "ubuntu-glibc-arm64": {
         "vendor_target_triple": "aarch64-unknown-linux-gnu",
@@ -279,7 +279,7 @@ PRODUCT_HOST_PACKAGE_MAP = {
         "vendor_architecture": "aarch64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.16.1/kirocli-aarch64-linux.zip",
+        "download": "2.16.2/kirocli-aarch64-linux.zip",
     },
     "ubuntu-glibc-x64": {
         "vendor_target_triple": "x86_64-unknown-linux-gnu",
@@ -287,7 +287,7 @@ PRODUCT_HOST_PACKAGE_MAP = {
         "vendor_architecture": "x86_64",
         "vendor_file_type": "zip",
         "vendor_variant": "headless",
-        "download": "2.16.1/kirocli-x86_64-linux.zip",
+        "download": "2.16.2/kirocli-x86_64-linux.zip",
     },
 }
 CLAUDE_BRIDGE_BYTES = b"@../AGENTS.md\n"

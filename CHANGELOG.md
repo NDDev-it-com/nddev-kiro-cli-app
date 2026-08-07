@@ -2,7 +2,7 @@
 
 ## [0.2.3]
 
-- Update the exact official stable Kiro CLI manifest and all 24 artifact identities to 2.16.1.
+- Update the exact official stable Kiro CLI manifest and all 24 artifact identities to 2.16.2.
 - Keep the unchanged official installer byte identity and fail closed on mutable latest-manifest drift.
 
 ## [0.2.2]
